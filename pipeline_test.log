@@ -1,0 +1,17 @@
+[INFO] Running zero-drift baseline test using src/test/duet.mp4 for both streams.
+[INFO] Pipeline started
+[MEMORY] used=1.14 MB free=124.86 MB total=126.00 MB max=1.94 GB
+[PROGRESS] pairs=50, currentDrift=0.000 ms, maxDrift=0.000 ms, pendingA=0, pendingB=1
+[PROGRESS] pairs=100, currentDrift=0.000 ms, maxDrift=0.000 ms, pendingA=0, pendingB=13
+[TEST] flushing buffers and resetting stats
+[TEST] matched=0 dropped=0 maxDrift=0.000 pendingA=0 pendingB=0
+[PROGRESS] pairs=150, currentDrift=33.333 ms, maxDrift=33.333 ms, pendingA=0, pendingB=15
+[PROGRESS] pairs=200, currentDrift=33.333 ms, maxDrift=33.333 ms, pendingA=0, pendingB=1
+[PROGRESS] pairs=250, currentDrift=33.333 ms, maxDrift=33.333 ms, pendingA=0, pendingB=3
+[INFO] No more synchronized pairs (EOS reached).
+[INFO] Pipeline shutdown complete.
+[RESULT] totalPairs=253
+[RESULT] maxObservedDrift=33.333 ms (threshold=34 ms)
+[RESULT] elapsedTimeMS=625
+[MEMORY] used=38.89 MB free=113.11 MB total=152.00 MB max=1.94 GB
+[SUCCESS] XuggleDualStreamPipelineTest completed successfully.
