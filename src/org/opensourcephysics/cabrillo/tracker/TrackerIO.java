@@ -106,6 +106,8 @@ import org.opensourcephysics.media.core.VideoClip;
 import org.opensourcephysics.media.core.VideoFileFilter;
 import org.opensourcephysics.media.core.VideoIO;
 import org.opensourcephysics.media.core.VideoType;
+import org.opensourcephysics.media.xuggle.DualXuggleVideo;
+import org.opensourcephysics.media.xuggle.XuggleDualStreamPipeline;
 import org.opensourcephysics.tools.FontSizer;
 import org.opensourcephysics.tools.LibraryBrowser;
 import org.opensourcephysics.tools.LibraryCollection;
@@ -1167,12 +1169,20 @@ public class TrackerIO extends VideoIO {
 
 			@Override
 			public Void apply(File[] files) {
-				File file = (files == null ? null : files[0]);
-				if (file != null) {
-					OSPRuntime.cacheJSFile(file, true);
-					run("importVideo", () -> {
-						importVideo(file.getAbsolutePath(), trackerPanel, whenDone);
+				if (files != null && files.length == 2) {
+					OSPRuntime.cacheJSFile(files[0], true);
+					OSPRuntime.cacheJSFile(files[1], true);
+					run("importDualVideo", () -> {
+						importDualVideo(files[0].getAbsolutePath(), files[1].getAbsolutePath(), trackerPanel, whenDone);
 					});
+				} else {
+					File file = (files == null ? null : files[0]);
+					if (file != null) {
+						OSPRuntime.cacheJSFile(file, true);
+						run("importVideo", () -> {
+							importVideo(file.getAbsolutePath(), trackerPanel, whenDone);
+						});
+					}
 				}
 				return null;
 			}
@@ -1219,11 +1229,25 @@ public class TrackerIO extends VideoIO {
 		loader = startLoading(listOf(path), trackerPanel, frame, frame.libraryBrowser, whenDone);
 	}
 
-	static List<String> listOf(String path) {
-		List<String> list = new ArrayList<>();
-		list.add(path);
-		return list;
-	}
+    public static void importDualVideo(String pathA, String pathB, TrackerPanel trackerPanel, Runnable whenDone) {
+        TFrame frame = trackerPanel.getTFrame();
+        frame.loadedFiles.clear();
+        try {
+            XuggleDualStreamPipeline pipeline = new XuggleDualStreamPipeline(pathA, pathB);
+            pipeline.start();
+            DualXuggleVideo dualVideo = new DualXuggleVideo(pipeline);
+            trackerPanel.setVideo(dualVideo);
+            if (frame != null) {
+                TFrame.repaintT(trackerPanel);
+                frame.setSelectedTab(trackerPanel);
+            }
+            if (whenDone != null) {
+                whenDone.run();
+            }
+        } catch (IOException ex) {
+            OSPLog.fine("Dual video import failed: " + ex.getMessage()); //$NON-NLS-1$
+        }
+    }
 
 	static List<String> listOf(File f) {
 		List<String> list = new ArrayList<>();

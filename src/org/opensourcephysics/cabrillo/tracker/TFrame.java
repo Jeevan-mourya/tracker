@@ -33,6 +33,8 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics;
+import java.awt.geom.Point2D;
+import java.awt.image.BufferedImage;
 import java.awt.GraphicsEnvironment;
 import java.awt.Point;
 import java.awt.Rectangle;
@@ -128,6 +130,8 @@ import org.opensourcephysics.media.core.VideoIO;
 import org.opensourcephysics.media.core.VideoPanel;
 import org.opensourcephysics.media.core.VideoPlayer;
 import org.opensourcephysics.media.mov.MovieVideo;
+import org.opensourcephysics.media.xuggle.DualXuggleVideo;
+import org.opensourcephysics.media.xuggle.math.StereoCalibrationManager;
 import org.opensourcephysics.tools.DataTool;
 import org.opensourcephysics.tools.DataToolTab;
 import org.opensourcephysics.tools.FileDropHandler;
@@ -3435,6 +3439,21 @@ public class TFrame extends OSPFrame implements PropertyChangeListener, FileImpo
 			});
 			fileMenu.add(exitItem);
 			// }
+			// video menu
+			JMenu videoMenu = new JMenu("Video");
+			add(videoMenu);
+			JMenuItem calibrateItem = new JMenuItem("Calibrate Stereo 3D");
+			calibrateItem.addActionListener(new ActionListener() {
+				@Override
+				public void actionPerformed(ActionEvent e) {
+					if (!SwingUtilities.isEventDispatchThread()) {
+						SwingUtilities.invokeLater(() -> calibrateStereo3D());
+						return;
+					}
+					calibrateStereo3D();
+				}
+			});
+			videoMenu.add(calibrateItem);
 			// edit menu
 			JMenu editMenu = new JMenu(TrackerRes.getString("TMenuBar.Menu.Edit")); //$NON-NLS-1$
 			add(editMenu);
@@ -3471,6 +3490,44 @@ public class TFrame extends OSPFrame implements PropertyChangeListener, FileImpo
 			add(TMenuBar.getTrackerHelpMenu(null, null));
 		}
 
+	}
+
+	private void calibrateStereo3D() {
+		TrackerPanel trackerPanel = getSelectedPanel();
+		if (trackerPanel == null) {
+			JOptionPane.showMessageDialog(this, "Please import a Dual-Stream video first.", "Stereo Calibration", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+		Video video = trackerPanel.getVideo();
+		if (!(video instanceof DualXuggleVideo)) {
+			JOptionPane.showMessageDialog(this, "Please import a Dual-Stream video first.", "Stereo Calibration", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+		DualXuggleVideo dualVideo = (DualXuggleVideo) video;
+		BufferedImage leftImage = dualVideo.getCurrentLeftImage();
+		BufferedImage rightImage = dualVideo.getCurrentRightImage();
+		if (leftImage == null || rightImage == null) {
+			JOptionPane.showMessageDialog(this, "Please advance the dual stream to a frame before calibrating.", "Stereo Calibration", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+
+		StereoCalibrationManager manager = new StereoCalibrationManager();
+		Point2D[] leftCorners = new Point2D[54];
+		Point2D[] rightCorners = new Point2D[54];
+		boolean foundLeft = manager.findCalibrationPattern(leftImage, 6, 9, leftCorners);
+		boolean foundRight = manager.findCalibrationPattern(rightImage, 6, 9, rightCorners);
+		if (!foundLeft || !foundRight) {
+			JOptionPane.showMessageDialog(this, "Could not detect chessboard in both camera views.", "Stereo Calibration", JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+
+		List<Point2D[]> leftList = new ArrayList<>();
+		List<Point2D[]> rightList = new ArrayList<>();
+		leftList.add(leftCorners);
+		rightList.add(rightCorners);
+		StereoCalibrationManager.CalibrationData calibrationData = manager.calibrate(leftList, rightList, leftImage.getWidth(), leftImage.getHeight());
+		dualVideo.setCalibrationData(calibrationData);
+		JOptionPane.showMessageDialog(this, "3D Space Calibrated Successfully! Projection matrices generated.", "Stereo Calibration", JOptionPane.INFORMATION_MESSAGE);
 	}
 
 	protected void checkLocale() {
