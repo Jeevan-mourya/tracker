@@ -3719,6 +3719,15 @@ public class TrackerPanel extends VideoPanel implements Scrollable {
 		 * @param e the mouse event
 		 */
 		@Override
+		public void mousePressed(MouseEvent e) {
+			super.mousePressed(e);
+			Video video = getVideo();
+			if (video instanceof DualXuggleVideo) {
+				((DualXuggleVideo) video).handleStereoClick(e.getX(), e.getY());
+			}
+		}
+
+		@Override
 		public void mouseExited(MouseEvent e) {
 			super.mouseExited(e);
 			isShiftKeyDown = false;

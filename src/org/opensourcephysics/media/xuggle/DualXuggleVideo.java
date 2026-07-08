@@ -17,7 +17,10 @@
 package org.opensourcephysics.media.xuggle;
 
 import java.awt.Graphics;
+import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
+
+import javax.swing.JOptionPane;
 
 import org.opensourcephysics.display.DrawingPanel;
 import org.opensourcephysics.media.core.VideoAdapter;
@@ -34,6 +37,8 @@ public class DualXuggleVideo extends VideoAdapter {
     private final int frameCount;
     private int frameNumber;
     private StereoCalibrationManager.CalibrationData calibrationData;
+    private java.awt.geom.Point2D.Double leftClick = null;
+    private java.awt.geom.Point2D.Double rightClick = null;
 
     public DualXuggleVideo(XuggleDualStreamPipeline pipeline) {
         this(pipeline, Integer.MAX_VALUE);
@@ -195,5 +200,34 @@ public class DualXuggleVideo extends VideoAdapter {
             return null;
         }
         return pair.getFrameB().getImage();
+    }
+
+    public void handleStereoClick(int x, int y) {
+        if (calibrationData == null || calibrationData.P1 == null || calibrationData.P2 == null) {
+            JOptionPane.showMessageDialog(null, "Please calibrate first.", "Stereo Tracking", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        BufferedImage imgA = getCurrentLeftImage();
+        BufferedImage imgB = getCurrentRightImage();
+        if (imgA == null || imgB == null) {
+            return;
+        }
+        int imgAWidth = imgA.getWidth();
+        if (x < imgAWidth) {
+            leftClick = new Point2D.Double(x, y);
+        } else {
+            rightClick = new Point2D.Double(x - imgAWidth, y);
+        }
+        if (leftClick != null && rightClick != null) {
+            StereoCalibrationManager manager = new StereoCalibrationManager();
+            double[] point3D = manager.triangulateCoordinate(leftClick, rightClick, calibrationData.P1, calibrationData.P2);
+            if (point3D != null && point3D.length == 3) {
+                JOptionPane.showMessageDialog(null,
+                        "3D Coordinate Found!\nX: " + point3D[0] + "\nY: " + point3D[1] + "\nZ: " + point3D[2],
+                        "Stereo Tracking", JOptionPane.INFORMATION_MESSAGE);
+            }
+            leftClick = null;
+            rightClick = null;
+        }
     }
 }
