@@ -3526,7 +3526,7 @@ public class TFrame extends OSPFrame implements PropertyChangeListener, FileImpo
 		leftList.add(leftCorners);
 		rightList.add(rightCorners);
 		StereoCalibrationManager.CalibrationData calibrationData = manager.calibrate(leftList, rightList, leftImage.getWidth(), leftImage.getHeight());
-		dualVideo.setCalibrationData(calibrationData);
+		trackerPanel.setStereo3DState(new Stereo3DState()); trackerPanel.getStereo3DState().setCalibrationData(calibrationData);
 		JOptionPane.showMessageDialog(this, "3D Space Calibrated Successfully! Projection matrices generated.", "Stereo Calibration", JOptionPane.INFORMATION_MESSAGE);
 	}
 

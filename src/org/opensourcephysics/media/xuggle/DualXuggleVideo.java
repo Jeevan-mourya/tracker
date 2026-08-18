@@ -1,44 +1,29 @@
 /*
  * The org.opensourcephysics.media.xuggle package provides Xuggle
  * services including implementations of the Video and VideoRecorder interfaces.
- *
- * Copyright (c) 2026  Open Source Physics.
- *
- * This is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This software is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 package org.opensourcephysics.media.xuggle;
 
 import java.awt.Graphics;
-import java.awt.geom.Point2D;
 import java.awt.image.BufferedImage;
-
-import javax.swing.JOptionPane;
 
 import org.opensourcephysics.display.DrawingPanel;
 import org.opensourcephysics.media.core.VideoAdapter;
-import org.opensourcephysics.media.xuggle.math.StereoCalibrationManager;
 
 /**
  * A minimal dual-stream video adapter for Tracker that renders synchronized frames
- * from a XuggleDualStreamPipeline.
+ * from a XuggleDualStreamPipeline. 
+ * (Cleaned and Decoupled from 3D Math Engine)
  */
 public class DualXuggleVideo extends VideoAdapter {
+    public void setStartTimes() {}
+    public double getFrameCountDurationMS() { return 0.0; }
+    public String getTypeName() { return "DualXuggleVideo"; }
 
     private final XuggleDualStreamPipeline pipeline;
     private volatile XuggleDualStreamPipeline.FramePair currentPair;
     private final int frameCount;
     private int frameNumber;
-    private StereoCalibrationManager.CalibrationData calibrationData;
-    private java.awt.geom.Point2D.Double leftClick = null;
-    private java.awt.geom.Point2D.Double rightClick = null;
 
     public DualXuggleVideo(XuggleDualStreamPipeline pipeline) {
         this(pipeline, Integer.MAX_VALUE);
@@ -159,14 +144,10 @@ public class DualXuggleVideo extends VideoAdapter {
     }
 
     @Override
-    public void play() {
-        super.play();
-    }
+    public void play() {}
 
     @Override
-    public void stop() {
-        super.stop();
-    }
+    public void stop() {}
 
     @Override
     public void dispose() {
@@ -178,14 +159,7 @@ public class DualXuggleVideo extends VideoAdapter {
         return currentPair;
     }
 
-    public StereoCalibrationManager.CalibrationData getCalibrationData() {
-        return calibrationData;
-    }
-
-    public void setCalibrationData(StereoCalibrationManager.CalibrationData calibrationData) {
-        this.calibrationData = calibrationData;
-    }
-
+    // REQUIRED BY TrackerPanel 
     public BufferedImage getCurrentLeftImage() {
         XuggleDualStreamPipeline.FramePair pair = getCurrentPair();
         if (pair == null || pair.getFrameA() == null) {
@@ -194,40 +168,12 @@ public class DualXuggleVideo extends VideoAdapter {
         return pair.getFrameA().getImage();
     }
 
+    // REQUIRED BY TrackerPanel 
     public BufferedImage getCurrentRightImage() {
         XuggleDualStreamPipeline.FramePair pair = getCurrentPair();
         if (pair == null || pair.getFrameB() == null) {
             return null;
         }
         return pair.getFrameB().getImage();
-    }
-
-    public void handleStereoClick(int x, int y) {
-        if (calibrationData == null || calibrationData.P1 == null || calibrationData.P2 == null) {
-            JOptionPane.showMessageDialog(null, "Please calibrate first.", "Stereo Tracking", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-        BufferedImage imgA = getCurrentLeftImage();
-        BufferedImage imgB = getCurrentRightImage();
-        if (imgA == null || imgB == null) {
-            return;
-        }
-        int imgAWidth = imgA.getWidth();
-        if (x < imgAWidth) {
-            leftClick = new Point2D.Double(x, y);
-        } else {
-            rightClick = new Point2D.Double(x - imgAWidth, y);
-        }
-        if (leftClick != null && rightClick != null) {
-            StereoCalibrationManager manager = new StereoCalibrationManager();
-            double[] point3D = manager.triangulateCoordinate(leftClick, rightClick, calibrationData.P1, calibrationData.P2);
-            if (point3D != null && point3D.length == 3) {
-                JOptionPane.showMessageDialog(null,
-                        "3D Coordinate Found!\nX: " + point3D[0] + "\nY: " + point3D[1] + "\nZ: " + point3D[2],
-                        "Stereo Tracking", JOptionPane.INFORMATION_MESSAGE);
-            }
-            leftClick = null;
-            rightClick = null;
-        }
     }
 }

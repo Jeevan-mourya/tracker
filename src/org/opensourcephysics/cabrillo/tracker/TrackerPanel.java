@@ -23,6 +23,8 @@
  * <http://physlets.org/tracker/>.
  */
 package org.opensourcephysics.cabrillo.tracker;
+import org.opensourcephysics.media.xuggle.DualXuggleVideo;
+import org.opensourcephysics.media.xuggle.math.StereoCalibrationManager;
 
 import java.awt.BorderLayout;
 import java.awt.Container;
@@ -269,6 +271,9 @@ public class TrackerPanel extends VideoPanel implements Scrollable {
 	private ArrayList<TTrack> userTracks, exportableTracks;
 	private Map<String, AbstractAction> actions;
 	protected String title;
+    private Stereo3DState stereo3DState = null;
+    public Stereo3DState getStereo3DState() { return stereo3DState; }
+    public void setStereo3DState(Stereo3DState state) { this.stereo3DState = state; }
 
 	/**
 	 * Constructs a blank TrackerPanel with a player.
@@ -3722,8 +3727,37 @@ public class TrackerPanel extends VideoPanel implements Scrollable {
 		public void mousePressed(MouseEvent e) {
 			super.mousePressed(e);
 			Video video = getVideo();
-			if (video instanceof DualXuggleVideo) {
-				((DualXuggleVideo) video).handleStereoClick(e.getX(), e.getY());
+			if (video instanceof DualXuggleVideo && TrackerPanel.this.getStereo3DState() != null && TrackerPanel.this.getStereo3DState().getCalibrationData() != null) {
+				DualXuggleVideo dualVideo = (DualXuggleVideo) video;
+				BufferedImage imgA = dualVideo.getCurrentLeftImage();
+				BufferedImage imgB = dualVideo.getCurrentRightImage();
+				if (imgA != null && imgB != null) {
+					int imgAWidth = imgA.getWidth();
+					int clickX = e.getX();
+					int clickY = e.getY();
+					
+					if (clickX < imgAWidth) {
+						TrackerPanel.this.getStereo3DState().setLeftClick(new java.awt.geom.Point2D.Double(clickX, clickY));
+					} else {
+						TrackerPanel.this.getStereo3DState().setRightClick(new java.awt.geom.Point2D.Double(clickX - imgAWidth, clickY));
+					}
+					
+					if (TrackerPanel.this.getStereo3DState().getLeftClick() != null && TrackerPanel.this.getStereo3DState().getRightClick() != null) {
+						org.opensourcephysics.media.xuggle.math.StereoCalibrationManager manager = new org.opensourcephysics.media.xuggle.math.StereoCalibrationManager();
+						double[] point3D = manager.triangulateCoordinate(
+							TrackerPanel.this.getStereo3DState().getLeftClick(),
+							TrackerPanel.this.getStereo3DState().getRightClick(),
+							TrackerPanel.this.getStereo3DState().getCalibrationData().P1,
+							TrackerPanel.this.getStereo3DState().getCalibrationData().P2
+						);
+						if (point3D != null && point3D.length == 3) {
+							javax.swing.JOptionPane.showMessageDialog(TrackerPanel.this,
+								"3D Coordinate Found!\nX: " + point3D[0] + "\nY: " + point3D[1] + "\nZ: " + point3D[2],
+								"Stereo Tracking", javax.swing.JOptionPane.INFORMATION_MESSAGE);
+						}
+						TrackerPanel.this.getStereo3DState().clearClicks();
+					}
+				}
 			}
 		}
 
@@ -3851,7 +3885,7 @@ public class TrackerPanel extends VideoPanel implements Scrollable {
 										+ "\n\n" + TrackerRes.getString("TrackerPanel.Dialog.Version.Message4") //$NON-NLS-1$ //$NON-NLS-2$
 										+ " https://" + Tracker.trackerWebsite + ".", //$NON-NLS-1$ //$NON-NLS-2$
 								TrackerRes.getString("TrackerPanel.Dialog.Version.Title"), //$NON-NLS-1$
-								JOptionPane.INFORMATION_MESSAGE);
+								javax.swing.JOptionPane.INFORMATION_MESSAGE);
 					}
 				}
 				trackerPanel.progress = TrackerIO.PROGRESS_PANEL_READY;

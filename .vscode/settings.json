@@ -1,0 +1,6 @@
+{
+    "sonarlint.ls.javaHome": "/usr/lib/jvm/java-21-openjdk-amd64",
+    "snyk.advanced.cliPath": "/home/codespace/nvm/current/bin/snyk",
+    "snyk.advanced.manageBinariesAutomatically": false,
+    "java.compile.nullAnalysis.mode": "disabled"
+}

@@ -1,0 +1,638 @@
+// ====== FILE: src/org/opensourcephysics/media/xuggle/math/StereoMathEngine.java ======
+package org.opensourcephysics.media.xuggle.math;
+
+import java.awt.geom.Point2D;
+
+import org.bytedeco.javacpp.indexer.DoubleIndexer;
+import org.bytedeco.opencv.global.opencv_calib3d;
+import org.bytedeco.opencv.global.opencv_core;
+import org.bytedeco.opencv.opencv_core.Mat;
+
+/**
+ * StereoMathEngine performs 3D triangulation using calibrated stereo cameras.
+ */
+public class StereoMathEngine {
+
+    /** Degenerate-geometry threshold for the homogeneous W term (parallel/near-parallel rays). */
+    private static final double W_EPSILON = 1e-6;
+
+    /** Simple 3D point container. */
+    public static class Point3D {
+        public final double x;
+        public final double y;
+        public final double z;
+
+        public Point3D(double x, double y, double z) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+
+        @Override
+        public String toString() {
+            return "Point3D{" + x + ", " + y + ", " + z + "}";
+        }
+    }
+
+    /**
+     * Triangulate a 3D point from a left/right image correspondence.
+     *
+     * @return Point3D in the rectified/stereo coordinate system, or null if the
+     *         inputs are invalid or the triangulation is numerically degenerate.
+     */
+    public Point3D triangulate(Point2D pointLeft, Point2D pointRight, Mat p1, Mat p2) {
+        if (pointLeft == null || pointRight == null || p1 == null || p2 == null
+                || p1.type() != opencv_core.CV_64F || p2.type() != opencv_core.CV_64F) {
+            System.err.println("StereoMathEngine: pointLeft/pointRight/p1/p2 must be non-null, "
+                    + "and p1/p2 must be CV_64F matrices.");
+            return null;
+        }
+
+        Mat pointsLeft = null;
+        Mat pointsRight = null;
+        Mat points4D = null;
+        DoubleIndexer leftIdx = null;
+        DoubleIndexer rightIdx = null;
+        DoubleIndexer idx4D = null;
+
+        try {
+            pointsLeft = new Mat(2, 1, opencv_core.CV_64F);
+            leftIdx = pointsLeft.createIndexer();
+            leftIdx.put(0, 0, pointLeft.getX());
+            leftIdx.put(1, 0, pointLeft.getY());
+
+            pointsRight = new Mat(2, 1, opencv_core.CV_64F);
+            rightIdx = pointsRight.createIndexer();
+            rightIdx.put(0, 0, pointRight.getX());
+            rightIdx.put(1, 0, pointRight.getY());
+
+            points4D = new Mat();
+            opencv_calib3d.triangulatePoints(p1, p2, pointsLeft, pointsRight, points4D);
+
+            idx4D = points4D.createIndexer();
+            double w = idx4D.get(3, 0);
+            if (Math.abs(w) < W_EPSILON) {
+                System.err.println("StereoMathEngine: degenerate triangulation (W is ~0 - "
+                        + "rays are parallel or the correspondence is invalid).");
+                return null;
+            }
+
+            double x = idx4D.get(0, 0) / w;
+            double y = idx4D.get(1, 0) / w;
+            double z = idx4D.get(2, 0) / w;
+            return new Point3D(x, y, z);
+        } finally {
+            // Runs on EVERY exit path, including an exception from triangulatePoints() itself.
+            if (leftIdx != null) leftIdx.close();
+            if (rightIdx != null) rightIdx.close();
+            if (idx4D != null) idx4D.close();
+            if (pointsLeft != null) pointsLeft.release();
+            if (pointsRight != null) pointsRight.release();
+            if (points4D != null) points4D.release();
+        }
+    }
+
+    private Point3D homoToPoint3D(Mat homo) {
+        throw new UnsupportedOperationException("Not implemented: homoToPoint3D()");
+    }
+}
+
+// package org.opensourcephysics.media.xuggle.math;
+
+// import java.awt.geom.Point2D;
+
+// import org.bytedeco.opencv.opencv_core.Mat;
+
+// /**
+//  * StereoMathEngine performs 3D triangulation using calibrated stereo cameras.
+//  *
+//  * Responsibilities:
+//  * - Triangulate a matching 2D point pair into a 3D point using projection matrices
+//  * - Provide simple utilities for reprojection and validity checks
+//  *
+//  * The implementation will call OpenCV's triangulatePoints (opencv_calib3d.triangulatePoints)
+//  * on the projection matrices (P1, P2) produced by StereoCalibrationManager.
+//  */
+// public class StereoMathEngine {
+
+//     /** Simple 3D point container. */
+//     public static class Point3D {
+//         public final double x;
+//         public final double y;
+//         public final double z;
+
+//         public Point3D(double x, double y, double z) {
+//             this.x = x;
+//             this.y = y;
+//             this.z = z;
+//         }
+
+//         @Override
+//         public String toString() {
+//             return "Point3D{" + x + ", " + y + ", " + z + "}";
+//         }
+//     }
+
+//     /**
+//      * Triangulate a 3D point from a left/right image correspondence.
+//      *
+//      * @param pointLeft  image coordinate in left camera (pixel coords)
+//      * @param pointRight image coordinate in right camera (pixel coords)
+//      * @param calibData  calibration data containing P1 and P2 projection matrices
+//      * @return Point3D in the rectified/stereo coordinate system
+//      *
+//      * Implementation notes:
+//      * - Convert Point2D -> homogeneous 2xN input to opencv_calib3d.triangulatePoints(P1,P2, pts1, pts2, pts4)
+//      * - Convert output homogeneous 4xN points to Euclidean by dividing by w
+//      */
+    
+//     public Point3D triangulate(java.awt.geom.Point2D pointLeft, java.awt.geom.Point2D pointRight, org.bytedeco.opencv.opencv_core.Mat p1, org.bytedeco.opencv.opencv_core.Mat p2) {
+//         // FINDING 5 FIX: Type Enforce P1 and P2
+//         if (p1 == null || p2 == null || p1.type() != org.bytedeco.opencv.global.opencv_core.CV_64F || p2.type() != org.bytedeco.opencv.global.opencv_core.CV_64F) {
+//             System.err.println("StereoMathEngine: P1 and P2 must be CV_64F matrices.");
+//             return null;
+//         }
+
+//         org.bytedeco.opencv.opencv_core.Mat pointsLeft = null;
+//         org.bytedeco.opencv.opencv_core.Mat pointsRight = null;
+//         org.bytedeco.opencv.opencv_core.Mat points4D = null;
+//         org.bytedeco.javacpp.indexer.DoubleIndexer leftIdx = null;
+//         org.bytedeco.javacpp.indexer.DoubleIndexer rightIdx = null;
+//         org.bytedeco.javacpp.indexer.DoubleIndexer idx4D = null;
+
+//         try {
+//             pointsLeft = new org.bytedeco.opencv.opencv_core.Mat(2, 1, org.bytedeco.opencv.global.opencv_core.CV_64F);
+//             leftIdx = pointsLeft.createIndexer();
+//             leftIdx.put(0, 0, pointLeft.getX());
+//             leftIdx.put(1, 0, pointLeft.getY());
+
+//             pointsRight = new org.bytedeco.opencv.opencv_core.Mat(2, 1, org.bytedeco.opencv.global.opencv_core.CV_64F);
+//             rightIdx = pointsRight.createIndexer();
+//             rightIdx.put(0, 0, pointRight.getX());
+//             rightIdx.put(1, 0, pointRight.getY());
+
+//             points4D = new org.bytedeco.opencv.opencv_core.Mat();
+//             org.bytedeco.opencv.global.opencv_calib3d.triangulatePoints(p1, p2, pointsLeft, pointsRight, points4D);
+
+//             idx4D = points4D.createIndexer();
+//             double w = idx4D.get(3, 0);
+
+//             // FINDING 4 FIX: Guard against w ≈ 0 (parallel rays/degenerate math)
+//             if (Math.abs(w) < 1e-6) {
+//                 System.err.println("StereoMathEngine: Degenerate triangulation (W approaches zero).");
+//                 return null;
+//             }
+
+//             double x = idx4D.get(0, 0) / w;
+//             double y = idx4D.get(1, 0) / w;
+//             double z = idx4D.get(2, 0) / w;
+
+//             return new Point3D(x, y, z);
+
+//         } finally {
+//             // FINDING 1 FIX: Absolute guarantee of C++ memory release regardless of exceptions
+//             if (leftIdx != null) leftIdx.close();
+//             if (rightIdx != null) rightIdx.close();
+//             if (idx4D != null) idx4D.close();
+//             if (pointsLeft != null) pointsLeft.release();
+//             if (pointsRight != null) pointsRight.release();
+//             if (points4D != null) points4D.release();
+//         }
+//     }
+//     /**
+//      * Utility: convert OpenCV Mat (4x1 homogeneous) to Point3D.
+//      * Will be used internally after triangulatePoints returns a 4xN matrix.
+//      */
+//     private Point3D homoToPoint3D(Mat homo) {
+//         throw new UnsupportedOperationException("Not implemented: homoToPoint3D()");
+//     }
+// }
+
+// ====== FILE: src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java ======
+package org.opensourcephysics.media.xuggle.math;
+
+import java.awt.image.BufferedImage;
+import java.awt.geom.Point2D;
+import java.util.List;
+
+import org.bytedeco.javacpp.indexer.DoubleIndexer;
+import org.bytedeco.javacpp.indexer.FloatIndexer;
+import org.bytedeco.javacv.Frame;
+import org.bytedeco.javacv.Java2DFrameConverter;
+import org.bytedeco.javacv.OpenCVFrameConverter;
+import org.bytedeco.opencv.global.opencv_calib3d;
+import org.bytedeco.opencv.global.opencv_core;
+import org.bytedeco.opencv.global.opencv_imgproc;
+import org.bytedeco.opencv.opencv_core.Mat;
+import org.bytedeco.opencv.opencv_core.MatVector;
+import org.bytedeco.opencv.opencv_core.Point2f;
+import org.bytedeco.opencv.opencv_core.Point2fVector;
+import org.bytedeco.opencv.opencv_core.Point2fVectorVector;
+import org.bytedeco.opencv.opencv_core.Point3f;
+import org.bytedeco.opencv.opencv_core.Point3fVector;
+import org.bytedeco.opencv.opencv_core.Point3fVectorVector;
+import org.bytedeco.opencv.opencv_core.Size;
+import org.bytedeco.opencv.opencv_core.TermCriteria;
+
+/**
+ * Manages stereo camera calibration tasks.
+ *
+ * Responsibilities:
+ * - Find chessboard/circles grid corners in calibration images (OpenCV: findChessboardCorners)
+ * - Refine corners (cornerSubPix)
+ * - Run single-camera calibration (calibrateCamera)
+ * - Run stereo calibration (stereoCalibrate) to compute extrinsics and rectification
+ *
+ * Note: This class is a scaffolding. Implementations will use the JavaCV APIs
+ * (org.bytedeco.opencv.global.opencv_calib3d, opencv_core, etc.) to perform
+ * the matrix math and conversions between Java BufferedImage and OpenCV Mat.
+ */
+public class StereoCalibrationManager {
+
+    /**
+     * Find calibration pattern corners in the given image.
+     *
+     * @param img the input image (BufferedImage)
+     * @param rows number of inner pattern rows
+     * @param cols number of inner pattern cols
+     * @param corners output array to be filled with detected corner points (row-major order)
+     * @return true if pattern was found and corners were written to the array
+     *
+     * Will use OpenCV's findChessboardCorners under the hood. Implementations
+     * will convert BufferedImage -> Mat, run findChessboardCorners, optionally
+     * run cornerSubPix to refine, then fill the provided corners array.
+     */
+    public boolean findCalibrationPattern(BufferedImage img, int rows, int cols, Point2D[] corners) {
+        Java2DFrameConverter java2dConverter = null;
+        OpenCVFrameConverter.ToMat toMat = null;
+        Mat mat = null;
+        Mat gray = null;
+        Mat cornersMat = null;
+        try {
+            java2dConverter = new Java2DFrameConverter();
+            toMat = new OpenCVFrameConverter.ToMat();
+            Frame frame = java2dConverter.convert(img);
+            mat = toMat.convert(frame);
+
+            // Convert to grayscale
+            gray = new Mat();
+            opencv_imgproc.cvtColor(mat, gray, opencv_imgproc.COLOR_BGR2GRAY);
+
+            // Prepare size (cols, rows) per instructions
+            Size patternSize = new Size(cols, rows);
+            cornersMat = new Mat();
+            int flags = opencv_calib3d.CALIB_CB_ADAPTIVE_THRESH | opencv_calib3d.CALIB_CB_NORMALIZE_IMAGE;
+            boolean found = opencv_calib3d.findChessboardCorners(gray, patternSize, cornersMat, flags);
+            if (!found) {
+                return false;
+            }
+
+            // Map Mat of 2D points to Java Point2D[]
+            // cornersMat is returned as CV_32FC2, where each point is stored as (x, y)
+            int expectedCorners = rows * cols;
+            if (expectedCorners <= 0 || corners.length < expectedCorners) {
+                return false;
+            }
+            FloatIndexer indexer = cornersMat.createIndexer();
+            for (int i = 0; i < expectedCorners; i++) {
+                float x = indexer.get(i, 0, 0);
+                float y = indexer.get(i, 0, 1);
+                corners[i] = new java.awt.geom.Point2D.Double(x, y);
+            }
+            indexer.close();
+            return true;
+        } finally {
+            if (cornersMat != null) {
+                cornersMat.release();
+            }
+            if (gray != null) {
+                gray.release();
+            }
+            if (mat != null) {
+                mat.release();
+            }
+            if (toMat != null) {
+                try { toMat.close(); } catch (Exception ignored) {}
+            }
+            if (java2dConverter != null) {
+                try { java2dConverter.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Runs stereo calibration given lists of matching corner sets from left/right cameras.
+     *
+     * @param leftCorners  list of Point2D arrays for left camera (per frame)
+     * @param rightCorners list of Point2D arrays for right camera (per frame)
+     * @return CalibrationData containing intrinsic and extrinsic parameters
+     *
+     * This method will call OpenCV's calibrateCamera for each camera to
+     * compute cameraMatrix/distCoeffs, then stereoCalibrate to compute R, T,
+     * essential/fundamental matrices and projection matrices P1/P2.
+     */
+    
+    public double[] triangulateCoordinate(Point2D leftPoint, Point2D rightPoint, Mat P1, Mat P2) {
+        if (leftPoint == null || rightPoint == null || P1 == null || P2 == null
+                || P1.type() != opencv_core.CV_64F || P2.type() != opencv_core.CV_64F) {
+            return null;
+        }
+
+        Mat leftMat = null;
+        Mat rightMat = null;
+        Mat points4D = null;
+        DoubleIndexer indexer = null;
+        try {
+            leftMat = new Mat(2, 1, opencv_core.CV_64F);
+            rightMat = new Mat(2, 1, opencv_core.CV_64F);
+            points4D = new Mat(4, 1, opencv_core.CV_64F);
+
+            DoubleIndexer leftIndexer = leftMat.createIndexer();
+            try {
+                leftIndexer.put(0, 0, leftPoint.getX());
+                leftIndexer.put(1, 0, leftPoint.getY());
+            } finally {
+                leftIndexer.close();
+            }
+
+            DoubleIndexer rightIndexer = rightMat.createIndexer();
+            try {
+                rightIndexer.put(0, 0, rightPoint.getX());
+                rightIndexer.put(1, 0, rightPoint.getY());
+            } finally {
+                rightIndexer.close();
+            }
+
+            opencv_calib3d.triangulatePoints(P1, P2, leftMat, rightMat, points4D);
+
+            indexer = points4D.createIndexer();
+            double W = indexer.get(3, 0);
+
+            if (Math.abs(W) < 1e-6) {
+                System.err.println("StereoCalibrationManager: degenerate triangulation (W is ~0).");
+                return null;
+            }
+
+            double X = indexer.get(0, 0);
+            double Y = indexer.get(1, 0);
+            double Z = indexer.get(2, 0);
+            return new double[] { X / W, Y / W, Z / W };
+        } finally {
+            if (indexer != null) indexer.close();
+            if (points4D != null) points4D.release();
+            if (leftMat != null) leftMat.release();
+            if (rightMat != null) rightMat.release();
+        }
+    }
+
+    public CalibrationData calibrate(List<Point2D[]> leftCorners, List<Point2D[]> rightCorners, int imgWidth, int imgHeight) {
+        if (leftCorners == null || rightCorners == null || leftCorners.size() != rightCorners.size() || leftCorners.isEmpty()) {
+            return null;
+        }
+        if (imgWidth <= 0 || imgHeight <= 0) {
+            return null;
+        }
+
+        int pointCount = leftCorners.get(0).length;
+        if (pointCount <= 0) {
+            return null;
+        }
+
+        MatVector objectPoints = new MatVector(leftCorners.size());
+        MatVector imagePoints1 = new MatVector(leftCorners.size());
+        MatVector imagePoints2 = new MatVector(leftCorners.size());
+        int framesAllocated = 0; // how many entries [0,framesAllocated) actually hold a Mat right now
+
+        // Outputs transferred to the caller via CalibrationData on success only.
+        Mat cameraMatrix1 = null;
+        Mat distCoeffs1 = null;
+        Mat cameraMatrix2 = null;
+        Mat distCoeffs2 = null;
+        Mat R = null;
+        Mat T = null;
+        Mat P1 = null;
+        Mat P2 = null;
+        // Always-intermediate outputs - never returned, always released.
+        MatVector rvecs = null;
+        MatVector tvecs = null;
+        Mat E = null;
+        Mat F = null;
+        Mat R1 = null;
+        Mat R2 = null;
+        Mat Q = null;
+
+        boolean success = false;
+        try {
+            for (int i = 0; i < leftCorners.size(); i++) {
+                Point2D[] left = leftCorners.get(i);
+                Point2D[] right = rightCorners.get(i);
+                if (left == null || right == null || left.length != right.length || left.length != pointCount) {
+                    // FIX: previously leaked every Mat accumulated in prior iterations.
+                    // The finally block below releases indices [0, framesAllocated).
+                    return null;
+                }
+
+                Mat objectMat = new Mat(pointCount, 1, opencv_core.CV_32FC3);
+                FloatIndexer objectIndexer = objectMat.createIndexer();
+                try {
+                    for (int j = 0; j < pointCount; j++) {
+                        float x = (float) (j % 9);
+                        float y = (float) (j / 9);
+                        objectIndexer.put(j, 0, 0, x);
+                        objectIndexer.put(j, 0, 1, y);
+                        objectIndexer.put(j, 0, 2, 0.0f);
+                    }
+                } finally {
+                    objectIndexer.close();
+                }
+                objectPoints.put(i, objectMat);
+
+                Mat leftMat = new Mat(pointCount, 1, opencv_core.CV_32FC2);
+                FloatIndexer leftIndexer = leftMat.createIndexer();
+                try {
+                    for (int j = 0; j < pointCount; j++) {
+                        Point2D corner = left[j];
+                        leftIndexer.put(j, 0, 0, (float) corner.getX());
+                        leftIndexer.put(j, 0, 1, (float) corner.getY());
+                    }
+                } finally {
+                    leftIndexer.close();
+                }
+                imagePoints1.put(i, leftMat);
+
+                Mat rightMat = new Mat(pointCount, 1, opencv_core.CV_32FC2);
+                FloatIndexer rightIndexer = rightMat.createIndexer();
+                try {
+                    for (int j = 0; j < pointCount; j++) {
+                        Point2D corner = right[j];
+                        rightIndexer.put(j, 0, 0, (float) corner.getX());
+                        rightIndexer.put(j, 0, 1, (float) corner.getY());
+                    }
+                } finally {
+                    rightIndexer.close();
+                }
+                imagePoints2.put(i, rightMat);
+
+                framesAllocated++;
+            }
+
+            Point3fVectorVector objectPointsVec = toPoint3fVectorVector(objectPoints);
+            Point2fVectorVector imagePoints1Vec = toPoint2fVectorVector(imagePoints1);
+            Point2fVectorVector imagePoints2Vec = toPoint2fVectorVector(imagePoints2);
+
+            // OPTIMIZATION: objectPointsVec/imagePoints1Vec/imagePoints2Vec above are
+            // full value-type copies, not views - the per-frame Mats can be freed now,
+            // before the expensive native calls below, instead of held to the end.
+            releaseMatVector(objectPoints, framesAllocated);
+            releaseMatVector(imagePoints1, framesAllocated);
+            releaseMatVector(imagePoints2, framesAllocated);
+            framesAllocated = 0; // already released - don't let the finally block do it again
+
+            cameraMatrix1 = new Mat();
+            distCoeffs1 = new Mat();
+            cameraMatrix2 = new Mat();
+            distCoeffs2 = new Mat();
+            rvecs = new MatVector();
+            tvecs = new MatVector();
+            TermCriteria criteria = new TermCriteria(TermCriteria.EPS + TermCriteria.COUNT, 30, 1e-6);
+
+            opencv_calib3d.calibrateCamera(objectPointsVec, imagePoints1Vec, new Size(imgWidth, imgHeight), cameraMatrix1, distCoeffs1, rvecs, tvecs, opencv_calib3d.CALIB_FIX_INTRINSIC, criteria);
+            opencv_calib3d.calibrateCamera(objectPointsVec, imagePoints2Vec, new Size(imgWidth, imgHeight), cameraMatrix2, distCoeffs2, rvecs, tvecs, opencv_calib3d.CALIB_FIX_INTRINSIC, criteria);
+
+            R = new Mat();
+            T = new Mat();
+            E = new Mat();
+            F = new Mat();
+            opencv_calib3d.stereoCalibrate(objectPointsVec, imagePoints1Vec, imagePoints2Vec, cameraMatrix1, cameraMatrix2, distCoeffs1, distCoeffs2, new Size(imgWidth, imgHeight), R, T, E, F, opencv_calib3d.CALIB_FIX_INTRINSIC, criteria);
+
+            R1 = new Mat();
+            R2 = new Mat();
+            P1 = new Mat();
+            P2 = new Mat();
+            Q = new Mat();
+            opencv_calib3d.stereoRectify(cameraMatrix1, cameraMatrix2, distCoeffs1, distCoeffs2, new Size(imgWidth, imgHeight), R, T, R1, R2, P1, P2, Q);
+
+            CalibrationData data = new CalibrationData();
+            data.cameraMatrix1 = cameraMatrix1;
+            data.cameraMatrix2 = cameraMatrix2;
+            data.distCoeffs1 = distCoeffs1;
+            data.distCoeffs2 = distCoeffs2;
+            data.R = R;
+            data.T = T;
+            data.P1 = P1;
+            data.P2 = P2;
+            success = true;
+            return data;
+        } finally {
+            // Covers the early-abort case above; a no-op (loop bound 0) on the normal
+            // path, since framesAllocated was already zeroed after the early release.
+            releaseMatVector(objectPoints, framesAllocated);
+            releaseMatVector(imagePoints1, framesAllocated);
+            releaseMatVector(imagePoints2, framesAllocated);
+
+            // Always-intermediate outputs: release regardless of success or failure.
+            if (E != null) E.release();
+            if (F != null) F.release();
+            if (R1 != null) R1.release();
+            if (R2 != null) R2.release();
+            if (Q != null) Q.release();
+            releaseMatVectorContents(rvecs);
+            releaseMatVectorContents(tvecs);
+
+            // Outputs bound for CalibrationData: only release if we did NOT reach the
+            // success path (e.g. stereoRectify threw after calibrateCamera succeeded).
+            if (!success) {
+                if (cameraMatrix1 != null) cameraMatrix1.release();
+                if (distCoeffs1 != null) distCoeffs1.release();
+                if (cameraMatrix2 != null) cameraMatrix2.release();
+                if (distCoeffs2 != null) distCoeffs2.release();
+                if (R != null) R.release();
+                if (T != null) T.release();
+                if (P1 != null) P1.release();
+                if (P2 != null) P2.release();
+            }
+        }
+    }
+
+    private void releaseMatVector(MatVector mats, int count) {
+        for (int i = 0; i < count; i++) {
+            Mat m = mats.get(i);
+            if (m != null) {
+                m.release();
+            }
+        }
+    }
+
+    private void releaseMatVectorContents(MatVector mats) {
+        if (mats == null) {
+            return;
+        }
+        for (int i = 0; i < mats.size(); i++) {
+            Mat m = mats.get(i);
+            if (m != null) {
+                m.release();
+            }
+        }
+    }
+
+    private Point3fVectorVector toPoint3fVectorVector(MatVector mats) {
+        Point3fVectorVector vectorVector = new Point3fVectorVector(mats.size());
+        for (int i = 0; i < mats.size(); i++) {
+            Mat mat = mats.get(i);
+            Point3fVector vector = new Point3fVector(mat.rows());
+            FloatIndexer indexer = mat.createIndexer();
+            try {
+                for (int j = 0; j < mat.rows(); j++) {
+                    Point3f point = new Point3f(indexer.get(j, 0, 0), indexer.get(j, 0, 1), indexer.get(j, 0, 2));
+                    vector.put(j, point);
+                }
+            } finally {
+                indexer.close();
+            }
+            vectorVector.put(i, vector);
+        }
+        return vectorVector;
+    }
+
+    private Point2fVectorVector toPoint2fVectorVector(MatVector mats) {
+        Point2fVectorVector vectorVector = new Point2fVectorVector(mats.size());
+        for (int i = 0; i < mats.size(); i++) {
+            Mat mat = mats.get(i);
+            Point2fVector vector = new Point2fVector(mat.rows());
+            FloatIndexer indexer = mat.createIndexer();
+            try {
+                for (int j = 0; j < mat.rows(); j++) {
+                    Point2f point = new Point2f(indexer.get(j, 0, 0), indexer.get(j, 0, 1));
+                    vector.put(j, point);
+                }
+            } finally {
+                indexer.close();
+            }
+            vectorVector.put(i, vector);
+        }
+        return vectorVector;
+    }
+
+    /**
+     * Container for calibration outputs: intrinsic/extrinsic and projection matrices.
+     */
+    public static class CalibrationData {
+        /** Camera 1 intrinsic matrix (OpenCV Mat) */
+        public Mat cameraMatrix1;
+        /** Camera 2 intrinsic matrix (OpenCV Mat) */
+        public Mat cameraMatrix2;
+        /** Distortion coefficients for camera 1 */
+        public Mat distCoeffs1;
+        /** Distortion coefficients for camera 2 */
+        public Mat distCoeffs2;
+        /** Rotation between cameras */
+        public Mat R;
+        /** Translation between cameras */
+        public Mat T;
+        /** Projection matrix for camera 1 (3x4) */
+        public Mat P1;
+        /** Projection matrix for camera 2 (3x4) */
+        public Mat P2;
+    }
+}
+

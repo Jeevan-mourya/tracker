@@ -1,9 +1,39 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<classpath> 
+<classpath>
 	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
 	<classpathentry kind="src" path="src"/>
-	<classpathentry kind="lib" path="libraries/xuggle-xuggler-server-all-5.7.0-20210422.000415-2.jar"/>
-	<classpathentry combineaccessrules="false" kind="src" path="/osp"/>
 	<classpathentry kind="src" path="resources"/>
+	<classpathentry kind="lib" path="jars/closure_compiler.jar"/>
+	<classpathentry kind="lib" path="libraries/commons-cli-1.1.jar"/>
+	<classpathentry kind="lib" path="libraries/javacpp-1.5.8.jar"/>
+	<classpathentry kind="lib" path="libraries/javacv-1.5.8.jar"/>
+	<classpathentry kind="lib" path="libraries/logback-classic-1.0.0.jar"/>
+	<classpathentry kind="lib" path="libraries/logback-classic.jar"/>
+	<classpathentry kind="lib" path="libraries/logback-core-1.0.0.jar"/>
+	<classpathentry kind="lib" path="libraries/logback-core.jar"/>
+	<classpathentry kind="lib" path="libraries/openblas-0.3.21-1.5.8-linux-x86_64.jar"/>
+	<classpathentry kind="lib" path="libraries/openblas-0.3.21-1.5.8-windows-x86_64.jar"/>
+	<classpathentry kind="lib" path="libraries/openblas-0.3.21-1.5.8.jar"/>
+	<classpathentry kind="lib" path="libraries/opencv-4.6.0-1.5.8-linux-x86_64.jar"/>
+	<classpathentry kind="lib" path="libraries/opencv-4.6.0-1.5.8-windows-x86_64.jar"/>
+	<classpathentry kind="lib" path="libraries/opencv-4.6.0-1.5.8.jar"/>
+	<classpathentry kind="lib" path="libraries/slf4j-api-1.7.30.jar"/>
+	<classpathentry kind="lib" path="libraries/slf4j-api.jar"/>
+	<classpathentry kind="lib" path="libraries/xuggle-xuggler-server-all-5.7.0-20210422.000415-2.jar"/>
+	<classpathentry kind="lib" path="libraries/xuggle-xuggler-server-all.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/commons-cli.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/logback-classic.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/logback-core.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/slf4j-api.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/xuggle-xuggler-test.jar"/>
+	<classpathentry kind="lib" path="unused/Xuggle/share/java/jars/xuggle-xuggler.jar"/>
+	<classpathentry kind="lib" path="unused/logback-classic.jar"/>
+	<classpathentry kind="lib" path="unused/logback-core.jar"/>
+	<classpathentry kind="lib" path="unused/osp.jar"/>
+	<classpathentry kind="lib" path="unused/xuggle-xuggler-server-all-5.7.0-20210205.154804-12.jar"/>
+	<classpathentry kind="lib" path="unused/xuggle-xuggler-server-all-5.7.0-20210422.000415-2-sources.jar"/>
+	<classpathentry kind="lib" path="unused/xuggle-xuggler-server-all.jar"/>
+	<classpathentry kind="lib" path="unused/xuggle-xuggler-w64.jar"/>
+	<classpathentry kind="lib" path="unused/xuggle-xuggler.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>
