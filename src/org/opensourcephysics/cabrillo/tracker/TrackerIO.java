@@ -1027,6 +1027,11 @@ public class TrackerIO extends VideoIO {
 				if (coords != null)
 					trackerPanel.setCoords(coords);
 				
+                // NEW 3D METADATA LOADER
+                Stereo3DState stereoState = (Stereo3DState)control.getObject("stereo3d");
+                if (stereoState != null)
+                    trackerPanel.setStereo3DState(stereoState);
+                
 				ArrayList<?> tracks = ArrayList.class.cast(control.getObject("tracks")); //$NON-NLS-1$
 				if (tracks != null) {
 					for (int i = 0, n = tracks.size(); i < n; i++) {
@@ -1487,6 +1492,9 @@ public class TrackerIO extends VideoIO {
 			String name = children[i].getPropertyName();
 			if (name.equals("coords")) { //$NON-NLS-1$
 				name = TrackerRes.getString("TMenuBar.MenuItem.Coords"); //$NON-NLS-1$
+            // NEW: Add the Stereo 3D component to the XML builder
+            } else if (name.equals("stereo3d")) {
+                name = "Stereo 3D Calibration";
 			} else if (name.equals("videoclip")) { //$NON-NLS-1$
 				if (children[i].getChildControl("video") == null
 						|| OSPRuntime.isJS) { //$NON-NLS-1$

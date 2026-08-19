@@ -572,8 +572,25 @@ public class ExportDataDialog extends JDialog {
 			Dataset dataset = datasets.get(frameIndex);
 			frameNumbers[i] = getPoints(dataset, isFrames);
 			// for each selected column name look for dataset with same name
+			// for each selected column name look for dataset with same name
 			outer: for (int k = 0; k < selectedColumnNames.length; k++) {
 				String colName = selectedColumnNames[k];
+                
+                // Intercept the "z" column request and pull directly from PositionStep
+                if (colName.equals("z")) {
+                    dataValues[i][k] = new double[frameNumbers[i].length];
+                    for (int f = 0; f < frameNumbers[i].length; f++) {
+                        Step step = track.getStep((int)frameNumbers[i][f]);
+                        if (step instanceof PositionStep) {
+                            // Extract our new 3D depth coordinate
+                            dataValues[i][k][f] = ((PositionStep.Position)((PositionStep)step).getPosition()).getZ();
+                        } else {
+                            dataValues[i][k][f] = Double.NaN;
+                        }
+                    }
+                    continue outer;
+                }
+
 				for (int j = 0; j < datasetCount; j++) {
 					// look thru all datasets to find column with colName
 					if (datasets.size() <= j)
