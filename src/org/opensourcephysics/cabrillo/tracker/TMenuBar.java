@@ -252,6 +252,9 @@ public class TMenuBar extends TFrame.DeactivatingMenuBar implements Disposable, 
 	// video menu
 	private JMenu videoMenu;
 	private JCheckBoxMenuItem video_videoVisibleItem;
+	// stereo 3D menu
+	private JMenu stereoMenu;
+	private JMenuItem stereo_calibrateItem;
 	private JMenuItem video_goToItem;
 	private JMenu video_filtersMenu;
 	private JMenu video_filter_newFilterMenu;
@@ -518,6 +521,7 @@ public class TMenuBar extends TFrame.DeactivatingMenuBar implements Disposable, 
 		createFileMenu(keyMask);
 		createEditMenu(keyMask);
 		createVideoMenu(keyMask);
+		createStereoMenu(keyMask);
 		createTracksMenu(keyMask);
 		createCoordsMenu(keyMask);
 		createViewMenu(keyMask);
@@ -1091,6 +1095,21 @@ public class TMenuBar extends TFrame.DeactivatingMenuBar implements Disposable, 
 		video_emptyVideoItem.setEnabled(false);
 		add(videoMenu);
 	}
+
+	private void createStereoMenu(int keyMask) {
+        stereoMenu = new JMenu("Stereo 3D");
+        stereoMenu.setName("stereo3d");
+
+        stereo_calibrateItem = new JMenuItem("Calibrate Cameras...");
+        stereo_calibrateItem.addActionListener((e) -> {
+            if (frame != null) {
+                frame.openStereoCalibrationDialog(panel());
+            }
+        });
+
+        stereoMenu.add(stereo_calibrateItem);
+        add(stereoMenu);
+    }
 
 	private void createTracksMenu(int keyMask) {
 		trackMenu = new JMenu(TrackerRes.getString("TMenuBar.Menu.Tracks")); //$NON-NLS-1$

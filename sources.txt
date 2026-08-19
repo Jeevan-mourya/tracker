@@ -888,3 +888,4 @@ osp/src/demo/HelloWorldApp.java
 src/test/StereoMathValidationTest.java
 src/test/StereoVideoTerminalTest.java
 src/test/StereoMathTerminalTest.java
+src/org/opensourcephysics/cabrillo/tracker/StereoCalibrationDialog.java

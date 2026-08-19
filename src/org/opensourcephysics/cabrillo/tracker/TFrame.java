@@ -3345,6 +3345,22 @@ public class TFrame extends OSPFrame implements PropertyChangeListener, FileImpo
 		notes.setVisible(b);
 	}
 
+	/**
+	 * Opens the Stereo 3D Calibration Dialog
+	 */
+	public void openStereoCalibrationDialog(TrackerPanel trackerPanel) {
+		if (trackerPanel == null || trackerPanel.getVideo() == null) {
+			JOptionPane.showMessageDialog(this, 
+				"Please open a video before calibrating Stereo 3D cameras.", 
+				"Stereo 3D Error", 
+				JOptionPane.WARNING_MESSAGE);
+			return;
+		}
+		
+		StereoCalibrationDialog dialog = new StereoCalibrationDialog(this, trackerPanel);
+		dialog.setVisible(true);
+	}
+
 	@Override
 	public void setJMenuBar(JMenuBar bar) {
 		super.setJMenuBar(bar);
@@ -3360,7 +3376,7 @@ public class TFrame extends OSPFrame implements PropertyChangeListener, FileImpo
 				c[i].setEnabled(b);
 		}
 	}
-
+	
 	public class DefaultMenuBar extends DeactivatingMenuBar {
 		DefaultMenuBar() {
 			int keyMask = Toolkit.getDefaultToolkit().getMenuShortcutKeyMask();
