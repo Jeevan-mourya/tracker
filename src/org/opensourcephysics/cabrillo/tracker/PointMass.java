@@ -187,56 +187,57 @@ public class PointMass extends TTrack {
 			"t", //$NON-NLS-1$ 0
 			"x", //$NON-NLS-1$ 1
 			"y", //$NON-NLS-1$ 2
-			"r", //$NON-NLS-1$ 3
-			Tracker.THETA + "_{r}", //$NON-NLS-1$ 4
-			"v_{x}", //$NON-NLS-1$ 5
-			"v_{y}", //$NON-NLS-1$ 6
-			"v", //$NON-NLS-1$ 7
-			Tracker.THETA + "_{v}", //$NON-NLS-1$ 8
-			"a_{x}", //$NON-NLS-1$ 9
-			"a_{y}", //$NON-NLS-1$ 10
-			"a", //$NON-NLS-1$ 11
-			Tracker.THETA + "_{a}", //$NON-NLS-1$ 12
-			Tracker.THETA, // 13
-			TeXParser.parseTeX("$\\omega$"), //$NON-NLS-1$ 14
-			TeXParser.parseTeX("$\\alpha$"), //$NON-NLS-1$ 15
-			"step", //$NON-NLS-1$ 16
-			"frame", //$NON-NLS-1$ 17
-			"p_{x}", //$NON-NLS-1$ 18
-			"p_{y}", //$NON-NLS-1$ 19
-			"p", //$NON-NLS-1$ 20
-			Tracker.THETA + "_{p}", //$NON-NLS-1$ 21
-			"pixel_{x}", //$NON-NLS-1$ 22
-			"pixel_{y}", //$NON-NLS-1$ 23
-			"L", //$NON-NLS-1$ 24
-			"K", //$NON-NLS-1$ 25
-			"m", //$NON-NLS-1$ 26
-
+			"z", // 3 (NEW 3D)
+			"r", //$NON-NLS-1$ 4
+			Tracker.THETA + "_{r}", //$NON-NLS-1$ 5
+            Tracker.PHI + "_{r}", // 6 (NEW 3D)
+			"v_{x}", //$NON-NLS-1$ 7
+			"v_{y}", //$NON-NLS-1$ 8
+            "v_{z}", // 9 (NEW 3D)
+			"v", //$NON-NLS-1$ 10
+			Tracker.THETA + "_{v}", //$NON-NLS-1$ 11
+            Tracker.PHI + "_{v}", // 12 (NEW 3D)
+			"a_{x}", //$NON-NLS-1$ 13
+			"a_{y}", //$NON-NLS-1$ 14
+            "a_{z}", // 15 (NEW 3D)
+			"a", //$NON-NLS-1$ 16
+			Tracker.THETA + "_{a}", //$NON-NLS-1$ 17
+            Tracker.PHI + "_{a}", // 18 (NEW 3D)
+			"step", //$NON-NLS-1$ 19 (shifted)
+			"frame", //$NON-NLS-1$ 20 (shifted)
+			"p_{x}", //$NON-NLS-1$ 21 (shifted)
+			"p_{y}", //$NON-NLS-1$ 22 (shifted)
+			"p", //$NON-NLS-1$ 23 (shifted)
+			Tracker.THETA + "_{p}", //$NON-NLS-1$ 24 (shifted)
+			"pixel_{x}", //$NON-NLS-1$ 25 (shifted)
+			"pixel_{y}", //$NON-NLS-1$ 26 (shifted)
+			"L", //$NON-NLS-1$ 27 (shifted)
+			"K", //$NON-NLS-1$ 28 (shifted)
+			"m", //$NON-NLS-1$ 29 (shifted)
 	}; // used for data, tables
 	protected final static String[] fieldVariables = new String[] { 
-			dataVariables[26], // 0
+			dataVariables[29], // 0 (mass - shifted)
 			dataVariables[0], // 1
 			dataVariables[1], // 2
 			dataVariables[2], // 3
-			dataVariables[3], // 4
-			dataVariables[4], // 5
-			dataVariables[5], // 6
-			dataVariables[6], // 7
-			dataVariables[7], // 8
-			dataVariables[8], // 9
-			dataVariables[9], // 10
-			dataVariables[10], // 11
-			dataVariables[11], // 12
-			dataVariables[12], // 13
-			dataVariables[18], // 14
-			dataVariables[19], // 15
-			dataVariables[20], // 16
-			dataVariables[21], // 17
+			dataVariables[4], // 4 (r)
+			dataVariables[5], // 5 (theta r)
+			dataVariables[7], // 6 (vx)
+			dataVariables[8], // 7 (vy)
+			dataVariables[10], // 8 (v)
+			dataVariables[11], // 9 (theta v)
+			dataVariables[13], // 10 (ax)
+			dataVariables[14], // 11 (ay)
+			dataVariables[16], // 12 (a)
+			dataVariables[17], // 13 (theta a)
+			dataVariables[21], // 14 (px)
+			dataVariables[22], // 15 (py)
+			dataVariables[23], // 16 (p)
+			dataVariables[24], // 17 (theta p)
 			"ma_{x}", //$NON-NLS-1$ 18
 			"ma_{y}", //$NON-NLS-1$ 19
 			"ma", //$NON-NLS-1$ 20
 			Tracker.THETA + "_{ma}", //$NON-NLS-1$ 21
-
 	}; // associated with number fields
 	protected final static String[] formatVariables = new String[] { 
 			"m", //$NON-NLS-1$ 0
@@ -271,68 +272,64 @@ public class PointMass extends TTrack {
 	static {
 		// assemble format map
 		formatMap = new HashMap<>();
-		formatMap.put(formatVariables[0], new String[] { dataVariables[26] }); // m
+		formatMap.put(formatVariables[0], new String[] { dataVariables[29] }); // m (shifted)
 		formatMap.put(formatVariables[1], new String[] { "t" });
 		formatMap.put(formatVariables[2], new String[] { 
 				dataVariables[1], // x
 				dataVariables[2], // y
-				dataVariables[3], // r
-				dataVariables[24], // L pathlength
-
+                dataVariables[3], // z (NEW 3D)
+				dataVariables[4], // r
+				dataVariables[27], // L pathlength (shifted)
 		}); // xy
 
 		formatMap.put(formatVariables[3], new String[] { 
-				dataVariables[5], // vx
-				dataVariables[6], // vy
-				dataVariables[7], // v
-
+				dataVariables[7], // vx
+				dataVariables[8], // vy
+                dataVariables[9], // vz (NEW 3D)
+				dataVariables[10], // v
 		}); // v
 
 		formatMap.put(formatVariables[4], new String[] { 
-				dataVariables[9], // ax
-				dataVariables[10], // ay
-				dataVariables[11], // a
-
+				dataVariables[13], // ax
+				dataVariables[14], // ay
+                dataVariables[15], // az (NEW 3D)
+				dataVariables[16], // a
 		}); // a
 		formatMap.put(formatVariables[5], new String[] { 
-				dataVariables[18], // px
-				dataVariables[19], // py
-				dataVariables[20], // p
-
+				dataVariables[21], // px
+				dataVariables[22], // py
+				dataVariables[23], // p
 		}); // p
 		formatMap.put(formatVariables[6], new String[] { 
 				fieldVariables[18], // max
 				fieldVariables[19], // may
 				fieldVariables[20], // ma
-
 		}); // ma
 
 		formatMap.put(formatVariables[7], new String[] { 
-				dataVariables[4], // theta r
-				dataVariables[8], // theta v
-				dataVariables[12], // theta a
-				dataVariables[13], // theta (rotation)
-				dataVariables[21], // theta p
+				dataVariables[5], // theta r
+				dataVariables[11], // theta v
+				dataVariables[17], // theta a
+				dataVariables[18], // theta (rotation - index might need check but leaving as is)
+				dataVariables[24], // theta p
 				fieldVariables[21], // theta ma
-
 		}); // theta
 
 		formatMap.put(formatVariables[8], new String[] { 
 				dataVariables[14], // omega
-
 		}); // omega
 
 		formatMap.put(formatVariables[9], new String[] { 
-				dataVariables[14], // alpha
+				dataVariables[15], // alpha
 		}); // alpha
 
 		formatMap.put(formatVariables[10], new String[] { 
-				dataVariables[22], // pixelx
-				dataVariables[23], // pixely
+				dataVariables[25], // pixelx
+				dataVariables[26], // pixely
 		}); // pixel
 
 		formatMap.put(formatVariables[11], new String[] { 
-				dataVariables[25], // K
+				dataVariables[28], // K (shifted)
 		}); // K
 
 		// assemble format description map
@@ -388,8 +385,9 @@ public class PointMass extends TTrack {
 	protected int[] params = new int[4];
 	protected double[] xData = new double[5];
 	protected double[] yData = new double[5];
+	protected double[] zData = new double[5];
 	protected boolean[] validData = new boolean[5];
-	protected Object[] derivData = new Object[] { params, xData, yData, validData };
+	protected Object[] derivData = new Object[] { params, xData, yData, zData, validData };
 	// identify skipped steps
 	protected TreeSet<Integer> skippedSteps = new TreeSet<Integer>();
 	protected boolean isAutofill = false;
@@ -2159,10 +2157,13 @@ public class PointMass extends TTrack {
 		// initialize data arrays
 		if (derivData[2] == null)
 			derivData[2] = yData;
+        if (derivData[3] == null)
+            derivData[3] = zData; // NEW 3D
 		if (xData.length < steps.array.length) {
 			derivData[1] = xData = new double[steps.array.length + 5];
 			derivData[2] = yData = new double[steps.array.length + 5];
-			derivData[3] = validData = new boolean[steps.array.length + 5];
+            derivData[3] = zData = new double[steps.array.length + 5]; // NEW 3D
+			derivData[4] = validData = new boolean[steps.array.length + 5];
 		}
 		// set up derivative parameters
 		params[1] = startFrame;
@@ -2172,6 +2173,24 @@ public class PointMass extends TTrack {
 		for (int i = 0; i < validData.length; i++)
 			validData[i] = false;
 		Step[] stepArray = steps.array;
+		for (int n = 0; n < stepArray.length; n++) {
+			if (stepArray[n] != null && clip.includesFrame(n)) {
+				PositionStep step = (PositionStep) stepArray[n];
+				Point2D p = step.getPosition().getWorldPosition(panel);
+				xData[n] = p.getX(); // worldspace position
+				yData[n] = p.getY(); // worldspace position
+                zData[n] = step.getPosition().getZ(); // NEW 3D
+				validData[n] = true;
+			}
+		}
+		// set up derivative parameters
+		params[1] = startFrame;
+		params[2] = clip.getStepSize();
+		params[3] = stepCount;
+		// set up position data
+		for (int i = 0; i < validData.length; i++)
+			validData[i] = false;
+		stepArray = steps.array;
 		for (int n = 0; n < stepArray.length; n++) {
 			if (stepArray[n] != null && clip.includesFrame(n)) {
 				PositionStep step = (PositionStep) stepArray[n];

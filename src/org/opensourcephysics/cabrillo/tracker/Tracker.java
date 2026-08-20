@@ -207,6 +207,7 @@ public class Tracker {
 	static final String THETA = TeXParser.parseTeX("$\\theta"); //$NON-NLS-1$
 	static final String OMEGA = TeXParser.parseTeX("$\\omega"); //$NON-NLS-1$
 	static final String ALPHA = TeXParser.parseTeX("$\\alpha"); //$NON-NLS-1$
+	static final String PHI = TeXParser.parseTeX("$\\phi");
 	static final String DEGREES = "\u00B0"; //$NON-NLS-1$
 	static final String SQUARED = "\u00b2"; //$NON-NLS-1$
 	static final String DOT = "\u00b7"; //$NON-NLS-1$
