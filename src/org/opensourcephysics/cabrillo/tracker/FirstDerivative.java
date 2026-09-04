@@ -33,8 +33,8 @@ public class FirstDerivative implements Derivative {
 
   // instance fields
   private int spill, start, step, count;
-  private double[] xDeriv = new double[0], yDeriv;
-  private Object[] result = new Object[4];
+  private double[] xDeriv = new double[0], yDeriv, zDeriv;
+  private Object[] result = new Object[6];
 
   /**
    * Evaluates the derivative.
@@ -63,10 +63,12 @@ public Object[] evaluate(Object[] data) {
     count = params[3];
     double[] x = (double[])data[1];
     double[] y = (double[])data[2];
-    boolean[] valid = (boolean[])data[3];
+    double[] z = data.length > 4 ? (double[])data[3] : null;
+    boolean[] valid = (boolean[])data[data.length - 1]; // Dynamically grabs the last item
     if (xDeriv.length != x.length) {
       result[0] = xDeriv = new double[x.length];
       result[1] = yDeriv = new double[x.length];
+      result[2] = zDeriv = new double[x.length];
     }
 
     // get upper and lower index checking limits
@@ -85,11 +87,14 @@ public Object[] evaluate(Object[] data) {
         		xDeriv[i] = Double.NaN;
         		if (y != null)
         			yDeriv[i] = Double.NaN;
+        		if (z != null)
+        			zDeriv[i] = Double.NaN;
         	}
           continue outer;
         }
       }
 
+      // use first derivative algorithm
       // use first derivative algorithm
       if (spill == 1) {
         xDeriv[i] = (- x[i - step]
@@ -97,6 +102,9 @@ public Object[] evaluate(Object[] data) {
     		if (y != null)
 	        yDeriv[i] = (- y[i - step]
 	                     + y[i + step]) / 2;
+    		if (z != null)
+	        zDeriv[i] = (- z[i - step]
+	                     + z[i + step]) / 2;
       } else { // spill is 2
         xDeriv[i] = (- 2 * x[i - 2*step]
                      - x[i - step]
@@ -107,6 +115,11 @@ public Object[] evaluate(Object[] data) {
 	                     - y[i - step]
 	                     + y[i + step]
 	                     + 2 * y[i + 2*step]) / 10;
+    		if (z != null)
+	        zDeriv[i] = (- 2 * z[i - 2*step]
+	                     - z[i - step]
+	                     + z[i + step]
+	                     + 2 * z[i + 2*step]) / 10;
       }
     }
     return result;

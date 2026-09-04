@@ -214,6 +214,7 @@ public class XuggleDualStreamPipeline {
     }
 
     private static final class FrameBufferManager {
+        private int epoch = 0;
         private final int maxTimestampDifferenceMS;
         private final List<XuggleFrameData> pendingA = new ArrayList<>();
         private final List<XuggleFrameData> pendingB = new ArrayList<>();
@@ -232,7 +233,14 @@ public class XuggleDualStreamPipeline {
         }
 
         void addFrame(XuggleFrameData frame) {
+            addFrame(frame, getEpoch());
+        }
+
+        void addFrame(XuggleFrameData frame, int frameEpoch) {
             synchronized (this) {
+                if (frameEpoch != epoch) {
+                    return; // discard stale in-flight frame from prior epoch/seek
+                }
                 List<XuggleFrameData> source = frame.getStreamIndex() == 0 ? pendingA : pendingB;
                 List<XuggleFrameData> other = frame.getStreamIndex() == 0 ? pendingB : pendingA;
                 XuggleFrameData bestMatch = findBestMatch(frame, other);
@@ -318,8 +326,13 @@ public class XuggleDualStreamPipeline {
          * Clears pending buffers and paired queue. If resetStats is true, also resets
          * internal diagnostic counters.
          */
+        int getEpoch() {
+            synchronized (this) { return epoch; }
+        }
+
         void flush(boolean resetStats) {
             synchronized (this) {
+                epoch++;
                 pendingA.clear();
                 pendingB.clear();
                 pairedFrames.clear();
@@ -375,65 +388,68 @@ public class XuggleDualStreamPipeline {
         private volatile double seekTargetMS;
 
         XuggleStreamDecoder(String path, int streamIndex, FrameBufferManager bufferManager) {
-            this.path = path;
+            this.path = new java.io.File(path).getAbsolutePath();
             this.streamIndex = streamIndex;
             this.bufferManager = bufferManager;
         }
 
-        void requestStop() {
-            stopRequested = true;
-        }
-
-        void requestSeek(double timestampMS) {
-            seekTargetMS = timestampMS;
-            seekRequested = true;
-        }
+        void requestStop() { stopRequested = true; }
+        void requestSeek(double timestampMS) { seekTargetMS = timestampMS; seekRequested = true; }
 
         @Override
         public void run() {
             XuggleVideo video = null;
             try {
+                System.out.println("[DEBUG-" + streamIndex + "] Opening XuggleVideo for: " + path);
                 video = new XuggleVideo(path, null);
+                System.out.println("[DEBUG-" + streamIndex + "] Successfully instantiated XuggleVideo.");
+
                 if (!video.isFullyLoaded()) {
-                    while (!stopRequested && video.loadMoreFrames(500)) {
-                        // keep loading until all frames are indexed
-                    }
+                    System.out.println("[DEBUG-" + streamIndex + "] Pre-loading frames into memory...");
+                    while (!stopRequested && video.loadMoreFrames(500)) {}
                 }
+                
                 int frameCount = video.getFrameCount();
-                int index = 0;
-                // estimate frame duration using frame 0 and 1 if available
-                double frameDuration = 0;
-                if (frameCount > 1) {
-                    frameDuration = video.getFrameTime(1) - video.getFrameTime(0);
-                    if (frameDuration <= 0) frameDuration = 1000.0 / 30.0;
-                } else {
-                    frameDuration = 1000.0 / 30.0;
+                System.out.println("[DEBUG-" + streamIndex + "] Total frames detected: " + frameCount);
+                
+                if (frameCount <= 0) {
+                    System.err.println("[FAIL-" + streamIndex + "] Native Xuggler failed to decode any frames.");
                 }
+
+                int index = 0;
+                double frameDuration = (frameCount > 1) ? (video.getFrameTime(1) - video.getFrameTime(0)) : (1000.0 / 30.0);
+                if (frameDuration <= 0) frameDuration = 1000.0 / 30.0;
 
                 while (index < frameCount && !stopRequested) {
                     if (seekRequested) {
-                        // compute approximate frame index for requested timestamp
                         int target = (int) Math.round(seekTargetMS / frameDuration);
-                        if (target < 0) target = 0;
-                        if (target >= frameCount) target = frameCount - 1;
-                        index = target;
+                        index = Math.max(0, Math.min(target, frameCount - 1));
                         seekRequested = false;
                     }
+                    int frameEpoch = bufferManager.getEpoch();
                     BufferedImage image = video.getImage(index);
                     if (image == null) {
+                        System.out.println("[DEBUG-" + streamIndex + "] getImage(" + index + ") returned null! (stopRequested=" + stopRequested + ")");
                         break;
                     }
-                    double timestamp = video.getFrameTime(index);
-                    bufferManager.addFrame(new XuggleFrameData(streamIndex, index, timestamp, image));
+                    if (seekRequested || frameEpoch != bufferManager.getEpoch()) {
+                        continue; // seek or flush intervened during decode; discard frame
+                    }
+                    bufferManager.addFrame(new XuggleFrameData(streamIndex, index, video.getFrameTime(index), image), frameEpoch);
+                    
+                    if (index == 0) {
+                        System.out.println("[DEBUG-" + streamIndex + "] Queued first frame successfully.");
+                    }
                     index++;
                 }
-            } catch (IOException ex) {
+            } catch (Throwable ex) {
+                // Catching Throwable exposes native UnsatisfiedLinkError crashes
+                System.err.println("[ERROR-" + streamIndex + "] Thread died due to fatal error:");
                 ex.printStackTrace();
             } finally {
-                if (video != null) {
-                    video.dispose();
-                }
+                if (video != null) video.dispose();
                 bufferManager.signalEndOfStream(streamIndex);
+                System.out.println("[DEBUG-" + streamIndex + "] Stream decoder thread finished.");
             }
         }
     }

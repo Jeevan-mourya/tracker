@@ -88,6 +88,7 @@ public class VectorStep extends Step implements PropertyChangeListener {
 	protected boolean labelVisible = true;
 	protected boolean rolloverVisible = false;
 	protected boolean valid;
+	protected double zc;
 	protected Map<Integer, TextLayout> textLayouts = new HashMap<Integer, TextLayout>();
 	protected Map<Integer, Rectangle> layoutBounds = new HashMap<Integer, Rectangle>();
 
@@ -124,6 +125,11 @@ public class VectorStep extends Step implements PropertyChangeListener {
 		points = new TPoint[] { tip, tail, handle, visibleTip, middle };
 		screenPoints = new Point[getLength()];
 		tip.setLocation(x + xc, y + yc);
+	}
+
+	public VectorStep(TTrack track, int n, double x, double y, double xc, double yc, double zc, int type) {
+		this(track, n, x, y, xc, yc, type);
+		this.zc = zc;
 	}
 
 	/**
@@ -206,6 +212,24 @@ public class VectorStep extends Step implements PropertyChangeListener {
 	 */
 	public double getYComponent() {
 		return tip.getY() - tail.getY();
+	}
+
+	/**
+	 * Sets the z component.
+	 *
+	 * @param zc the z component
+	 */
+	public void setZComponent(double zc) {
+		this.zc = zc;
+	}
+
+	/**
+	 * Gets the z component.
+	 *
+	 * @return the z component
+	 */
+	public double getZComponent() {
+		return zc;
 	}
 
 	/**

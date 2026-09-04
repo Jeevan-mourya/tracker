@@ -1,0 +1,1218 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "java",
+            "name": "Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "CalculationApp",
+            "request": "launch",
+            "mainClass": "csm.ch02.CalculationApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "SimulationApp",
+            "request": "launch",
+            "mainClass": "csm.ch02.SimulationApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Ball3DApp",
+            "request": "launch",
+            "mainClass": "csm.ch03.Ball3DApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DataLoaderApp",
+            "request": "launch",
+            "mainClass": "csm.ch03.DataLoaderApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_1App",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_1App",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_2App",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_2App",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_3App",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_3App",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_4App",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_4App",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_5App",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_5App",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DrawingApp",
+            "request": "launch",
+            "mainClass": "csm.ch03.DrawingApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "FallingParticleODEApp",
+            "request": "launch",
+            "mainClass": "csm.ch03.FallingParticleODEApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ProjectileApp",
+            "request": "launch",
+            "mainClass": "csm.ch03.ProjectileApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalApp",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalInspector",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalInspector",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalWRApp",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalWRApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "HeliumApp",
+            "request": "launch",
+            "mainClass": "davidson.gravitation.HeliumApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "EigenstateSHO",
+            "request": "launch",
+            "mainClass": "davidson.qm.EigenstateSHO",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionApp",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWRApp",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWRApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWignerApp",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWignerApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWignerWRApp",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWignerWRApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Ising2dApp",
+            "request": "launch",
+            "mainClass": "davidson.stp.Ising2dApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "CrossOriginRequestComPADRE",
+            "request": "launch",
+            "mainClass": "debugging.CrossOriginRequestComPADRE",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LauncherTest",
+            "request": "launch",
+            "mainClass": "debugging.LauncherTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "IsingApp",
+            "request": "launch",
+            "mainClass": "debugging.physicsapps.IsingApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "IsingWRApp",
+            "request": "launch",
+            "mainClass": "debugging.physicsapps.IsingWRApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "FirstPlotApp",
+            "request": "launch",
+            "mainClass": "demo.FirstPlotApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "HelloWorldApp",
+            "request": "launch",
+            "mainClass": "demo.HelloWorldApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TableDemo",
+            "request": "launch",
+            "mainClass": "demo.TableDemo",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ProgressBarSimpleDemo",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressBarSimpleDemo",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ProgressMonitorDemo",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressMonitorDemo",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ProgressMonitorExample",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressMonitorExample",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ReadXMLFile",
+            "request": "launch",
+            "mainClass": "demoJS.ReadXMLFile",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "SaveTXTFile",
+            "request": "launch",
+            "mainClass": "demoJS.SaveTXTFile",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "SaveXMLFile",
+            "request": "launch",
+            "mainClass": "demoJS.SaveXMLFile",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "StateMachineTestApp",
+            "request": "launch",
+            "mainClass": "demoJS.StateMachineTestApp",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_",
+            "request": "launch",
+            "mainClass": "demoJS.Test_",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Dialog",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog2",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Dialog2",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Zipout",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Zipout",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Custom3DBooter",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.Custom3DBooter",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TFrame",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.TFrame",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Tracker",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.Tracker",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TrackerPanel",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.TrackerPanel",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DownloadCounter",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.analytics.DownloadCounter",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LaunchCounter",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.analytics.LaunchCounter",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TrackerCountReader",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.analytics.TrackerCountReader",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TrackerStarter",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.cabrillo.tracker.deploy.TrackerStarter",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LogFilter",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.media.core.LogFilter",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DiagnosticsForXuggle",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.media.xuggle.DiagnosticsForXuggle",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Factorials",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.numerics.specialfunctions.Factorials",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DataTool",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DataTool",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Diagnostics",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.Diagnostics",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DiagnosticsForSystem",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DiagnosticsForSystem",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DiagnosticsForThreads",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DiagnosticsForThreads",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "EncryptionTool",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.EncryptionTool",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LaunchBuilder",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LaunchBuilder",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Launcher",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.Launcher",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LibraryBrowser",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LibraryBrowser",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LibraryJSSearchRefresher",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LibraryJSSearchRefresher",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "AssetsTest",
+            "request": "launch",
+            "mainClass": "test.AssetsTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "BandedSampleTest",
+            "request": "launch",
+            "mainClass": "test.BandedSampleTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "BinaryLatticeTest",
+            "request": "launch",
+            "mainClass": "test.BinaryLatticeTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "CalibrationPatternTest",
+            "request": "launch",
+            "mainClass": "test.CalibrationPatternTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Derivative",
+            "request": "launch",
+            "mainClass": "test.Derivative",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "DragTest",
+            "request": "launch",
+            "mainClass": "test.DragTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "EJSSliderTest",
+            "request": "launch",
+            "mainClass": "test.EJSSliderTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "FlushUnitTest",
+            "request": "launch",
+            "mainClass": "test.FlushUnitTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "FontResizeTest",
+            "request": "launch",
+            "mainClass": "test.FontResizeTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "GetFileWithChooser",
+            "request": "launch",
+            "mainClass": "test.GetFileWithChooser",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "GrayscalePlotTest",
+            "request": "launch",
+            "mainClass": "test.GrayscalePlotTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "LoaderTest",
+            "request": "launch",
+            "mainClass": "test.LoaderTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ParserTest",
+            "request": "launch",
+            "mainClass": "test.ParserTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "PerformanceTests",
+            "request": "launch",
+            "mainClass": "test.PerformanceTests",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "PipelineSyntheticTest",
+            "request": "launch",
+            "mainClass": "test.PipelineSyntheticTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "PlayVideoTest",
+            "request": "launch",
+            "mainClass": "test.PlayVideoTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ReadZipHTMLTest",
+            "request": "launch",
+            "mainClass": "test.ReadZipHTMLTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ReadZipVideoTest",
+            "request": "launch",
+            "mainClass": "test.ReadZipVideoTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "ReleaseZipFileTest",
+            "request": "launch",
+            "mainClass": "test.ReleaseZipFileTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "RenumberTRK",
+            "request": "launch",
+            "mainClass": "test.RenumberTRK",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "SetXMLControlTest",
+            "request": "launch",
+            "mainClass": "test.SetXMLControlTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "SimpleTableDemo",
+            "request": "launch",
+            "mainClass": "test.SimpleTableDemo",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "StereoMathTerminalTest",
+            "request": "launch",
+            "mainClass": "test.StereoMathTerminalTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "StereoMathValidationTest",
+            "request": "launch",
+            "mainClass": "test.StereoMathValidationTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "StereoVideoTerminalTest",
+            "request": "launch",
+            "mainClass": "test.StereoVideoTerminalTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_(1)",
+            "request": "launch",
+            "mainClass": "test.Test_",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Assets",
+            "request": "launch",
+            "mainClass": "test.Test_Assets",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Dialog",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Event",
+            "request": "launch",
+            "mainClass": "test.Test_Event",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Font",
+            "request": "launch",
+            "mainClass": "test.Test_Font",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Video",
+            "request": "launch",
+            "mainClass": "test.Test_Video",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "Test_Zipin",
+            "request": "launch",
+            "mainClass": "test.Test_Zipin",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "TextLayoutTest",
+            "request": "launch",
+            "mainClass": "test.TextLayoutTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "XuggleDualStreamPipelineTest",
+            "request": "launch",
+            "mainClass": "test.XuggleDualStreamPipelineTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "CalibrationPatternTest(1)",
+            "request": "launch",
+            "mainClass": "test.org.opensourcephysics.media.xuggle.CalibrationPatternTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "JavaCVTest",
+            "request": "launch",
+            "mainClass": "test.org.opensourcephysics.media.xuggle.JavaCVTest",
+            "projectName": "osp-tracker"
+        },
+        {
+            "type": "java",
+            "name": "CalculationApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch02.CalculationApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "SimulationApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch02.SimulationApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Ball3DApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Ball3DApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DataLoaderApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.DataLoaderApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_1App(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_1App",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_2App(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_2App",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_3App(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_3App",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_4App(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_4App",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Demo3D_5App(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.Demo3D_5App",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DrawingApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.DrawingApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "FallingParticleODEApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.FallingParticleODEApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ProjectileApp(1)",
+            "request": "launch",
+            "mainClass": "csm.ch03.ProjectileApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalInspector(1)",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalInspector",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ClassicalWRApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.gr.ClassicalWRApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "HeliumApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.gravitation.HeliumApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "EigenstateSHO(1)",
+            "request": "launch",
+            "mainClass": "davidson.qm.EigenstateSHO",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWRApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWRApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWignerApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWignerApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "QMSuperpositionWignerWRApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.qm.QMSuperpositionWignerWRApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Ising2dApp(1)",
+            "request": "launch",
+            "mainClass": "davidson.stp.Ising2dApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "CrossOriginRequestComPADRE(1)",
+            "request": "launch",
+            "mainClass": "debugging.CrossOriginRequestComPADRE",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LauncherTest(1)",
+            "request": "launch",
+            "mainClass": "debugging.LauncherTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "IsingApp(1)",
+            "request": "launch",
+            "mainClass": "debugging.physicsapps.IsingApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "IsingWRApp(1)",
+            "request": "launch",
+            "mainClass": "debugging.physicsapps.IsingWRApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "FirstPlotApp(1)",
+            "request": "launch",
+            "mainClass": "demo.FirstPlotApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "HelloWorldApp(1)",
+            "request": "launch",
+            "mainClass": "demo.HelloWorldApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "TableDemo(1)",
+            "request": "launch",
+            "mainClass": "demo.TableDemo",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ProgressBarSimpleDemo(1)",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressBarSimpleDemo",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ProgressMonitorDemo(1)",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressMonitorDemo",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ProgressMonitorExample(1)",
+            "request": "launch",
+            "mainClass": "demoJS.ProgressMonitorExample",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ReadXMLFile(1)",
+            "request": "launch",
+            "mainClass": "demoJS.ReadXMLFile",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "SaveTXTFile(1)",
+            "request": "launch",
+            "mainClass": "demoJS.SaveTXTFile",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "SaveXMLFile(1)",
+            "request": "launch",
+            "mainClass": "demoJS.SaveXMLFile",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "StateMachineTestApp(1)",
+            "request": "launch",
+            "mainClass": "demoJS.StateMachineTestApp",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_(2)",
+            "request": "launch",
+            "mainClass": "demoJS.Test_",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog(2)",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Dialog",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog2(1)",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Dialog2",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Zipout(1)",
+            "request": "launch",
+            "mainClass": "demoJS.Test_Zipout",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LogFilter(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.media.core.LogFilter",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Factorials(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.numerics.specialfunctions.Factorials",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DataTool(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DataTool",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Diagnostics(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.Diagnostics",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DiagnosticsForSystem(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DiagnosticsForSystem",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DiagnosticsForThreads(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.DiagnosticsForThreads",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "EncryptionTool(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.EncryptionTool",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LaunchBuilder(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LaunchBuilder",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Launcher(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.Launcher",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LibraryBrowser(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LibraryBrowser",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LibraryJSSearchRefresher(1)",
+            "request": "launch",
+            "mainClass": "org.opensourcephysics.tools.LibraryJSSearchRefresher",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "AssetsTest(1)",
+            "request": "launch",
+            "mainClass": "test.AssetsTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "BandedSampleTest(1)",
+            "request": "launch",
+            "mainClass": "test.BandedSampleTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "BinaryLatticeTest(1)",
+            "request": "launch",
+            "mainClass": "test.BinaryLatticeTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Derivative(1)",
+            "request": "launch",
+            "mainClass": "test.Derivative",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "DragTest(1)",
+            "request": "launch",
+            "mainClass": "test.DragTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "EJSSliderTest(1)",
+            "request": "launch",
+            "mainClass": "test.EJSSliderTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "FontResizeTest(1)",
+            "request": "launch",
+            "mainClass": "test.FontResizeTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "GetFileWithChooser(1)",
+            "request": "launch",
+            "mainClass": "test.GetFileWithChooser",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "GrayscalePlotTest(1)",
+            "request": "launch",
+            "mainClass": "test.GrayscalePlotTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "LoaderTest(1)",
+            "request": "launch",
+            "mainClass": "test.LoaderTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ParserTest(1)",
+            "request": "launch",
+            "mainClass": "test.ParserTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "PerformanceTests(1)",
+            "request": "launch",
+            "mainClass": "test.PerformanceTests",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ReadZipHTMLTest(1)",
+            "request": "launch",
+            "mainClass": "test.ReadZipHTMLTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ReadZipVideoTest(1)",
+            "request": "launch",
+            "mainClass": "test.ReadZipVideoTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "ReleaseZipFileTest(1)",
+            "request": "launch",
+            "mainClass": "test.ReleaseZipFileTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "SetXMLControlTest(1)",
+            "request": "launch",
+            "mainClass": "test.SetXMLControlTest",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "SimpleTableDemo(1)",
+            "request": "launch",
+            "mainClass": "test.SimpleTableDemo",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_(3)",
+            "request": "launch",
+            "mainClass": "test.Test_",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Assets(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Assets",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Dialog(3)",
+            "request": "launch",
+            "mainClass": "test.Test_Dialog",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Event(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Event",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Font(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Font",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Video(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Video",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "Test_Zipin(1)",
+            "request": "launch",
+            "mainClass": "test.Test_Zipin",
+            "projectName": "osp"
+        },
+        {
+            "type": "java",
+            "name": "TextLayoutTest(1)",
+            "request": "launch",
+            "mainClass": "test.TextLayoutTest",
+            "projectName": "osp"
+        }
+    ]
+}

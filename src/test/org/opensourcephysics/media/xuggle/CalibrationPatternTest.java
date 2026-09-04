@@ -74,8 +74,8 @@ public class CalibrationPatternTest {
             }
         }
 
-        logger.info(() -> "findCalibrationPattern returned: " + found);
-        logger.info(() -> "Corners filled: " + filled + " (expected " + (rows * cols) + ")");
+        logger.info("findCalibrationPattern returned: " + found);
+        logger.info("Corners filled: " + filled + " (expected " + (rows * cols) + ")");
         if (found && filled == rows * cols) {
             logger.info("SUCCESS: Pattern detected and corners populated.");
         } else {

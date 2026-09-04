@@ -11,3 +11,35 @@ src/org/opensourcephysics/controls/OSPLog_template.txt
 tracker.prefs
 //.classpath
 logs/
+
+# Build & binary artifacts
+*.jar
+*.zip
+logs/
+
+# In-source compiled binaries
+src/**/*.class
+src2/**/*.class
+*.class
+
+# Test videos and proof renders
+*.mp4
+*.avi
+*.gif
+Tracker_*Proof*.png
+sample*.mp4
+sample*.avi
+stereo_moon.*
+
+# Build output and bytecode
+build_cli/
+bin/
+*.class
+src/**/*.class
+src2/**/*.class
+osp/bin/
+
+# Temporary run artifacts
+logs/
+*.tar.gz
+build_cli/

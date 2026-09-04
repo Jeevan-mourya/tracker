@@ -2,6 +2,7 @@
 <classpath>
 	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
 	<classpathentry kind="src" path="src"/>
+ 	<classpathentry kind="src" path="osp/src"/>
 	<classpathentry kind="src" path="resources"/>
 	<classpathentry kind="lib" path="jars/closure_compiler.jar"/>
 	<classpathentry kind="lib" path="libraries/commons-cli-1.1.jar"/>

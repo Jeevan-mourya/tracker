@@ -79,14 +79,18 @@ public class PositionStep extends Step {
 	 * @param x     the x coordinate
 	 * @param y     the y coordinate
 	 */
-	public PositionStep(PointMass track, int n, double x, double y) {
+	public PositionStep(PointMass track, int n, double x, double y, double z) {
 		super(track, n);
-		p = new Position(x, y);
+		p = new Position(x, y, z);
 		p.setTrackEditTrigger(true);
 		points = new TPoint[] { p };
 		screenPoints = new Point[getLength()];
 		setLabelVisible(track.labelsVisible);
 		setRolloverVisible(!track.labelsVisible);
+	}
+
+	public PositionStep(PointMass track, int n, double x, double y) {
+		this(track, n, x, y, 0.0);	
 	}
 
 	/**
@@ -313,7 +317,7 @@ public class PositionStep extends Step {
 	public Object clone() {
 		PositionStep step = (PositionStep) super.clone();
 		if (step != null) { // BH 2021.09.11 null check
-			step.points[0] = step.p = step.new Position(p.getX(), p.getY());
+			step.points[0] = step.p = step.new Position(p.getX(), p.getY(), p.getZ());
 			step.panelTextLayouts = new HashMap<Integer, TextLayout>();
 			step.panelLayoutBounds = new HashMap<Integer, Rectangle>();
 		}
@@ -341,8 +345,33 @@ public class PositionStep extends Step {
 		 * @param x the x coordinate
 		 * @param y the y coordinate
 		 */
-		public Position(double x, double y) {
+		
+		//z-coordinate
+		protected double z;
+
+		public Position(double x, double y, double z) {
 			super(x, y);
+			this.z = z;
+		}
+
+		public double getZ(){
+			return z;
+		}
+
+		public void setZ(double z) {
+			this.z = z;
+			repaint();
+			PointMass track = (PointMass) getTrack();
+			if (!track.isLocked() && !isAdjusting()) {
+				track.updateDerivatives(n);
+				getTrack().firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, (Object) null, Integer.valueOf(n));
+				//track.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n));
+			}
+		}
+
+		public void setXYZ(double x, double y, double z) {
+			setXY(x, y);
+			setZ(z);
 		}
 
 		/**
@@ -365,7 +394,8 @@ public class PositionStep extends Step {
 					track.markInterpolatedSteps(PositionStep.this, true);
 				}
 				track.updateDerivatives(n);
-				track.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+				getTrack().firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, (Object) null, Integer.valueOf(n));
+				//track.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
 			}
 		}
 
@@ -468,6 +498,7 @@ public class PositionStep extends Step {
 			PositionStep step = (PositionStep) obj;
 			control.setValue("x", step.p.x); //$NON-NLS-1$
 			control.setValue("y", step.p.y); //$NON-NLS-1$
+			control.setValue("z", step.p.z); //$NON-NLS-1$
 		}
 
 		/**
@@ -495,6 +526,10 @@ public class PositionStep extends Step {
 			PositionStep step = (PositionStep) obj;
 			double x = control.getDouble("x"); //$NON-NLS-1$
 			double y = control.getDouble("y"); //$NON-NLS-1$
+			double z = 0.0;
+			if (control.getPropertyNames().contains("z")) {
+				z = control.getDouble("z");
+			}
 			step.p.setXY(x, y);
 			return obj;
 		}

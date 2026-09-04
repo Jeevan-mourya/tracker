@@ -1,6 +1,21 @@
 {
-    "sonarlint.ls.javaHome": "/usr/lib/jvm/java-21-openjdk-amd64",
-    "snyk.advanced.cliPath": "/home/codespace/nvm/current/bin/snyk",
-    "snyk.advanced.manageBinariesAutomatically": false,
-    "java.compile.nullAnalysis.mode": "disabled"
+  "java.project.sourcePaths": [
+    "src",
+    "osp/src"
+  ],
+  "java.project.referencedLibraries": [
+    "lib/**/*.jar",
+    "libraries/**/*.jar"
+  ],
+  "java.debug.settings.onBuildFailureProceed": true,
+  "java.autobuild.enabled": false,
+  "java.import.exclusions": [
+    "**/node_modules/**",
+    "**/.metadata/**",
+    "**/build_cli/**",
+    "**/unused/**",
+    "**/bin/**"
+  ],
+  "java.jdt.ls.vmargs": "-Xms256m -Xmx3072m -XX:+UseG1GC",
+  "java.compile.nullAnalysis.mode": "disabled"
 }

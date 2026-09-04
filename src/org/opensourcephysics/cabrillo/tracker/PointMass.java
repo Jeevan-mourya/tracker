@@ -1447,8 +1447,10 @@ public class PointMass extends TTrack {
 			} else {
 				double imageX = veloc.getXComponent();
 				double imageY = veloc.getYComponent();
+				double z = veloc.getZComponent();
 				x = validData[4][pt] = coords.imageToWorldXComponent(i, imageX, imageY) / dt_v;
 				y = validData[5][pt] = coords.imageToWorldYComponent(i, imageX, imageY) / dt_v;
+				validData[9][pt] = z; // v_z
 			    double v2 = x * x + y * y;
 			    r = validData[6][pt] = Math.sqrt(v2);
 				slope = validData[7][pt] = Math.atan2(y, x);
@@ -1468,8 +1470,10 @@ public class PointMass extends TTrack {
 			} else {
 				double imageX = accel.getXComponent();
 				double imageY = accel.getYComponent();
+				double z = accel.getZComponent();
 				x = validData[8][pt] = coords.imageToWorldXComponent(i, imageX, imageY) / dt_a2;
 				y = validData[9][pt] = coords.imageToWorldYComponent(i, imageX, imageY) / dt_a2;
+				validData[15][pt] = z; // a_z
 				validData[10][pt] = Math.sqrt(x * x + y * y);
 				validData[11][pt] = Math.atan2(y, x);
 			}
@@ -2166,23 +2170,23 @@ public class PointMass extends TTrack {
 			derivData[4] = validData = new boolean[steps.array.length + 5];
 		}
 		// set up derivative parameters
-		params[1] = startFrame;
-		params[2] = clip.getStepSize();
-		params[3] = stepCount;
-		// set up position data
-		for (int i = 0; i < validData.length; i++)
-			validData[i] = false;
-		Step[] stepArray = steps.array;
-		for (int n = 0; n < stepArray.length; n++) {
-			if (stepArray[n] != null && clip.includesFrame(n)) {
-				PositionStep step = (PositionStep) stepArray[n];
-				Point2D p = step.getPosition().getWorldPosition(panel);
-				xData[n] = p.getX(); // worldspace position
-				yData[n] = p.getY(); // worldspace position
-                zData[n] = step.getPosition().getZ(); // NEW 3D
-				validData[n] = true;
-			}
-		}
+		// params[1] = startFrame;
+		// params[2] = clip.getStepSize();
+		// params[3] = stepCount;
+		// // set up position data
+		// for (int i = 0; i < validData.length; i++)
+		// 	validData[i] = false;
+		// Step[] stepArray = steps.array;
+		// for (int n = 0; n < stepArray.length; n++) {
+		// 	if (stepArray[n] != null && clip.includesFrame(n)) {
+		// 		PositionStep step = (PositionStep) stepArray[n];
+		// 		Point2D p = step.getPosition().getWorldPosition(panel);
+		// 		xData[n] = p.getX(); // worldspace position
+		// 		yData[n] = p.getY(); // worldspace position
+        //         zData[n] = step.getPosition().getZ(); // NEW 3D
+		// 		validData[n] = true;
+		// 	}
+		// }
 		// set up derivative parameters
 		params[1] = startFrame;
 		params[2] = clip.getStepSize();
@@ -2190,7 +2194,7 @@ public class PointMass extends TTrack {
 		// set up position data
 		for (int i = 0; i < validData.length; i++)
 			validData[i] = false;
-		stepArray = steps.array;
+		Step[] stepArray = steps.array;
 		for (int n = 0; n < stepArray.length; n++) {
 			if (stepArray[n] != null && clip.includesFrame(n)) {
 				PositionStep step = (PositionStep) stepArray[n];
@@ -2208,27 +2212,34 @@ public class PointMass extends TTrack {
 		// evaluate derivatives in worldspace coordinates
 		double[] xDeriv1; // first deriv
 		double[] yDeriv1; // first deriv
+		double[] zDeriv1; // first deriv Z
 		double[] xDeriv2; // second deriv
 		double[] yDeriv2; // second deriv
-//    FINITE_DIFF = 0;
-//  	protected static final int BOUNCE_DETECT = 1;
-//  	protected static final int FINITE_DIFF_VSPREAD2
+		double[] zDeriv2; // second deriv Z
+		//    FINITE_DIFF = 0;
+		//  	protected static final int BOUNCE_DETECT = 1;
+		//  	protected static final int FINITE_DIFF_VSPREAD2
 		if (algorithm == BOUNCE_DETECT) {
 			params[0] = bounceDerivsSpill; // spill
 			Object[] result = bounceDerivs.evaluate(derivData);
 			xDeriv1 = (double[]) result[0];
 			yDeriv1 = (double[]) result[1];
-			xDeriv2 = (double[]) result[2];
-			yDeriv2 = (double[]) result[3];
+			zDeriv1 = (double[]) result[2]; // Capture v_z
+			xDeriv2 = (double[]) result[3];
+			yDeriv2 = (double[]) result[4];
+			zDeriv2 = (double[]) result[5]; // Capture a_z
 		} else {
 			params[0] = algorithm == FINITE_DIFF_VSPILL2 ? 2 : vDerivSpill; // spill
 			Object[] result = vDeriv.evaluate(derivData);
 			xDeriv1 = (double[]) result[0];
 			yDeriv1 = (double[]) result[1];
+			zDeriv1 = (double[]) result[2]; // Capture v_z
+            
 			params[0] = aDerivSpill; // spill
 			result = aDeriv.evaluate(derivData);
-			xDeriv2 = (double[]) result[2];
-			yDeriv2 = (double[]) result[3];
+			xDeriv2 = (double[]) result[3];
+			yDeriv2 = (double[]) result[4];
+			zDeriv2 = (double[]) result[5]; // Capture a_z
 		}
 
 		// create, delete and/or set components of velocity vectors
@@ -2244,7 +2255,7 @@ public class PointMass extends TTrack {
 				double y = panel.getCoords().worldToImageYComponent(n, xDeriv1[n], yDeriv1[n]);
 				if (v == null) { // create new vector
 					TPoint p = ((PositionStep) getStep(n)).getPosition();
-					v = new VectorStep(this, n, p.getX(), p.getY(), x, y, Step.TYPE_VELOCITY);
+					v = new VectorStep(this, n, p.getX(), p.getY(), x, y, zDeriv1[n], Step.TYPE_VELOCITY);
 					v.setTipEnabled(false);
 					v.getHandle().setStepEditTrigger(true);
 					v.setDefaultPointIndex(2); // handle
@@ -2280,7 +2291,7 @@ public class PointMass extends TTrack {
 				double y = panel.getCoords().worldToImageYComponent(n, xDeriv2[n], yDeriv2[n]);
 				if (a == null) {
 					TPoint p = ((PositionStep) getStep(n)).getPosition();
-					a = new VectorStep(this, n, p.getX(), p.getY(), x, y, Step.TYPE_ACCELERATION);
+					a = new VectorStep(this, n, p.getX(), p.getY(), x, y, zDeriv2[n], Step.TYPE_ACCELERATION);
 					a.getHandle().setStepEditTrigger(true);
 					a.setTipEnabled(false);
 					a.setDefaultPointIndex(2); // handle
@@ -2317,10 +2328,12 @@ public class PointMass extends TTrack {
 	protected Object[] getRotationData() {
 		// initialize data arrays once, for all panels
 		derivData[2] = null;
+		derivData[3] = null;
 		if (xData.length < steps.array.length) {
 			derivData[1] = xData = new double[steps.array.length + 5];
 			yData = new double[steps.array.length + 5];
-			derivData[3] = validData = new boolean[steps.array.length + 5];
+			zData = new double[steps.array.length + 5];
+			derivData[4] = validData = new boolean[steps.array.length + 5]; // Fixed Index
 		}
 		for (int i = 0; i < steps.array.length; i++)
 			validData[i] = false;
@@ -2382,7 +2395,8 @@ public class PointMass extends TTrack {
 		if (xData.length < steps.array.length) {
 			derivData[1] = xData = new double[steps.array.length + 5];
 			derivData[2] = yData = new double[steps.array.length + 5];
-			derivData[3] = validData = new boolean[steps.array.length + 5];
+			derivData[3] = zData = new double[steps.array.length + 5];
+			derivData[4] = validData = new boolean[steps.array.length + 5]; // Fixed Index
 		}
 		for (int i = 0; i < steps.array.length; i++)
 			validData[i] = false;

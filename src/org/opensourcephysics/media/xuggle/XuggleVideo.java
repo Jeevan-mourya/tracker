@@ -83,6 +83,8 @@ import com.xuggle.xuggler.video.IConverter;
  * precalculated.
  * 
  */
+
+
 public class XuggleVideo extends MovieVideo implements SmoothPlayable, IncrementallyLoadable {
 
 //	private final static int FRAME = 1;
@@ -208,7 +210,7 @@ public class XuggleVideo extends MovieVideo implements SmoothPlayable, Increment
 	 * @param control 
 	 * @throws IOException
 	 */
-	XuggleVideo(String fileName, XMLControl control) throws IOException {
+  public XuggleVideo(String fileName, XMLControl control) throws IOException {
 		super(fileName, null, control);
 		// create and open a Xuggle container
 		// set properties
@@ -474,6 +476,24 @@ public class XuggleVideo extends MovieVideo implements SmoothPlayable, Increment
 			return 100; // arbitrary duration for single-frame video!
 		return rawDuration * 1000;
 	}
+
+	/**
+     * Gets the total number of frames in the video.
+     * Exposed publicly for dual stream pipeline synchronization.
+     */
+    @Override
+    public int getFrameCount() {
+        return super.getFrameCount();
+    }
+
+    /**
+     * Gets the timestamp for a specific frame number.
+     * Exposed publicly for dual stream pipeline synchronization.
+     */
+    @Override
+    public double getFrameTime(int frameNumber) {
+        return super.getFrameTime(frameNumber);
+    }
 
 	/**
 	 * Sets the playSmoothly flag.

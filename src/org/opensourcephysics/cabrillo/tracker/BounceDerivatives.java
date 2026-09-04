@@ -91,24 +91,26 @@ public Object[] evaluate(Object[] data)
     int count = params[3];
     double[] x = (double[])data[1];
     double[] y = (double[])data[2];
-    boolean[] validData = (boolean[])data[3];
+    boolean[] validData = (boolean[])data[data.length - 1]; // Dynamic index
   	
     int length=x.length;
     assert(x.length==y.length);
     
-    double[] xDeriv1, yDeriv1, xDeriv2, yDeriv2;
+    double[] xDeriv1, yDeriv1, zDeriv1, xDeriv2, yDeriv2, zDeriv2;
     
-    double[][] result = new double[4][];
+    double[][] result = new double[6][];
     
     result[0] = xDeriv1 =new double[length];
     result[1] = yDeriv1 =new double[length];
-    result[2] = xDeriv2 =new double[length];
-    result[3] = yDeriv2 =new double[length];
+    result[2] = zDeriv1 =new double[length]; // Z first deriv
+    result[3] = xDeriv2 =new double[length];
+    result[4] = yDeriv2 =new double[length];
+    result[5] = zDeriv2 =new double[length]; // Z second deriv
 
     for (int n = 0; n < length; n++)
     {	// mark all the outputs as invalid
-	xDeriv1[n] = yDeriv1[n] = Double.NaN;
-	xDeriv2[n] = yDeriv2[n] = Double.NaN;
+	xDeriv1[n] = yDeriv1[n] = zDeriv1[n] = Double.NaN;
+	xDeriv2[n] = yDeriv2[n] = zDeriv2[n] = Double.NaN;
 	
 	// make sure that the input data arrays are marked with NaNs
 	if (!validData[n])

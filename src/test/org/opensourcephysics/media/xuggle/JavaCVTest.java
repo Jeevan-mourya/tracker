@@ -1,4 +1,4 @@
-package org.opensourcephysics.media.xuggle;
+package test.org.opensourcephysics.media.xuggle;
 
 import java.util.logging.Logger;
 import org.bytedeco.opencv.global.opencv_core;

@@ -23,6 +23,8 @@ public class XuggleDualStreamPipelineTest {
     private static final int DEFAULT_MAX_DRIFT_MS = 34;
     private static final int DEFAULT_MEMORY_LOG_INTERVAL_SEC = 10;
     private static final String BASELINE_VIDEO = "src/test/duet.mp4";
+    private static final int INITIAL_POLL_TIMEOUT_SEC = 60;
+    private static final int INTER_FRAME_POLL_TIMEOUT_SEC = 5;
 
     public static void main(String[] args) {
         String videoA;
@@ -90,7 +92,10 @@ public class XuggleDualStreamPipelineTest {
 
         try {
             while (true) {
-                XuggleDualStreamPipeline.FramePair pair = pipeline.pollPair(5, TimeUnit.SECONDS);
+                // Allow extended timeout for startup indexing, shorter timeout during playback
+                int timeoutSec = (pairCount == 0) ? INITIAL_POLL_TIMEOUT_SEC : INTER_FRAME_POLL_TIMEOUT_SEC;
+                XuggleDualStreamPipeline.FramePair pair = pipeline.pollPair(timeoutSec, TimeUnit.SECONDS);
+
                 if (pair == null) {
                     System.out.println("[INFO] No more synchronized pairs (EOS reached).");
                     break;

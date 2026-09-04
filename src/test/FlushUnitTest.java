@@ -1,40 +1,48 @@
 package test;
 
+import java.io.File;
 import java.util.concurrent.TimeUnit;
-
 import org.opensourcephysics.media.xuggle.XuggleDualStreamPipeline;
 
 /**
  * Simple unit-style test (runnable main) to validate flush() behavior.
  * Exits with code 0 on success, non-zero on failure.
  */
+
 public class FlushUnitTest {
     public static void main(String[] args) throws Exception {
-        String baseline = "src/test/duet.mp4";
+        String baseline = (args.length > 0) ? args[0] : "src/test/duet.mp4";
+        
+        File videoFile = new File(baseline);
+        if (!videoFile.exists()) {
+            System.err.println("[FAIL] Target video file does not exist: " + videoFile.getAbsolutePath());
+            System.exit(1);
+        }
+
+        System.out.println("[INFO] Initializing pipeline with: " + baseline);
         XuggleDualStreamPipeline pipeline = new XuggleDualStreamPipeline(baseline, baseline);
         pipeline.start();
+        
         try {
-            // consume a few pairs to populate some internal state
+            System.out.println("[INFO] Waiting up to 20 seconds for Xuggler/OSP initialization...");
+            // Consume a few pairs to populate internal state
             for (int i = 0; i < 10; i++) {
-                XuggleDualStreamPipeline.FramePair p = pipeline.pollPair(2, TimeUnit.SECONDS);
+                XuggleDualStreamPipeline.FramePair p = pipeline.pollPair(20, TimeUnit.SECONDS); // Increased to 20s
                 if (p == null) {
                     System.err.println("[FAIL] Expected initial pairs but got EOS early");
                     System.exit(2);
                 }
             }
 
-            // capture stats before flush
             long matchedBefore = pipeline.getMatchedCount();
-            long droppedBefore = pipeline.getDroppedCount();
-
-            // now flush and reset stats
+            
             pipeline.flush(true);
 
-            // now test seek + flush behavior: seek to ~2000ms and flush
             double seekTarget = 2000.0;
             pipeline.seek(seekTarget);
             pipeline.flush(true);
-            XuggleDualStreamPipeline.FramePair seekPair = pipeline.pollPair(2, TimeUnit.SECONDS);
+            
+            XuggleDualStreamPipeline.FramePair seekPair = pipeline.pollPair(10, TimeUnit.SECONDS);
             if (seekPair == null) {
                 System.err.println("[FAIL] Expected pair after seek+flush but got none");
                 System.exit(6);
@@ -45,16 +53,11 @@ public class FlushUnitTest {
                 System.exit(7);
             }
 
-            // after flush, paired queue should be cleared and stats reset. Pending
-            // frames may be re-populated immediately by decoders, so we avoid
-            // asserting exact pending counts here.
             long matchedAfter = pipeline.getMatchedCount();
-            long droppedAfter = pipeline.getDroppedCount();
             if (matchedAfter > matchedBefore) {
                 System.err.printf("[FAIL] matchedCount did not decrease after reset (before=%d after=%d)\n", matchedBefore, matchedAfter);
                 System.exit(4);
             }
-            // droppedCount may increase briefly due to concurrent pruning; do not fail on this.
 
             System.out.println("[PASS] flush() cleared buffers and reset stats as expected");
             System.exit(0);
