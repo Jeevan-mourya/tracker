@@ -64,7 +64,27 @@ public Object[] evaluate(Object[] data) {
     double[] x = (double[])data[1];
     double[] y = (double[])data[2];
     double[] z = data.length > 4 ? (double[])data[3] : null;
-    boolean[] valid = (boolean[])data[data.length - 1]; // Dynamically grabs the last item
+    
+    // Defensive type-checking: safely extract boolean[] validData
+    // PointMass and Protractor may have different array structures
+    boolean[] valid = null;
+    if (data.length > 0) {
+      Object lastElement = data[data.length - 1];
+      if (lastElement instanceof boolean[]) {
+        valid = (boolean[])lastElement;
+      } else {
+        // Fallback: log warning and create empty valid array
+        System.err.println("WARNING: FirstDerivative.evaluate() - expected boolean[] at data[" + 
+                          (data.length - 1) + "], got " + 
+                          (lastElement != null ? lastElement.getClass().getSimpleName() : "null"));
+        valid = new boolean[x.length];
+        java.util.Arrays.fill(valid, true); // Assume all data points are valid
+      }
+    } else {
+      // Fallback for empty data array
+      valid = new boolean[x.length];
+      java.util.Arrays.fill(valid, true);
+    }
     if (xDeriv.length != x.length) {
       result[0] = xDeriv = new double[x.length];
       result[1] = yDeriv = new double[x.length];

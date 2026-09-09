@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch4jConfig>
+  <dontWrapJar>false</dontWrapJar>
+  <headerType>gui</headerType>
+  <jar>Tracker3D.jar</jar>
+  <outfile>Tracker3D.exe</outfile>
+  <errTitle>Tracker 3D - Error</errTitle>
+  <cmdLine></cmdLine>
+  <chdir>.</chdir>
+  <priority>normal</priority>
+  <downloadUrl>https://adoptopenjdk.net</downloadUrl>
+  <supportUrl></supportUrl>
+  <stayAlive>false</stayAlive>
+  <restartOnCrash>false</restartOnCrash>
+  <manifest></manifest>
+  <icon></icon>
+  <singleInstance>
+    <mutexName>Tracker3D</mutexName>
+    <windowTitle>Tracker 3D</windowTitle>
+  </singleInstance>
+  <jre>
+    <path>jre</path>
+    <bundledJre64Bit>false</bundledJre64Bit>
+    <bundledJreAsFallback>false</bundledJreAsFallback>
+    <minVersion>17.0</minVersion>
+    <maxVersion></maxVersion>
+    <jdkPreference>preferJre</jdkPreference>
+    <runtimeBits>64</runtimeBits>
+  </jre>
+  <splash>
+    <file></file>
+    <waitForWindow>true</waitForWindow>
+    <timeout>60</timeout>
+    <timeoutErr>true</timeoutErr>
+  </splash>
+  <versionInfo>
+    <fileVersion>6.0.0.0</fileVersion>
+    <productVersion>6.0.0.0</productVersion>
+    <companyName>Open Source Physics</companyName>
+    <fileDescription>Tracker 3D - Video Analysis and Modeling Tool</fileDescription>
+    <legalCopyright>© 2024 Douglas Brown, Wolfgang Christian, Robert M. Hanson</legalCopyright>
+    <productName>Tracker 3D</productName>
+    <internalName>Tracker3D</internalName>
+    <originalFilename>Tracker3D.exe</originalFilename>
+  </versionInfo>
+</launch4jConfig>

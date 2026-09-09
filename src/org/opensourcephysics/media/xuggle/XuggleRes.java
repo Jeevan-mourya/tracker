@@ -5,7 +5,6 @@ import java.util.MissingResourceException;
 
 import org.opensourcephysics.display.OSPRuntime;
 import org.opensourcephysics.tools.ResourceLoader;
-import stop;
 
 /**
  * XuggleRes provides access to string resources for Xuggle Diagnostics.

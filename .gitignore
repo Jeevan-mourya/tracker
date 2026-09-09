@@ -43,3 +43,6 @@ osp/bin/
 logs/
 *.tar.gz
 build_cli/
+src/test/left_frames/
+src/test/right_frames/
+src/test/moon_frames.zip

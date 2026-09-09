@@ -1,0 +1,474 @@
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:7: error: package org.bytedeco.javacpp.indexer does not exist
+import org.bytedeco.javacpp.indexer.DoubleIndexer;
+                                   ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:8: error: package org.bytedeco.javacpp.indexer does not exist
+import org.bytedeco.javacpp.indexer.FloatIndexer;
+                                   ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:9: error: package org.bytedeco.javacv does not exist
+import org.bytedeco.javacv.Frame;
+                          ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:10: error: package org.bytedeco.javacv does not exist
+import org.bytedeco.javacv.Java2DFrameConverter;
+                          ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:11: error: package org.bytedeco.javacv does not exist
+import org.bytedeco.javacv.OpenCVFrameConverter;
+                          ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:12: error: package org.bytedeco.opencv.global does not exist
+import org.bytedeco.opencv.global.opencv_calib3d;
+                                 ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:13: error: package org.bytedeco.opencv.global does not exist
+import org.bytedeco.opencv.global.opencv_core;
+                                 ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:14: error: package org.bytedeco.opencv.global does not exist
+import org.bytedeco.opencv.global.opencv_imgproc;
+                                 ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:15: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Mat;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:16: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.MatVector;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:17: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point2f;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:18: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point2fVector;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:19: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point2fVectorVector;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:20: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point3f;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:21: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point3fVector;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:22: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Point3fVectorVector;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:23: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Size;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:24: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.TermCriteria;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:329: error: cannot find symbol
+        public Mat cameraMatrix1;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:331: error: cannot find symbol
+        public Mat cameraMatrix2;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:333: error: cannot find symbol
+        public Mat distCoeffs1;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:335: error: cannot find symbol
+        public Mat distCoeffs2;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:337: error: cannot find symbol
+        public Mat R;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:339: error: cannot find symbol
+        public Mat T;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:341: error: cannot find symbol
+        public Mat P1;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:343: error: cannot find symbol
+        public Mat P2;
+               ^
+  symbol:   class Mat
+  location: class CalibrationData
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:123: error: package org.bytedeco.opencv.opencv_core does not exist
+    public double[] triangulateCoordinate(java.awt.geom.Point2D leftPoint, java.awt.geom.Point2D rightPoint, org.bytedeco.opencv.opencv_core.Mat P1, org.bytedeco.opencv.opencv_core.Mat P2) {
+                                                                                                                                            ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:123: error: package org.bytedeco.opencv.opencv_core does not exist
+    public double[] triangulateCoordinate(java.awt.geom.Point2D leftPoint, java.awt.geom.Point2D rightPoint, org.bytedeco.opencv.opencv_core.Mat P1, org.bytedeco.opencv.opencv_core.Mat P2) {
+                                                                                                                                                                                    ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:286: error: cannot find symbol
+    private Point3fVectorVector toPoint3fVectorVector(MatVector mats) {
+                                                      ^
+  symbol:   class MatVector
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:286: error: cannot find symbol
+    private Point3fVectorVector toPoint3fVectorVector(MatVector mats) {
+            ^
+  symbol:   class Point3fVectorVector
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:305: error: cannot find symbol
+    private Point2fVectorVector toPoint2fVectorVector(MatVector mats) {
+                                                      ^
+  symbol:   class MatVector
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:305: error: cannot find symbol
+    private Point2fVectorVector toPoint2fVectorVector(MatVector mats) {
+            ^
+  symbol:   class Point2fVectorVector
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/cabrillo/tracker/Tracker.java:120: error: package swingjs.api does not exist
+import swingjs.api.JSUtilI;
+                  ^
+src/org/opensourcephysics/cabrillo/tracker/Tracker.java:154: error: cannot find symbol
+	public static JSUtilI jsutil;
+	              ^
+  symbol:   class JSUtilI
+  location: class Tracker
+src/org/opensourcephysics/media/xuggle/math/StereoMathEngine.java:5: error: package org.bytedeco.opencv.opencv_core does not exist
+import org.bytedeco.opencv.opencv_core.Mat;
+                                      ^
+src/org/opensourcephysics/media/xuggle/math/StereoMathEngine.java:57: error: cannot find symbol
+    private Point3D homoToPoint3D(Mat homo) {
+                                  ^
+  symbol:   class Mat
+  location: class StereoMathEngine
+src/org/opensourcephysics/media/xuggle/DiagnosticsForXuggle.java:24: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IContainer;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:46: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.ICodec;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:47: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IContainer;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:48: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IContainerFormat;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:50: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IPacket;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:51: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IPixelFormat;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:52: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IRational;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:53: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IStream;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:54: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IStreamCoder;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:55: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IVideoPicture;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:56: error: package com.xuggle.xuggler.ICodec does not exist
+import com.xuggle.xuggler.ICodec.ID;
+                                ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:57: error: package com.xuggle.xuggler.video does not exist
+import com.xuggle.xuggler.video.ConverterFactory;
+                               ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:58: error: package com.xuggle.xuggler.video does not exist
+import com.xuggle.xuggler.video.IConverter;
+                               ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:65: error: cannot find symbol
+	private IContainer outContainer;
+	        ^
+  symbol:   class IContainer
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:66: error: cannot find symbol
+	private IStream outStream;
+	        ^
+  symbol:   class IStream
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:67: error: cannot find symbol
+	private IStreamCoder outStreamCoder;
+	        ^
+  symbol:   class IStreamCoder
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:68: error: cannot find symbol
+	private IConverter outConverter;
+	        ^
+  symbol:   class IConverter
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:71: error: cannot find symbol
+	private ICodec codec;
+	        ^
+  symbol:   class ICodec
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:223: error: cannot find symbol
+	private boolean openStream(IContainerFormat format, ICodec codec, IPixelFormat.Type pixelType) 
+	                           ^
+  symbol:   class IContainerFormat
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:223: error: cannot find symbol
+	private boolean openStream(IContainerFormat format, ICodec codec, IPixelFormat.Type pixelType) 
+	                                                    ^
+  symbol:   class ICodec
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:223: error: package IPixelFormat does not exist
+	private boolean openStream(IContainerFormat format, ICodec codec, IPixelFormat.Type pixelType) 
+	                                                                              ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:293: error: package IPixelFormat does not exist
+	private boolean encodeImage(BufferedImage image, IPixelFormat.Type pixelType, long timeStamp) 
+	                                                             ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:343: error: package IPixelFormat does not exist
+	private IVideoPicture getPicture(BufferedImage bgrImage, IPixelFormat.Type pixelType, long timeStamp) {
+	                                                                     ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:343: error: cannot find symbol
+	private IVideoPicture getPicture(BufferedImage bgrImage, IPixelFormat.Type pixelType, long timeStamp) {
+	        ^
+  symbol:   class IVideoPicture
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:364: error: package IPixelFormat does not exist
+	private IConverter getConverter(BufferedImage bgrImage, IPixelFormat.Type pixelType){
+	                                                                    ^
+src/org/opensourcephysics/media/xuggle/XuggleVideoRecorder.java:364: error: cannot find symbol
+	private IConverter getConverter(BufferedImage bgrImage, IPixelFormat.Type pixelType){
+	        ^
+  symbol:   class IConverter
+  location: class XuggleVideoRecorder
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:38: error: package com.xuggle.mediatool does not exist
+import com.xuggle.mediatool.IMediaReader;
+                           ^
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:39: error: package com.xuggle.mediatool does not exist
+import com.xuggle.mediatool.MediaToolAdapter;
+                           ^
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:40: error: package com.xuggle.mediatool does not exist
+import com.xuggle.mediatool.ToolFactory;
+                           ^
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:41: error: package com.xuggle.mediatool.event does not exist
+import com.xuggle.mediatool.event.IVideoPictureEvent;
+                                 ^
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:46: error: cannot find symbol
+public class XuggleThumbnailTool extends MediaToolAdapter {
+                                         ^
+  symbol: class MediaToolAdapter
+src/org/opensourcephysics/media/xuggle/XuggleThumbnailTool.java:103: error: cannot find symbol
+  public void onVideoPicture(IVideoPictureEvent event) {
+                             ^
+  symbol:   class IVideoPictureEvent
+  location: class XuggleThumbnailTool
+src/org/opensourcephysics/media/xuggle/XuggleRes.java:20: error: cannot find symbol
+	static Bundle res = ResourceLoader.getBundle(BUNDLE_NAME, resourceLocale);
+	       ^
+  symbol:   class Bundle
+  location: class XuggleRes
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:51: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.ICodec;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:52: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IContainer;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:53: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IPacket;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:54: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IPixelFormat;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:55: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IStream;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:56: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IStreamCoder;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:57: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IVideoPicture;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:58: error: package com.xuggle.xuggler does not exist
+import com.xuggle.xuggler.IVideoResampler;
+                         ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:59: error: package com.xuggle.xuggler.video does not exist
+import com.xuggle.xuggler.video.ConverterFactory;
+                               ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:60: error: package com.xuggle.xuggler.video does not exist
+import com.xuggle.xuggler.video.IConverter;
+                               ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:119: error: cannot find symbol
+	private IContainer container;
+	        ^
+  symbol:   class IContainer
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:120: error: cannot find symbol
+	private IStreamCoder videoDecoder;
+	        ^
+  symbol:   class IStreamCoder
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:121: error: cannot find symbol
+	private IVideoResampler resampler;
+	        ^
+  symbol:   class IVideoResampler
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:122: error: cannot find symbol
+	private IPacket packet;
+	        ^
+  symbol:   class IPacket
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:123: error: cannot find symbol
+	private IVideoPicture picture;
+	        ^
+  symbol:   class IVideoPicture
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:125: error: cannot find symbol
+	private IConverter converter;
+	        ^
+  symbol:   class IConverter
+  location: class XuggleVideo
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:953: error: cannot find symbol
+	IVideoPicture newPic;
+	^
+  symbol:   class IVideoPicture
+  location: class XuggleVideo
+src/org/opensourcephysics/cabrillo/tracker/TTrack.java:1294: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+			firePropertyChange(PROPERTY_TTRACK_STEP, HINT_STEP_ADDED_OR_REMOVED, new Integer(n)); // $NON-NLS-1$
+			                                                                     ^
+src/org/opensourcephysics/cabrillo/tracker/PointMass.java:546: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+			firePropertyChange(PROPERTY_TTRACK_STEP, HINT_STEP_ADDED_OR_REMOVED, new Integer(n)); // $NON-NLS-1$
+			                                                                     ^
+src/org/opensourcephysics/cabrillo/tracker/PositionStep.java:457: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				m.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+				                                                        ^
+src/org/opensourcephysics/cabrillo/tracker/VectorStep.java:770: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				getTrack().firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); //$NON-NLS-1$
+				                                                                 ^
+src/org/opensourcephysics/cabrillo/tracker/VectorStep.java:876: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				track.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); //$NON-NLS-1$
+				                                                            ^
+src/org/opensourcephysics/cabrillo/tracker/ParticleModel.java:886: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				model.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n));
+				                                                            ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:55: error: cannot find symbol
+        Java2DFrameConverter java2dConverter = null;
+        ^
+  symbol:   class Java2DFrameConverter
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:56: error: package OpenCVFrameConverter does not exist
+        OpenCVFrameConverter.ToMat toMat = null;
+                            ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:57: error: cannot find symbol
+        Mat mat = null;
+        ^
+  symbol:   class Mat
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:58: error: cannot find symbol
+        Mat gray = null;
+        ^
+  symbol:   class Mat
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:59: error: cannot find symbol
+        Mat cornersMat = null;
+        ^
+  symbol:   class Mat
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:61: error: cannot find symbol
+            java2dConverter = new Java2DFrameConverter();
+                                  ^
+  symbol:   class Java2DFrameConverter
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:62: error: package OpenCVFrameConverter does not exist
+            toMat = new OpenCVFrameConverter.ToMat();
+                                            ^
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:63: error: cannot find symbol
+            Frame frame = java2dConverter.convert(img);
+            ^
+  symbol:   class Frame
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:67: error: cannot find symbol
+            gray = new Mat();
+                       ^
+  symbol:   class Mat
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:68: error: cannot find symbol
+            opencv_imgproc.cvtColor(mat, gray, opencv_imgproc.COLOR_BGR2GRAY);
+                                               ^
+  symbol:   variable opencv_imgproc
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:68: error: cannot find symbol
+            opencv_imgproc.cvtColor(mat, gray, opencv_imgproc.COLOR_BGR2GRAY);
+            ^
+  symbol:   variable opencv_imgproc
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:71: error: cannot find symbol
+            Size patternSize = new Size(cols, rows);
+            ^
+  symbol:   class Size
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:71: error: cannot find symbol
+            Size patternSize = new Size(cols, rows);
+                                   ^
+  symbol:   class Size
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/media/xuggle/math/StereoCalibrationManager.java:72: error: cannot find symbol
+            cornersMat = new Mat();
+                             ^
+  symbol:   class Mat
+  location: class StereoCalibrationManager
+src/org/opensourcephysics/cabrillo/tracker/CircleFitterStep.java:762: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				m.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+				                                                        ^
+src/org/opensourcephysics/cabrillo/tracker/OffsetOrigin.java:138: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+			firePropertyChange(PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+			                                               ^
+src/org/opensourcephysics/cabrillo/tracker/RGBRegion.java:505: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); //$NON-NLS-1$
+                                                            ^
+src/org/opensourcephysics/cabrillo/tracker/RGBRegion.java:867: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+			dataFrames.add(new Integer(stepFrame));
+			               ^
+src/org/opensourcephysics/cabrillo/tracker/RGBRegion.java:1297: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); //$NON-NLS-1$
+                                                            ^
+src/org/opensourcephysics/cabrillo/tracker/RGBStep.java:495: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      track.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); //$NON-NLS-1$
+                                                                  ^
+src/org/opensourcephysics/cabrillo/tracker/RGBStep.java:678: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      step.rgbRegion.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(step.n)); //$NON-NLS-1$
+                                                                           ^
+src/org/opensourcephysics/cabrillo/tracker/Vector.java:283: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+		firePropertyChange(PROPERTY_TTRACK_STEP, HINT_STEP_ADDED_OR_REMOVED, new Integer(n)); // $NON-NLS-1$
+		                                                                     ^
+src/org/opensourcephysics/cabrillo/tracker/VectorSum.java:222: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      tails.put(new Integer(n), new TPoint(x, y));
+                ^
+src/org/opensourcephysics/cabrillo/tracker/VectorSum.java:357: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+          tails.put(new Integer(n), deletedStep.getTail());
+                    ^
+src/org/opensourcephysics/cabrillo/tracker/VectorSum.java:374: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+      Integer i = new Integer(n);
+                  ^
+src/org/opensourcephysics/cabrillo/tracker/Protractor.java:221: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+							firePropertyChange(PROPERTY_TTRACK_STEP, null, new Integer(n));
+							                                               ^
+src/org/opensourcephysics/cabrillo/tracker/Protractor.java:254: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+						firePropertyChange(PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+						                                               ^
+src/org/opensourcephysics/cabrillo/tracker/TapeStep.java:934: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+	      	tape.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+	      	                                                           ^
+src/org/opensourcephysics/cabrillo/tracker/TapeStep.java:999: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+	      	tape.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+	      	                                                           ^
+src/org/opensourcephysics/cabrillo/tracker/TapeMeasure.java:220: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+						firePropertyChange(PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+						                                               ^
+src/org/opensourcephysics/cabrillo/tracker/TapeMeasure.java:250: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+						firePropertyChange(PROPERTY_TTRACK_STEP, null, new Integer(n)); // $NON-NLS-1$
+						                                               ^
+src/org/opensourcephysics/cabrillo/tracker/ProtractorStep.java:771: warning: [removal] Integer(int) in Integer has been deprecated and marked for removal
+				protractor.firePropertyChange(TTrack.PROPERTY_TTRACK_STEP, null, new Integer(n())); // $NON-NLS-1$
+				                                                                 ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:402: warning: [removal] Boolean(boolean) in Boolean has been deprecated and marked for removal
+		firePropertyChange(Video.PROPERTY_VIDEO_PLAYING, null, new Boolean(true));
+		                                                       ^
+src/org/opensourcephysics/media/xuggle/XuggleVideo.java:412: warning: [removal] Boolean(boolean) in Boolean has been deprecated and marked for removal
+		firePropertyChange(Video.PROPERTY_VIDEO_PLAYING, null, new Boolean(false));
+		                                                       ^
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+Note: src/org/opensourcephysics/cabrillo/tracker/TFrame.java uses unchecked or unsafe operations.
+Note: Recompile with -Xlint:unchecked for details.
+100 errors
+26 warnings
+only showing the first 100 errors, of 261 total; use -Xmaxerrs if you would like to see more
