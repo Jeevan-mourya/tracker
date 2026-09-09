@@ -25,25 +25,28 @@ else
     exit 1
 fi
 
-echo ""
-echo "3. Compiling ONLY FirstDerivative.java with the ClassCastException fix..."
+echo "3. Compiling ALL custom source code (including Stereo3D UI and fixes)..."
 echo "   (using extracted classes as classpath)"
 
+# Find all java files in your src directory
+find src -name "*.java" > source_files.txt
+
+# Compile all of them, overwriting the base classes with your custom code
 javac -d "$TEMP_CLASSES" \
       -encoding UTF-8 \
       -source 17 \
       -target 17 \
       -Xlint:-serial \
       -cp "$TEMP_CLASSES" \
-      src/org/opensourcephysics/cabrillo/tracker/FirstDerivative.java 2>&1 | tee build-firstderivative.log
+      @source_files.txt 2>&1 | tee build-src.log
 
-if [ ! -f "$TEMP_CLASSES/org/opensourcephysics/cabrillo/tracker/FirstDerivative.class" ]; then
-    echo "   ERROR: FirstDerivative.class was not created!"
-    cat build-firstderivative.log
+if [ ${PIPESTATUS[0]} -ne 0 ]; then
+    echo "   ERROR: Compilation failed!"
+    cat build-src.log
     exit 1
 fi
 
-echo "   ✓ FirstDerivative.class compiled successfully with defensive type-checking fix"
+echo "   ✓ All custom code compiled successfully!"
 
 echo ""
 echo "4. Extracting all dependency JARs for fat JAR..."
@@ -105,6 +108,6 @@ fi
 echo ""
 echo "Cleaning up temporary files..."
 rm -rf "$TEMP_CLASSES" staging_dir Manifest.txt
-rm -f build-firstderivative.log
+rm -f build-src.log source_files.txt
 
 echo "Done!"
