@@ -1,0 +1,6 @@
+{
+  "name": "Tracker Video Analysis",
+  "description": "Physics video analysis and modeling tool supporting 2D and 3D dual-camera stereo tracking, DLT triangulation calibration, kinematics, and curve fitting.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

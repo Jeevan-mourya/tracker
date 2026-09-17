@@ -1,0 +1,139 @@
+import { SampleExperiment } from '../types';
+
+export const SAMPLE_3D_EXPERIMENTS: SampleExperiment[] = [
+  {
+    id: '3d-projectile-crosswind',
+    title: '3D Projectile with Lateral Deflection',
+    description: 'Dual-camera 3D video recording of a projectile subjected to a crosswind. Observe the vertical parabolic arc (Y), constant forward velocity (X), and transverse 3D deflection (Z) triangulated from synchronized cameras.',
+    videoUrl: '/videos/ball_toss.mp4',
+    category: '3D Kinematics',
+    is3D: true,
+    calibration: {
+      active: true,
+      pointA: { x: 120, y: 380 },
+      pointB: { x: 120, y: 140 },
+      realLength: 1.0,
+      unit: 'm',
+      scale: 240,
+      locked: true,
+      visible: true,
+    },
+    axes: {
+      origin: { x: 120, y: 380 },
+      angle: 0,
+      visible: true,
+      locked: false,
+      gridVisible: true,
+    },
+    clip: {
+      startFrame: 0,
+      endFrame: 22,
+      stepSize: 1,
+      fps: 30,
+      startTime: 0.0,
+      frameDt: 1 / 30,
+      dt: 1 / 30,
+      totalFrames: 23,
+    },
+    triangulation: {
+      method: 'orthogonal-front-side',
+      pixelsPerMeterCam1: 240,
+      pixelsPerMeterCam2: 240,
+      originCam1: { x: 120, y: 380 },
+      originCam2: { x: 120, y: 380 },
+      baselineMeters: 1.2,
+      convergenceAngleDeg: 90,
+      calibrated: true,
+      meanResidualMeters: 0.002,
+    },
+    samplePoints: [
+      // 3D Ball path: X moves forward, Y launches and falls, Z drifts
+      { frame: 0, px: 130, py: 360, cam2Px: 125, cam2Py: 360, z: 0.02 },
+      { frame: 1, px: 144, py: 326, cam2Px: 132, cam2Py: 326, z: 0.05 },
+      { frame: 2, px: 158, py: 295, cam2Px: 140, cam2Py: 295, z: 0.08 },
+      { frame: 3, px: 172, py: 268, cam2Px: 149, cam2Py: 268, z: 0.12 },
+      { frame: 4, px: 186, py: 244, cam2Px: 159, cam2Py: 244, z: 0.16 },
+      { frame: 5, px: 200, py: 223, cam2Px: 170, cam2Py: 223, z: 0.21 },
+      { frame: 6, px: 214, py: 205, cam2Px: 182, cam2Py: 205, z: 0.26 },
+      { frame: 7, px: 228, py: 190, cam2Px: 195, cam2Py: 190, z: 0.31 },
+      { frame: 8, px: 242, py: 178, cam2Px: 209, cam2Py: 178, z: 0.37 },
+      { frame: 9, px: 256, py: 170, cam2Px: 224, cam2Py: 170, z: 0.43 },
+      { frame: 10, px: 270, py: 165, cam2Px: 240, cam2Py: 165, z: 0.50 }, // apex
+      { frame: 11, px: 284, py: 163, cam2Px: 257, cam2Py: 163, z: 0.57 },
+      { frame: 12, px: 298, py: 165, cam2Px: 275, cam2Py: 165, z: 0.65 },
+      { frame: 13, px: 312, py: 170, cam2Px: 294, cam2Py: 170, z: 0.72 },
+      { frame: 14, px: 326, py: 178, cam2Px: 314, cam2Py: 178, z: 0.81 },
+      { frame: 15, px: 340, py: 190, cam2Px: 335, cam2Py: 190, z: 0.90 },
+      { frame: 16, px: 354, py: 205, cam2Px: 357, cam2Py: 205, z: 0.99 },
+      { frame: 17, px: 368, py: 223, cam2Px: 380, cam2Py: 223, z: 1.08 },
+      { frame: 18, px: 382, py: 244, cam2Px: 404, cam2Py: 244, z: 1.18 },
+      { frame: 19, px: 396, py: 268, cam2Px: 429, cam2Py: 268, z: 1.29 },
+      { frame: 20, px: 410, py: 295, cam2Px: 455, cam2Py: 295, z: 1.40 },
+      { frame: 21, px: 424, py: 326, cam2Px: 482, cam2Py: 326, z: 1.51 },
+      { frame: 22, px: 438, py: 360, cam2Px: 510, cam2Py: 360, z: 1.62 },
+    ],
+  },
+  {
+    id: '3d-conical-pendulum',
+    title: '3D Conical Pendulum (Circular Centripetal Orbit)',
+    description: '3D steady circular motion of a pendulum bob suspended in space. Front Camera records harmonic X(t) motion, Side Camera records orthogonal harmonic Z(t) motion, reconstructing a true 3D spatial circle.',
+    videoUrl: '/videos/pendulum.mp4',
+    category: '3D Harmonic Motion',
+    is3D: true,
+    calibration: {
+      active: true,
+      pointA: { x: 240, y: 350 },
+      pointB: { x: 240, y: 150 },
+      realLength: 0.8,
+      unit: 'm',
+      scale: 250,
+      locked: true,
+      visible: true,
+    },
+    axes: {
+      origin: { x: 240, y: 250 },
+      angle: 0,
+      visible: true,
+      locked: false,
+      gridVisible: true,
+    },
+    clip: {
+      startFrame: 0,
+      endFrame: 24,
+      stepSize: 1,
+      fps: 30,
+      startTime: 0.0,
+      frameDt: 1 / 30,
+      dt: 1 / 30,
+      totalFrames: 25,
+    },
+    triangulation: {
+      method: 'orthogonal-front-side',
+      pixelsPerMeterCam1: 250,
+      pixelsPerMeterCam2: 250,
+      originCam1: { x: 240, y: 250 },
+      originCam2: { x: 240, y: 250 },
+      baselineMeters: 1.0,
+      convergenceAngleDeg: 90,
+      calibrated: true,
+      meanResidualMeters: 0.001,
+    },
+    samplePoints: Array.from({ length: 25 }, (_, i) => {
+      const theta = (i / 24) * 2 * Math.PI;
+      const R = 0.45; // radius in meters
+      const scale = 250;
+      const xMeters = R * Math.cos(theta);
+      const zMeters = R * Math.sin(theta);
+      const yMeters = 0.5; // constant height
+
+      return {
+        frame: i,
+        px: Math.round(240 + xMeters * scale),
+        py: Math.round(250 - yMeters * scale),
+        cam2Px: Math.round(240 + zMeters * scale),
+        cam2Py: Math.round(250 - yMeters * scale),
+        z: zMeters,
+      };
+    }),
+  },
+];
