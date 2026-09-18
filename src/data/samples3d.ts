@@ -6,6 +6,7 @@ export const SAMPLE_3D_EXPERIMENTS: SampleExperiment[] = [
     title: '3D Projectile with Lateral Deflection',
     description: 'Dual-camera 3D video recording of a projectile subjected to a crosswind. Observe the vertical parabolic arc (Y), constant forward velocity (X), and transverse 3D deflection (Z) triangulated from synchronized cameras.',
     videoUrl: '/videos/ball_toss.mp4',
+    videoUrlCam2: '/videos/ball_toss_slow.mp4',
     category: '3D Kinematics',
     is3D: true,
     calibration: {
@@ -77,7 +78,8 @@ export const SAMPLE_3D_EXPERIMENTS: SampleExperiment[] = [
     id: '3d-conical-pendulum',
     title: '3D Conical Pendulum (Circular Centripetal Orbit)',
     description: '3D steady circular motion of a pendulum bob suspended in space. Front Camera records harmonic X(t) motion, Side Camera records orthogonal harmonic Z(t) motion, reconstructing a true 3D spatial circle.',
-    videoUrl: '/videos/pendulum.mp4',
+    videoUrl: '/videos/ball_toss.mp4',
+    videoUrlCam2: '/videos/ball_toss_slow.mp4',
     category: '3D Harmonic Motion',
     is3D: true,
     calibration: {

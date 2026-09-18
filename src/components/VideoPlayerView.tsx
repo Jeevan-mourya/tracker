@@ -12,6 +12,7 @@ import {
   Crosshair,
   Trash,
   Maximize2,
+  Undo2,
 } from 'lucide-react';
 
 interface VideoPlayerViewProps {
@@ -35,6 +36,9 @@ interface VideoPlayerViewProps {
   showVectors: boolean;
   showLoupe?: boolean;
   autoAdvance: boolean;
+  requireShiftToMark?: boolean;
+  onToggleRequireShiftToMark?: () => void;
+  onUndoLastPoint?: () => void;
 }
 
 type DragTarget =
@@ -66,6 +70,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   showVectors,
   showLoupe = true,
   autoAdvance,
+  requireShiftToMark = true,
+  onToggleRequireShiftToMark,
+  onUndoLastPoint,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -78,6 +85,25 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const [mouseCoord, setMouseCoord] = useState<{ px: number; py: number; x: number; y: number } | null>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
+  const [isShiftPressed, setIsShiftPressed] = useState<boolean>(false);
+  const [showShiftWarning, setShowShiftWarning] = useState<boolean>(false);
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Monitor Shift key for visual feedback and safety
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftPressed(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftPressed(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
 
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const activeStep = activeTrack?.steps.find((s) => s.frame === currentFrame);
@@ -90,7 +116,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const video = videoRef.current;
     if (!video || isSynthetic) return;
 
-    const targetTime = currentFrame / clip.fps;
+    const targetTime = Math.max(0.001, currentFrame / clip.fps);
     if (Math.abs(video.currentTime - targetTime) > 0.03) {
       video.currentTime = targetTime;
     }
@@ -132,17 +158,32 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
+    // Force frame load on some browsers (like Safari/Chrome when hidden/paused)
+    video.play().then(() => video.pause()).catch(() => {});
+    if (currentFrame === 0) {
+      video.currentTime = 0.001; // tiny offset to force frame render
+    }
+
     const duration = video.duration || 1;
-    const totalFrames = Math.max(10, Math.floor(duration * clip.fps));
+    const totalFrames = Math.max(10, Math.round(duration * clip.fps));
     const width = video.videoWidth || 640;
     const height = video.videoHeight || 480;
 
     setCanvasSize({ width, height });
     onUpdateClip({
       totalFrames,
-      endFrame: Math.min(clip.endFrame, totalFrames - 1),
+      endFrame: totalFrames - 1,
     });
   };
+
+  // Force video reload and seek when videoUrl changes
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video && videoUrl) {
+      video.load();
+      video.currentTime = Math.max(0.001, currentFrame / clip.fps);
+    }
+  }, [videoUrl]);
 
   // Convert client click coordinates to video/canvas intrinsic coordinate space
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -651,7 +692,15 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       }
     }
 
-    // 4. Default: Add point for current frame
+    // 4. Default: Add point for current frame (Protected by Shift+Click Tracker OSP rule)
+    if (requireShiftToMark && !e.shiftKey && !isShiftPressed) {
+      // User clicked without holding Shift: ignore point placement to prevent accidental marks
+      setShowShiftWarning(true);
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+      warningTimerRef.current = setTimeout(() => setShowShiftWarning(false), 3000);
+      return;
+    }
+
     const world = pixelToWorld(px, py, axes, calibration);
     const newStep: PointStep = {
       frame: currentFrame,
@@ -699,14 +748,14 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   };
 
   return (
-    <div id="video-player-view" className="flex flex-col h-full bg-slate-900 select-none overflow-hidden">
+    <div id="video-player-view" className="flex flex-col h-full bg-[#d4d0c8] select-none overflow-hidden">
       {/* Video & Canvas Stage */}
       <div
         ref={containerRef}
-        className="relative flex-1 bg-slate-950 flex items-center justify-center p-2 min-h-0 overflow-hidden"
+        className="relative flex-1 bg-[#141414] flex items-center justify-center p-2 min-h-0 overflow-hidden"
       >
         <div
-          className="relative rounded-[5px] overflow-hidden border border-slate-800 shadow-[inset_0_1px_5px_rgba(0,0,0,0.5),0_4px_16px_rgba(0,0,0,0.4)]"
+          className="relative rounded-[2px] overflow-hidden border border-[#555555] shadow-sm"
           style={{ maxWidth: '100%', maxHeight: '100%' }}
         >
           {/* Real HTML5 Video element */}
@@ -797,8 +846,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             )}
           </div>
 
-          {/* Status badge in top-left */}
-          <div className="absolute top-2 left-2 flex items-center gap-2 pointer-events-none">
+          {/* Status badge and Shift Mode in top-left */}
+          <div className="absolute top-2 left-2 flex items-center gap-2 pointer-events-none z-10">
             <div className="bg-[#e0e0e0] border border-[#808080] rounded-[3px] px-2 py-0.5 text-[11px] font-mono text-black flex items-center gap-1.5">
               <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
               <span>
@@ -808,12 +857,40 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 (t = {currentTime.toFixed(3)}s)
               </span>
             </div>
+
+            {/* Shift+Click Tracker OSP Safety Badge */}
+            {requireShiftToMark && (
+              <div
+                className={`px-2 py-0.5 rounded-[3px] border text-[10px] font-mono flex items-center gap-1.5 transition-colors ${
+                  isShiftPressed
+                    ? 'bg-amber-100 border-amber-600 text-amber-950 font-bold shadow-sm'
+                    : 'bg-[#efefef] border-[#808080] text-black font-medium'
+                }`}
+              >
+                <Crosshair className={`w-3 h-3 ${isShiftPressed ? 'text-amber-700' : 'text-[#555555]'}`} />
+                <span>Mark Mode:</span>
+                <strong className={isShiftPressed ? 'text-amber-700 underline' : 'text-emerald-700'}>
+                  {isShiftPressed ? 'READY (Shift Held)' : 'SAFE (Hold Shift to Mark)'}
+                </strong>
+              </div>
+            )}
+
             {activeStep && (
               <div className="bg-white border border-[#808080] text-black font-semibold rounded-[3px] px-2 py-0.5 text-[10px] font-mono">
                 Marked: ({activeStep.x.toFixed(3)}, {activeStep.y.toFixed(3)})m
               </div>
             )}
           </div>
+
+          {/* Accidental Click Interception Toast Notice */}
+          {showShiftWarning && (
+            <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-[#1e3a5f] text-white px-3.5 py-1.5 rounded-[3px] border border-[#0f1d30] shadow-lg flex items-center gap-2 text-xs font-mono pointer-events-none z-30 animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-amber-400" />
+              <span>
+                <strong>Tracker OSP Safety Mode:</strong> Hold <span className="underline font-bold text-amber-300">Shift + Click</span> on video to mark a point mass.
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -836,7 +913,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                   onFrameChange(val);
                 }
               }}
-              className="w-11 px-1 py-0.5 rounded-[2px] border border-[#808080] bg-white text-black font-bold text-center outline-none"
+              className="w-14 px-1 py-0.5 rounded-[2px] border border-[#808080] bg-white text-black font-bold text-center outline-none"
               title="Direct frame jump"
             />
           </div>
@@ -880,8 +957,10 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           </div>
 
           {/* Time readout */}
-          <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-black">
-            <span className="w-16 text-right">{currentTime.toFixed(3)}s</span>
+          <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-black shrink-0">
+            <span className="text-right">
+              {Math.floor(currentTime / 60).toString().padStart(2, '0')}:{(currentTime % 60).toFixed(3).padStart(6, '0')} ({currentTime.toFixed(2)}s)
+            </span>
           </div>
         </div>
 
@@ -951,15 +1030,28 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             </button>
           </div>
 
-          {/* Right: Point deletion & playback speed */}
+          {/* Right: Undo, Point deletion & playback speed */}
           <div className="flex items-center gap-2 text-xs">
+            {onUndoLastPoint && (
+              <button
+                id="btn-undo-point"
+                type="button"
+                onClick={onUndoLastPoint}
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors text-[11px] font-semibold"
+                title="Undo last marked point (Ctrl+Z)"
+              >
+                <Undo2 className="w-3 h-3 text-[#1e3a5f]" />
+                <span>Undo Point</span>
+              </button>
+            )}
+
             {activeStep && (
               <button
                 id="btn-delete-frame-point"
                 type="button"
                 onClick={() => onDeleteCurrentPoint(currentFrame)}
                 className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-[#8b0000] border border-[#808080] transition-colors text-[11px] font-semibold"
-                title="Delete tracking point at current frame"
+                title="Delete tracking point at current frame (Del)"
               >
                 <Trash className="w-3 h-3" />
                 <span>Delete mark (F:{currentFrame})</span>

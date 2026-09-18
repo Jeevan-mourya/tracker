@@ -20,6 +20,8 @@ import {
   Crosshair,
   CheckCircle2,
   Upload,
+  Undo2,
+  Trash,
 } from 'lucide-react';
 import { triangulateDLT, buildDefaultDLT } from '../utils/triangulation';
 
@@ -42,6 +44,8 @@ interface DualVideoPlayerViewProps {
   showVectors?: boolean;
   showLoupe?: boolean;
   autoAdvance?: boolean;
+  requireShiftToMark?: boolean;
+  onUndoLastPoint?: () => void;
 }
 
 type DualLayout = 'side-by-side' | 'cam1-focus' | 'cam2-focus';
@@ -65,13 +69,17 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   showVectors = true,
   showLoupe = false,
   autoAdvance = true,
+  requireShiftToMark = true,
+  onUndoLastPoint,
 }) => {
-  // Video and Canvas references
+  // Video, Canvas, and Input references
   const videoRefCam1 = useRef<HTMLVideoElement | null>(null);
   const videoRefCam2 = useRef<HTMLVideoElement | null>(null);
   const canvasRefCam1 = useRef<HTMLCanvasElement | null>(null);
   const canvasRefCam2 = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputCam1Ref = useRef<HTMLInputElement | null>(null);
+  const fileInputCam2Ref = useRef<HTMLInputElement | null>(null);
 
   // Layout & Controls State
   const [dualLayout, setDualLayout] = useState<DualLayout>('side-by-side');
@@ -79,7 +87,27 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [activeCameraHover, setActiveCameraHover] = useState<'cam1' | 'cam2' | null>(null);
   const [mouseCoord, setMouseCoord] = useState<{ x: number; y: number } | null>(null);
-  const [canvasDims, setCanvasDims] = useState<{ w: number; h: number }>({ w: 480, h: 360 });
+  const [canvasSizeCam1, setCanvasSizeCam1] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
+  const [canvasSizeCam2, setCanvasSizeCam2] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
+  const [isShiftPressed, setIsShiftPressed] = useState<boolean>(false);
+  const [showShiftWarning, setShowShiftWarning] = useState<boolean>(false);
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Shift key monitor for Tracker OSP mark mode
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftPressed(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftPressed(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
 
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const steps = activeTrack ? activeTrack.steps : [];
@@ -108,187 +136,164 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     return () => clearInterval(intervalId);
   }, [isPlaying, clip.startFrame, clip.endFrame, clip.stepSize, clip.fps, playbackSpeed, onFrameChange]);
 
+  // Video metadata loaders to lock exact pixel bounds and video duration
+  const handleLoadedMetadataCam1 = () => {
+    const v = videoRefCam1.current;
+    if (!v) return;
+    const w = v.videoWidth || 640;
+    const h = v.videoHeight || 480;
+    setCanvasSizeCam1({ width: w, height: h });
+    if (v.duration && Number.isFinite(v.duration) && v.duration > 0) {
+      const totalFrames = Math.max(10, Math.round(v.duration * clip.fps));
+      onUpdateClip({
+        totalFrames,
+        endFrame: totalFrames - 1,
+      });
+    }
+    v.currentTime = Math.max(0.001, clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps));
+  };
+
+  const handleLoadedMetadataCam2 = () => {
+    const v = videoRefCam2.current;
+    if (!v) return;
+    const w = v.videoWidth || 640;
+    const h = v.videoHeight || 480;
+    setCanvasSizeCam2({ width: w, height: h });
+    if (v.duration && Number.isFinite(v.duration) && v.duration > 0) {
+      const totalFrames = Math.max(10, Math.round(v.duration * clip.fps));
+      onUpdateClip({
+        totalFrames,
+        endFrame: totalFrames - 1,
+      });
+    }
+    v.currentTime = Math.max(0.001, clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps));
+  };
+
+  // Video URL reload handlers
+  useEffect(() => {
+    const v1 = videoRefCam1.current;
+    if (v1 && videoUrlCam1) {
+      v1.load();
+      v1.currentTime = Math.max(0.001, clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps));
+    }
+  }, [videoUrlCam1]);
+
+  useEffect(() => {
+    const v2 = videoRefCam2.current;
+    if (v2 && videoUrlCam2) {
+      v2.load();
+      v2.currentTime = Math.max(0.001, clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps));
+    }
+  }, [videoUrlCam2]);
+
   // Sync HTML5 video elements to frame if video sources are provided
   useEffect(() => {
-    const time = clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps);
+    const time = Math.max(0.001, clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps));
     if (videoRefCam1.current && videoUrlCam1) {
-      videoRefCam1.current.currentTime = time;
+      if (Math.abs(videoRefCam1.current.currentTime - time) > 0.03) {
+        videoRefCam1.current.currentTime = time;
+      }
     }
     if (videoRefCam2.current && videoUrlCam2) {
-      videoRefCam2.current.currentTime = time;
+      if (Math.abs(videoRefCam2.current.currentTime - time) > 0.03) {
+        videoRefCam2.current.currentTime = time;
+      }
     }
   }, [currentFrame, clip.startTime, clip.frameDt, clip.dt, clip.fps, videoUrlCam1, videoUrlCam2]);
 
-  // Synthetic Physics Animation Renderers when real MP4 files aren't uploaded
-  const drawSyntheticScene = useCallback(
-    (
-      ctx: CanvasRenderingContext2D,
-      camId: 'cam1' | 'cam2',
-      width: number,
-      height: number
-    ) => {
-      // Background gradient
-      const grad = ctx.createLinearGradient(0, 0, 0, height);
-      grad.addColorStop(0, '#f1f5f9');
-      grad.addColorStop(1, '#e2e8f0');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, width, height);
-
-      // Floor & Wall Perspective
-      ctx.fillStyle = '#cbd5e1';
-      ctx.fillRect(0, height - 45, width, 45);
-
-      ctx.strokeStyle = '#94a3b8';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, height - 45);
-      ctx.lineTo(width, height - 45);
-      ctx.stroke();
-
-      // Measurement Grid
-      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
-      ctx.lineWidth = 1;
-      for (let x = 40; x < width; x += 40) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height - 45);
-        ctx.stroke();
-      }
-      for (let y = 30; y < height - 45; y += 30) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-
-      // Camera label badge
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-      ctx.fillRect(10, 10, 150, 24);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.fillText(
-        camId === 'cam1' ? 'CAM 1: Front View (X-Y)' : 'CAM 2: Side View (Z-Y)',
-        18,
-        26
-      );
-
-      // Simulate 3D Projectile object with lateral wind / deflection
-      // Real 3D physical coordinates at frame:
-      const t = currentFrame * (clip.frameDt || 1 / clip.fps);
-      const v0x = 1.6;
-      const v0y = 4.2;
-      const v0z = 0.8;
-      const g = 9.81;
-
-      const simX = v0x * t;
-      const simY = Math.max(0, v0y * t - 0.5 * g * t * t);
-      const simZ = v0z * t; // deflection along Z
-
-      // Cam 1 (Front View): X is horizontal, Y is vertical
-      // Cam 2 (Side View): Z is horizontal, Y is vertical
-      const scale = triangulation.pixelsPerMeterCam1 || 240;
-      const origin1 = triangulation.originCam1;
-      const origin2 = triangulation.originCam2;
-
-      let ballPx = 0, ballPy = 0;
-      if (camId === 'cam1') {
-        ballPx = origin1.x + simX * scale;
-        ballPy = origin1.y - simY * scale;
-      } else {
-        ballPx = origin2.x + simZ * scale;
-        ballPy = origin2.y - simY * scale;
-      }
-
-      // Draw synthetic high-speed sphere
-      ctx.fillStyle = '#ea580c';
-      ctx.beginPath();
-      ctx.arc(ballPx, ballPy, 11, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = '#c2410c';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      // Specular highlight
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-      ctx.beginPath();
-      ctx.arc(ballPx - 3, ballPy - 3, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-    },
-    [currentFrame, clip.fps, clip.frameDt, triangulation]
-  );
-
-  // Render on Cam 1 & Cam 2 canvases
+  // Render on Cam 1 & Cam 2 canvases (Transparent scientific overlay)
   const renderOverlay = useCallback(
     (
       canvas: HTMLCanvasElement | null,
-      video: HTMLVideoElement | null,
-      videoUrl: string | undefined,
       camId: 'cam1' | 'cam2'
     ) => {
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const rect = canvas.getBoundingClientRect();
-      const width = rect.width || 480;
-      const height = rect.height || 360;
-      const dpr = window.devicePixelRatio || 1;
+      const { width, height } = canvas;
+      ctx.clearRect(0, 0, width, height);
 
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      ctx.scale(dpr, dpr);
-
-      // 1. Draw video frame or synthetic backdrop
-      if (videoUrl && video && video.readyState >= 2) {
-        ctx.drawImage(video, 0, 0, width, height);
-      } else {
-        drawSyntheticScene(ctx, camId, width, height);
-      }
-
-      // 2. Draw origin crosshair for this camera
+      // 1. Draw origin crosshair & coordinate axes for this camera
       const origin = camId === 'cam1' ? triangulation.originCam1 : triangulation.originCam2;
-      ctx.strokeStyle = 'rgba(37, 99, 235, 0.6)';
+      ctx.strokeStyle = 'rgba(37, 99, 235, 0.8)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(origin.x - 15, origin.y);
-      ctx.lineTo(origin.x + 15, origin.y);
-      ctx.moveTo(origin.x, origin.y - 15);
-      ctx.lineTo(origin.x, origin.y + 15);
+      ctx.moveTo(origin.x - 24, origin.y);
+      ctx.lineTo(origin.x + 24, origin.y);
+      ctx.moveTo(origin.x, origin.y - 24);
+      ctx.lineTo(origin.x, origin.y + 24);
       ctx.stroke();
 
-      // 3. Draw tracked points on this camera
+      // Axis labels
+      ctx.fillStyle = '#2563eb';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText(camId === 'cam1' ? '+X' : '+Z', origin.x + 28, origin.y + 4);
+      ctx.fillText('+Y', origin.x - 6, origin.y - 28);
+
+      // 2. Trajectory lines
+      if (showTrails && steps.length > 1) {
+        ctx.strokeStyle = activeTrack.color || '#3b82f6';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        let started = false;
+        for (const s of steps) {
+          const pt = camId === 'cam1' ? s.cam1 : s.cam2;
+          if (!pt) continue;
+          if (!started) {
+            ctx.moveTo(pt.px, pt.py);
+            started = true;
+          } else {
+            ctx.lineTo(pt.px, pt.py);
+          }
+        }
+        ctx.stroke();
+      }
+
+      // 3. Draw TrackEye-style Reticles for tracked points on this camera
       steps.forEach((s) => {
         const pt = camId === 'cam1' ? s.cam1 : s.cam2;
         if (!pt) return;
 
         const isCur = s.frame === currentFrame;
 
-        // Trail connection line
-        if (showTrails) {
-          ctx.strokeStyle = activeTrack.color;
-          ctx.lineWidth = 2;
-        }
+        // Reticle colors
+        const strokeColor = isCur ? '#ef4444' : (activeTrack.color || '#3b82f6');
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = isCur ? 2 : 1.2;
 
-        // Marker
-        ctx.fillStyle = isCur ? '#2563eb' : activeTrack.color;
+        // Center reticle ring
         ctx.beginPath();
-        ctx.arc(pt.px, pt.py, isCur ? 5.5 : 3.5, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.arc(pt.px, pt.py, isCur ? 6.5 : 4, 0, Math.PI * 2);
+        ctx.stroke();
 
+        // Crosshair reticle ticks
+        const tick = isCur ? 12 : 7;
+        const gap = isCur ? 3.5 : 2;
+        ctx.beginPath();
+        ctx.moveTo(pt.px - tick, pt.py);
+        ctx.lineTo(pt.px - gap, pt.py);
+        ctx.moveTo(pt.px + gap, pt.py);
+        ctx.lineTo(pt.px + tick, pt.py);
+        ctx.moveTo(pt.px, pt.py - tick);
+        ctx.lineTo(pt.px, pt.py - gap);
+        ctx.moveTo(pt.px, pt.py + gap);
+        ctx.lineTo(pt.px, pt.py + tick);
+        ctx.stroke();
+
+        // Point label
         if (isCur) {
-          ctx.strokeStyle = '#2563eb';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(pt.px, pt.py, 9, 0, Math.PI * 2);
-          ctx.stroke();
+          ctx.fillStyle = '#ef4444';
+          ctx.font = 'bold 10px monospace';
+          ctx.fillText(`P#${s.frame}`, pt.px + 10, pt.py - 10);
         }
       });
 
       // 4. Epipolar horizontal reference alignment line when hovering the other camera
       if (activeCameraHover && activeCameraHover !== camId && mouseCoord) {
-        ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
-        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.75)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(0, mouseCoord.y);
         ctx.lineTo(width, mouseCoord.y);
@@ -297,7 +302,6 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       }
     },
     [
-      drawSyntheticScene,
       triangulation,
       steps,
       currentFrame,
@@ -310,21 +314,46 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
   // Trigger render on frame or state change
   useEffect(() => {
-    renderOverlay(canvasRefCam1.current, videoRefCam1.current, videoUrlCam1, 'cam1');
-    renderOverlay(canvasRefCam2.current, videoRefCam2.current, videoUrlCam2, 'cam2');
-  }, [renderOverlay, currentFrame, steps, videoUrlCam1, videoUrlCam2]);
+    renderOverlay(canvasRefCam1.current, 'cam1');
+    renderOverlay(canvasRefCam2.current, 'cam2');
+  }, [renderOverlay, currentFrame, steps, canvasSizeCam1, canvasSizeCam2]);
+
+  // Handle Mouse movement on canvas with coordinate scaling
+  const handleMouseMove = (
+    e: React.MouseEvent<HTMLCanvasElement>,
+    camId: 'cam1' | 'cam2'
+  ) => {
+    const canvas = camId === 'cam1' ? canvasRefCam1.current : canvasRefCam2.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const px = Math.round((e.clientX - rect.left) * scaleX);
+    const py = Math.round((e.clientY - rect.top) * scaleY);
+    setMouseCoord({ x: px, y: py });
+  };
 
   // Handle Marking point on Camera 1 or Camera 2
   const handleCanvasClick = (
     e: React.MouseEvent<HTMLCanvasElement>,
     camId: 'cam1' | 'cam2'
   ) => {
+    // Enforce Shift+Click for marking to prevent accidental clicks
+    if (requireShiftToMark && !e.shiftKey && !isShiftPressed) {
+      setShowShiftWarning(true);
+      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+      warningTimerRef.current = setTimeout(() => setShowShiftWarning(false), 3000);
+      return;
+    }
+
     const canvas = camId === 'cam1' ? canvasRefCam1.current : canvasRefCam2.current;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
-    const px = Math.round(e.clientX - rect.left);
-    const py = Math.round(e.clientY - rect.top);
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const px = Math.round((e.clientX - rect.left) * scaleX);
+    const py = Math.round((e.clientY - rect.top) * scaleY);
 
     // Existing point for this frame?
     const existing = steps.find((s) => s.frame === currentFrame);
@@ -513,16 +542,38 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         </div>
       </div>
 
+      {/* Hidden File Inputs for Local Uploads */}
+      <input
+        ref={fileInputCam1Ref}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={(e) => e.target.files?.[0] && onUploadCam1?.(e.target.files[0])}
+      />
+      <input
+        ref={fileInputCam2Ref}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={(e) => e.target.files?.[0] && onUploadCam2?.(e.target.files[0])}
+      />
+
       {/* Dual Video Canvases Area */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden bg-[#d4d0c8] p-2 gap-2">
-        {/* Hidden Video Elements for decoding uploaded MP4s */}
-        <video ref={videoRefCam1} src={videoUrlCam1} className="hidden" muted playsInline />
-        <video ref={videoRefCam2} src={videoUrlCam2} className="hidden" muted playsInline />
+        {/* Accidental Click Interception Toast Notice */}
+        {showShiftWarning && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-[#1e3a5f] text-white px-3.5 py-1.5 rounded-[3px] border border-[#0f1d30] shadow-lg flex items-center gap-2 text-xs font-mono pointer-events-none z-30 animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span>
+              <strong>Tracker OSP Stereo Safety:</strong> Hold <span className="underline font-bold text-amber-300">Shift + Click</span> on Camera 1 or Camera 2 to mark coordinates.
+            </span>
+          </div>
+        )}
 
         {/* Camera 1 Viewport */}
         {(dualLayout === 'side-by-side' || dualLayout === 'cam1-focus') && (
           <div className="flex-1 flex flex-col h-full bg-white border border-[#808080] rounded-[3px] overflow-hidden relative">
-            <div className="bg-[#e0e0e0] border-b border-[#808080] px-2 py-1 flex items-center justify-between text-[11px]">
+            <div className="bg-[#e0e0e0] border-b border-[#808080] px-2 py-1 flex items-center justify-between text-[11px] shrink-0">
               <div className="flex items-center gap-1.5 font-bold text-black">
                 <span className="w-2 h-2 rounded-full bg-[#1e3a5f]" />
                 Camera 1 (Front View X-Y)
@@ -538,30 +589,70 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                     Click to mark
                   </span>
                 )}
-                <label className="cursor-pointer p-0.5 text-black hover:text-[#333333]" title="Upload Video for Cam 1">
+                <button
+                  type="button"
+                  onClick={() => fileInputCam1Ref.current?.click()}
+                  className="p-1 text-black hover:bg-[#dcdcdc] rounded-[2px] transition-colors"
+                  title="Upload Video for Camera 1"
+                >
                   <Upload className="w-3.5 h-3.5" />
-                  <input
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={(e) => e.target.files?.[0] && onUploadCam1?.(e.target.files[0])}
-                  />
-                </label>
+                </button>
               </div>
             </div>
 
-            <div className="flex-1 relative cursor-crosshair overflow-hidden">
-              <canvas
-                ref={canvasRefCam1}
-                onClick={(e) => handleCanvasClick(e, 'cam1')}
-                onMouseEnter={() => setActiveCameraHover('cam1')}
-                onMouseLeave={() => setActiveCameraHover(null)}
-                onMouseMove={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMouseCoord({ x: e.clientX - r.left, y: e.clientY - r.top });
-                }}
-                className="w-full h-full block"
-              />
+            <div className="flex-1 relative bg-[#111111] flex items-center justify-center p-1.5 min-h-0 overflow-hidden">
+              {videoUrlCam1 ? (
+                <div className="relative rounded-[2px] overflow-hidden border border-[#444444] max-w-full max-h-full flex items-center justify-center">
+                  <video
+                    ref={videoRefCam1}
+                    src={videoUrlCam1}
+                    playsInline
+                    muted
+                    preload="auto"
+                    onLoadedMetadata={handleLoadedMetadataCam1}
+                    className="block object-contain"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: 'calc(100vh - 270px)',
+                      display: 'block',
+                    }}
+                  />
+                  <canvas
+                    ref={canvasRefCam1}
+                    width={canvasSizeCam1.width}
+                    height={canvasSizeCam1.height}
+                    onClick={(e) => handleCanvasClick(e, 'cam1')}
+                    onMouseEnter={() => setActiveCameraHover('cam1')}
+                    onMouseLeave={() => setActiveCameraHover(null)}
+                    onMouseMove={(e) => handleMouseMove(e, 'cam1')}
+                    className="absolute inset-0 w-full h-full cursor-crosshair"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-center p-4 select-none">
+                  <div className="relative w-16 h-16 mb-2 border border-[#3b82f6]/40 rounded-full flex items-center justify-center">
+                    <div className="w-10 h-10 border border-[#3b82f6]/30 rounded-full flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-[#3b82f6]" />
+                    </div>
+                    <div className="absolute inset-x-0 top-1/2 h-[1px] bg-[#3b82f6]/40" />
+                    <div className="absolute inset-y-0 left-1/2 w-[1px] bg-[#3b82f6]/40" />
+                  </div>
+                  <span className="font-mono text-xs font-bold tracking-wider text-slate-300">
+                    OPTICAL SENSOR 1 (CAM 1)
+                  </span>
+                  <span className="text-[10px] text-slate-400 mt-1 max-w-[200px]">
+                    No optical signal. Import frontal camera video.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => fileInputCam1Ref.current?.click()}
+                    className="mt-2.5 px-3 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-xs font-semibold rounded-[2px] border border-[#3b82f6]/50 flex items-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Load Video</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -569,7 +660,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         {/* Camera 2 Viewport */}
         {(dualLayout === 'side-by-side' || dualLayout === 'cam2-focus') && (
           <div className="flex-1 flex flex-col h-full bg-white border border-[#808080] rounded-[3px] overflow-hidden relative">
-            <div className="bg-[#e0e0e0] border-b border-[#808080] px-2 py-1 flex items-center justify-between text-[11px]">
+            <div className="bg-[#e0e0e0] border-b border-[#808080] px-2 py-1 flex items-center justify-between text-[11px] shrink-0">
               <div className="flex items-center gap-1.5 font-bold text-black">
                 <span className="w-2 h-2 rounded-full bg-[#1e3a5f]" />
                 Camera 2 (Side/Angle View Z-Y)
@@ -585,30 +676,70 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                     Click to mark
                   </span>
                 )}
-                <label className="cursor-pointer p-0.5 text-black hover:text-[#333333]" title="Upload Video for Cam 2">
+                <button
+                  type="button"
+                  onClick={() => fileInputCam2Ref.current?.click()}
+                  className="p-1 text-black hover:bg-[#dcdcdc] rounded-[2px] transition-colors"
+                  title="Upload Video for Camera 2"
+                >
                   <Upload className="w-3.5 h-3.5" />
-                  <input
-                    type="file"
-                    accept="video/*"
-                    className="hidden"
-                    onChange={(e) => e.target.files?.[0] && onUploadCam2?.(e.target.files[0])}
-                  />
-                </label>
+                </button>
               </div>
             </div>
 
-            <div className="flex-1 relative cursor-crosshair overflow-hidden">
-              <canvas
-                ref={canvasRefCam2}
-                onClick={(e) => handleCanvasClick(e, 'cam2')}
-                onMouseEnter={() => setActiveCameraHover('cam2')}
-                onMouseLeave={() => setActiveCameraHover(null)}
-                onMouseMove={(e) => {
-                  const r = e.currentTarget.getBoundingClientRect();
-                  setMouseCoord({ x: e.clientX - r.left, y: e.clientY - r.top });
-                }}
-                className="w-full h-full block"
-              />
+            <div className="flex-1 relative bg-[#111111] flex items-center justify-center p-1.5 min-h-0 overflow-hidden">
+              {videoUrlCam2 ? (
+                <div className="relative rounded-[2px] overflow-hidden border border-[#444444] max-w-full max-h-full flex items-center justify-center">
+                  <video
+                    ref={videoRefCam2}
+                    src={videoUrlCam2}
+                    playsInline
+                    muted
+                    preload="auto"
+                    onLoadedMetadata={handleLoadedMetadataCam2}
+                    className="block object-contain"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: 'calc(100vh - 270px)',
+                      display: 'block',
+                    }}
+                  />
+                  <canvas
+                    ref={canvasRefCam2}
+                    width={canvasSizeCam2.width}
+                    height={canvasSizeCam2.height}
+                    onClick={(e) => handleCanvasClick(e, 'cam2')}
+                    onMouseEnter={() => setActiveCameraHover('cam2')}
+                    onMouseLeave={() => setActiveCameraHover(null)}
+                    onMouseMove={(e) => handleMouseMove(e, 'cam2')}
+                    className="absolute inset-0 w-full h-full cursor-crosshair"
+                  />
+                </div>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-center p-4 select-none">
+                  <div className="relative w-16 h-16 mb-2 border border-[#3b82f6]/40 rounded-full flex items-center justify-center">
+                    <div className="w-10 h-10 border border-[#3b82f6]/30 rounded-full flex items-center justify-center">
+                      <div className="w-2 h-2 rounded-full bg-[#3b82f6]" />
+                    </div>
+                    <div className="absolute inset-x-0 top-1/2 h-[1px] bg-[#3b82f6]/40" />
+                    <div className="absolute inset-y-0 left-1/2 w-[1px] bg-[#3b82f6]/40" />
+                  </div>
+                  <span className="font-mono text-xs font-bold tracking-wider text-slate-300">
+                    OPTICAL SENSOR 2 (CAM 2)
+                  </span>
+                  <span className="text-[10px] text-slate-400 mt-1 max-w-[200px]">
+                    No optical signal. Import transverse/side camera video.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => fileInputCam2Ref.current?.click()}
+                    className="mt-2.5 px-3 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-xs font-semibold rounded-[2px] border border-[#3b82f6]/50 flex items-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Load Video</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -622,12 +753,27 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       </div>
 
       {/* Synchronized Playback and Scrubber Bar */}
-      <div className="bg-[#d4d0c8] border-t border-[#808080] p-2.5 space-y-2 text-xs">
-        {/* Scrubber slider */}
+      <div className="bg-[#d4d0c8] border-t border-[#808080] p-2.5 space-y-2 text-xs select-none">
+        {/* Scrubber slider & Frame Input */}
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[11px] text-black font-bold w-10 text-right">
-            F#{currentFrame}
-          </span>
+          <div className="flex items-center gap-0.5 text-[11px] font-mono font-semibold text-black">
+            <span className="text-[#333333]">F:</span>
+            <input
+              type="number"
+              min={clip.startFrame}
+              max={clip.endFrame}
+              value={currentFrame}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!isNaN(val) && val >= clip.startFrame && val <= clip.endFrame) {
+                  onFrameChange(val);
+                }
+              }}
+              className="w-14 px-1 py-0.5 rounded-[2px] border border-[#808080] bg-white text-black font-bold text-center outline-none"
+              title="Direct frame jump"
+            />
+          </div>
+
           <input
             type="range"
             min={clip.startFrame}
@@ -637,9 +783,18 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
             onChange={(e) => onFrameChange(parseInt(e.target.value, 10))}
             className="flex-1 h-1.5 bg-[#999999] border border-[#808080] rounded-[2px] appearance-none cursor-pointer"
           />
-          <span className="font-mono text-[11px] text-black font-bold w-16">
-            {(clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps)).toFixed(3)}s
-          </span>
+
+          {(() => {
+            const curTime = clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / clip.fps);
+            const m = Math.floor(curTime / 60);
+            const s = Math.floor(curTime % 60);
+            const ms = Math.floor((curTime % 1) * 1000);
+            return (
+              <span className="font-mono text-[11px] text-black font-bold shrink-0">
+                {m.toString().padStart(2, '0')}:{s.toString().padStart(2, '0')}.{ms.toString().padStart(3, '0')} ({curTime.toFixed(2)}s)
+              </span>
+            );
+          })()}
         </div>
 
         {/* Controls Row */}
@@ -689,6 +844,22 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
             >
               <SkipForward className="w-3.5 h-3.5" />
             </button>
+
+            {/* Shift+Click Status Badge */}
+            {requireShiftToMark && (
+              <div
+                className={`ml-2 px-2 py-0.5 rounded-[3px] border text-[10px] font-mono flex items-center gap-1 ${
+                  isShiftPressed
+                    ? 'bg-amber-100 border-amber-600 text-amber-950 font-bold'
+                    : 'bg-[#efefef] border-[#808080] text-black font-medium'
+                }`}
+              >
+                <span>Mark:</span>
+                <strong className={isShiftPressed ? 'text-amber-800 underline' : 'text-emerald-700'}>
+                  {isShiftPressed ? 'READY [Shift]' : 'SAFE [Hold Shift]'}
+                </strong>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -697,7 +868,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               <select
                 value={playbackSpeed}
                 onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                className="bg-[#efefef] border border-[#808080] rounded-[3px] px-1 py-0.5 font-mono text-[11px] text-black font-bold"
+                className="bg-[#efefef] border border-[#808080] rounded-[3px] px-1 py-0.5 font-mono text-[11px] text-black font-bold cursor-pointer"
               >
                 <option value="0.25">0.25x</option>
                 <option value="0.5">0.5x</option>
@@ -706,13 +877,27 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               </select>
             </div>
 
+            {onUndoLastPoint && (
+              <button
+                type="button"
+                onClick={onUndoLastPoint}
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black text-[11px] font-semibold"
+                title="Undo last point (Ctrl+Z)"
+              >
+                <Undo2 className="w-3 h-3 text-[#1e3a5f]" />
+                <span>Undo</span>
+              </button>
+            )}
+
             {currentStep && (
               <button
                 type="button"
                 onClick={() => onDeletePoint(currentFrame)}
-                className="px-2 py-1 rounded-[3px] text-[#8b0000] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-[11px] font-semibold"
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] text-[#8b0000] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-[11px] font-semibold"
+                title="Delete tracking point at current frame (Del)"
               >
-                Clear Frame Mark
+                <Trash className="w-3 h-3" />
+                <span>Clear Frame Mark</span>
               </button>
             )}
           </div>

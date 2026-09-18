@@ -18,50 +18,73 @@ export const TableView: React.FC<TableViewProps> = ({
   onDeletePoint,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [viewMode, setViewMode] = useState<'standard' | 'defense'>('standard');
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const steps = activeTrack ? activeTrack.steps : [];
 
   const copyToClipboard = () => {
     if (steps.length === 0) return;
     const hasZ = steps.some((s) => s.z !== undefined);
-    const headers = hasZ
-      ? ['Frame', 't (s)', 'x (m)', 'y (m)', 'z (m)', 'vx (m/s)', 'vy (m/s)', 'vz (m/s)', 'v (m/s)', 'ax (m/s²)', 'ay (m/s²)', 'az (m/s²)', 'a (m/s²)', 'KE (J)', 'PE (J)']
-      : ['Frame', 't (s)', 'x (m)', 'y (m)', 'vx (m/s)', 'vy (m/s)', 'v (m/s)', 'ax (m/s²)', 'ay (m/s²)', 'a (m/s²)', 'KE (J)', 'PE (J)'];
 
-    const rows = steps.map((s) => {
-      const base = [
-        s.frame,
+    let headers: string[];
+    let rows: string[][];
+
+    if (viewMode === 'defense') {
+      headers = ['Frame', 't (s)', 'x (m)', 'y (m)', 'z (m)', 'SlantRange (m)', 'Azimuth (°)', 'Elevation (°)', 'Speed (m/s)', 'Mach', 'G-Force', 'a (m/s²)'];
+      rows = steps.map((s) => [
+        s.frame.toString(),
         s.time.toFixed(4),
         s.x.toFixed(4),
         s.y.toFixed(4),
-      ];
-      if (hasZ) {
-        base.push((s.z ?? 0).toFixed(4));
-      }
-      base.push(
-        s.vx?.toFixed(4) ?? '',
-        s.vy?.toFixed(4) ?? ''
-      );
-      if (hasZ) {
-        base.push(s.vz?.toFixed(4) ?? '');
-      }
-      base.push(
-        s.v?.toFixed(4) ?? '',
-        s.ax?.toFixed(4) ?? '',
-        s.ay?.toFixed(4) ?? ''
-      );
-      if (hasZ) {
-        base.push(s.az?.toFixed(4) ?? '');
-      }
-      base.push(
-        s.a?.toFixed(4) ?? '',
-        s.kineticEnergy?.toFixed(4) ?? '',
-        s.potentialEnergy?.toFixed(4) ?? ''
-      );
-      return base.join('\t');
-    });
+        (s.z ?? 0).toFixed(4),
+        (s.slantRange ?? Math.hypot(s.x, s.y, s.z ?? 0)).toFixed(4),
+        (s.azimuthDeg ?? 0).toFixed(2),
+        (s.elevationDeg ?? 0).toFixed(2),
+        (s.v ?? 0).toFixed(3),
+        (s.machNumber ?? 0).toFixed(3),
+        (s.gForce ?? 0).toFixed(2),
+        (s.a ?? 0).toFixed(3),
+      ]);
+    } else {
+      headers = hasZ
+        ? ['Frame', 't (s)', 'x (m)', 'y (m)', 'z (m)', 'vx (m/s)', 'vy (m/s)', 'vz (m/s)', 'v (m/s)', 'ax (m/s²)', 'ay (m/s²)', 'az (m/s²)', 'a (m/s²)', 'KE (J)', 'PE (J)']
+        : ['Frame', 't (s)', 'x (m)', 'y (m)', 'vx (m/s)', 'vy (m/s)', 'v (m/s)', 'ax (m/s²)', 'ay (m/s²)', 'a (m/s²)', 'KE (J)', 'PE (J)'];
 
-    const tsv = [headers.join('\t'), ...rows].join('\n');
+      rows = steps.map((s) => {
+        const base = [
+          s.frame.toString(),
+          s.time.toFixed(4),
+          s.x.toFixed(4),
+          s.y.toFixed(4),
+        ];
+        if (hasZ) {
+          base.push((s.z ?? 0).toFixed(4));
+        }
+        base.push(
+          s.vx?.toFixed(4) ?? '',
+          s.vy?.toFixed(4) ?? ''
+        );
+        if (hasZ) {
+          base.push(s.vz?.toFixed(4) ?? '');
+        }
+        base.push(
+          s.v?.toFixed(4) ?? '',
+          s.ax?.toFixed(4) ?? '',
+          s.ay?.toFixed(4) ?? ''
+        );
+        if (hasZ) {
+          base.push(s.az?.toFixed(4) ?? '');
+        }
+        base.push(
+          s.a?.toFixed(4) ?? '',
+          s.kineticEnergy?.toFixed(4) ?? '',
+          s.potentialEnergy?.toFixed(4) ?? ''
+        );
+        return base;
+      });
+    }
+
+    const tsv = [headers.join('\t'), ...rows.map(r => r.join('\t'))].join('\n');
     navigator.clipboard.writeText(tsv);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -70,44 +93,66 @@ export const TableView: React.FC<TableViewProps> = ({
   const exportCSV = () => {
     if (steps.length === 0) return;
     const hasZ = steps.some((s) => s.z !== undefined);
-    const headers = hasZ
-      ? ['Frame', 't_s', 'x_m', 'y_m', 'z_m', 'vx_mps', 'vy_mps', 'vz_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'az_mps2', 'a_mps2', 'KE_J', 'PE_J']
-      : ['Frame', 't_s', 'x_m', 'y_m', 'vx_mps', 'vy_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'a_mps2', 'KE_J', 'PE_J'];
 
-    const rows = steps.map((s) => {
-      const base = [
-        s.frame,
+    let headers: string[];
+    let rows: string[][];
+
+    if (viewMode === 'defense') {
+      headers = ['Frame', 't_s', 'x_m', 'y_m', 'z_m', 'SlantRange_m', 'Azimuth_deg', 'Elevation_deg', 'Speed_mps', 'Mach', 'G_Force', 'a_mps2'];
+      rows = steps.map((s) => [
+        s.frame.toString(),
         s.time.toFixed(5),
         s.x.toFixed(5),
         s.y.toFixed(5),
-      ];
-      if (hasZ) {
-        base.push((s.z ?? 0).toFixed(5));
-      }
-      base.push(
-        s.vx?.toFixed(5) ?? '',
-        s.vy?.toFixed(5) ?? ''
-      );
-      if (hasZ) {
-        base.push(s.vz?.toFixed(5) ?? '');
-      }
-      base.push(
-        s.v?.toFixed(5) ?? '',
-        s.ax?.toFixed(5) ?? '',
-        s.ay?.toFixed(5) ?? ''
-      );
-      if (hasZ) {
-        base.push(s.az?.toFixed(5) ?? '');
-      }
-      base.push(
-        s.a?.toFixed(5) ?? '',
-        s.kineticEnergy?.toFixed(5) ?? '',
-        s.potentialEnergy?.toFixed(5) ?? ''
-      );
-      return base.join(',');
-    });
+        (s.z ?? 0).toFixed(5),
+        (s.slantRange ?? Math.hypot(s.x, s.y, s.z ?? 0)).toFixed(5),
+        (s.azimuthDeg ?? 0).toFixed(3),
+        (s.elevationDeg ?? 0).toFixed(3),
+        (s.v ?? 0).toFixed(4),
+        (s.machNumber ?? 0).toFixed(4),
+        (s.gForce ?? 0).toFixed(3),
+        (s.a ?? 0).toFixed(4),
+      ]);
+    } else {
+      headers = hasZ
+        ? ['Frame', 't_s', 'x_m', 'y_m', 'z_m', 'vx_mps', 'vy_mps', 'vz_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'az_mps2', 'a_mps2', 'KE_J', 'PE_J']
+        : ['Frame', 't_s', 'x_m', 'y_m', 'vx_mps', 'vy_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'a_mps2', 'KE_J', 'PE_J'];
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows].join('\n');
+      rows = steps.map((s) => {
+        const base = [
+          s.frame.toString(),
+          s.time.toFixed(5),
+          s.x.toFixed(5),
+          s.y.toFixed(5),
+        ];
+        if (hasZ) {
+          base.push((s.z ?? 0).toFixed(5));
+        }
+        base.push(
+          s.vx?.toFixed(5) ?? '',
+          s.vy?.toFixed(5) ?? ''
+        );
+        if (hasZ) {
+          base.push(s.vz?.toFixed(5) ?? '');
+        }
+        base.push(
+          s.v?.toFixed(5) ?? '',
+          s.ax?.toFixed(5) ?? '',
+          s.ay?.toFixed(5) ?? ''
+        );
+        if (hasZ) {
+          base.push(s.az?.toFixed(5) ?? '');
+        }
+        base.push(
+          s.a?.toFixed(5) ?? '',
+          s.kineticEnergy?.toFixed(5) ?? '',
+          s.potentialEnergy?.toFixed(5) ?? ''
+        );
+        return base;
+      });
+    }
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
@@ -122,11 +167,32 @@ export const TableView: React.FC<TableViewProps> = ({
   return (
     <div id="table-view-container" className="flex flex-col h-full bg-white text-xs">
       {/* Table Toolbar */}
-      <div className="bg-[#d4d0c8] border-b border-[#808080] px-3 py-2 flex items-center justify-between gap-2">
+      <div className="bg-[#d4d0c8] border-b border-[#808080] px-3 py-1.5 flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <span className="font-bold text-black">Data Table:</span>
+          <div className="flex items-center bg-[#efefef] border border-[#808080] rounded-[2px] p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('standard')}
+              className={`px-2 py-0.5 rounded-[2px] font-semibold text-[10px] transition-colors ${
+                viewMode === 'standard' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
+              }`}
+            >
+              Kinematics
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('defense')}
+              className={`px-2 py-0.5 rounded-[2px] font-semibold text-[10px] transition-colors ${
+                viewMode === 'defense' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
+              }`}
+              title="TrackEye Defense & Flight Telemetry: Range, Azimuth, Elevation, Mach, G-Force"
+            >
+              TrackEye Telemetry
+            </button>
+          </div>
           <span className="text-[11px] text-[#333333] font-mono font-medium">
-            {steps.length} {steps.length === 1 ? 'row' : 'rows'}
+            ({steps.length} {steps.length === 1 ? 'row' : 'rows'})
           </span>
         </div>
 
@@ -161,24 +227,43 @@ export const TableView: React.FC<TableViewProps> = ({
       <div className="flex-1 overflow-auto bg-white">
         {steps.length > 0 ? (
           <table className="w-full text-left font-mono border-collapse text-[11px]">
-            <thead className="bg-[#e0e0e0] sticky top-0 z-10 border-b border-[#808080] text-black font-bold select-none">
-              <tr>
-                <th className="py-1.5 px-2 text-center w-10 border-r border-[#808080]">F#</th>
-                <th className="py-1.5 px-2 border-r border-[#808080]">t (s)</th>
-                <th className="py-1.5 px-2 border-r border-[#808080]">x (m)</th>
-                <th className="py-1.5 px-2 border-r border-[#808080]">y (m)</th>
-                {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">z (m)</th>}
-                <th className="py-1.5 px-2 border-r border-[#808080]">vx</th>
-                <th className="py-1.5 px-2 border-r border-[#808080]">vy</th>
-                {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">vz</th>}
-                <th className="py-1.5 px-2 border-r border-[#808080]">v (m/s)</th>
-                <th className="py-1.5 px-2 border-r border-[#808080]">ay</th>
-                <th className="py-1.5 px-2 text-center w-8">Del</th>
-              </tr>
+            <thead className="bg-[#e0e0e0] sticky top-0 z-10 border-b border-[#808080] text-black font-bold select-none whitespace-nowrap">
+              {viewMode === 'defense' ? (
+                <tr>
+                  <th className="py-1.5 px-2 text-center w-10 border-r border-[#808080]">F#</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">t (s)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">x (m)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">y (m)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">z (m)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">Range R (m)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">Azimuth (°)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">Elevation (°)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">Speed (m/s)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">Mach</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">G-Force</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">a (m/s²)</th>
+                  <th className="py-1.5 px-2 text-center w-8">Del</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th className="py-1.5 px-2 text-center w-10 border-r border-[#808080]">F#</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">t (s)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">x (m)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">y (m)</th>
+                  {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">z (m)</th>}
+                  <th className="py-1.5 px-2 border-r border-[#808080]">vx</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">vy</th>
+                  {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">vz</th>}
+                  <th className="py-1.5 px-2 border-r border-[#808080]">v (m/s)</th>
+                  <th className="py-1.5 px-2 border-r border-[#808080]">ay</th>
+                  <th className="py-1.5 px-2 text-center w-8">Del</th>
+                </tr>
+              )}
             </thead>
-            <tbody className="divide-y divide-[#cccccc]">
+            <tbody className="divide-y divide-[#cccccc] whitespace-nowrap">
               {steps.map((s, idx) => {
                 const isActive = s.frame === currentFrame;
+                const slantR = s.slantRange ?? Math.hypot(s.x, s.y, s.z ?? 0);
                 return (
                   <tr
                     key={s.frame}
@@ -195,12 +280,27 @@ export const TableView: React.FC<TableViewProps> = ({
                     <td className="py-1 px-2 border-r border-[#cccccc]">{s.time.toFixed(3)}</td>
                     <td className="py-1 px-2 border-r border-[#cccccc] font-medium">{s.x.toFixed(3)}</td>
                     <td className="py-1 px-2 border-r border-[#cccccc] font-medium">{s.y.toFixed(3)}</td>
-                    {hasZ && <td className="py-1 px-2 border-r border-[#cccccc] font-medium">{(s.z ?? 0).toFixed(3)}</td>}
-                    <td className="py-1 px-2 border-r border-[#cccccc]">{s.vx !== null && s.vx !== undefined ? s.vx.toFixed(2) : '—'}</td>
-                    <td className="py-1 px-2 border-r border-[#cccccc]">{s.vy !== null && s.vy !== undefined ? s.vy.toFixed(2) : '—'}</td>
-                    {hasZ && <td className="py-1 px-2 border-r border-[#cccccc]">{s.vz !== null && s.vz !== undefined ? s.vz.toFixed(2) : '—'}</td>}
-                    <td className="py-1 px-2 border-r border-[#cccccc] font-semibold">{s.v !== null && s.v !== undefined ? s.v.toFixed(2) : '—'}</td>
-                    <td className="py-1 px-2 border-r border-[#cccccc] font-semibold">{s.ay !== null && s.ay !== undefined ? s.ay.toFixed(2) : '—'}</td>
+                    {viewMode === 'defense' ? (
+                      <>
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-medium">{(s.z ?? 0).toFixed(3)}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-bold">{slantR.toFixed(3)}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{(s.azimuthDeg ?? 0).toFixed(2)}°</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{(s.elevationDeg ?? 0).toFixed(2)}°</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-bold">{s.v !== null && s.v !== undefined ? s.v.toFixed(2) : '—'}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-semibold">{s.machNumber !== null && s.machNumber !== undefined ? s.machNumber.toFixed(3) : '—'}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{s.gForce !== null && s.gForce !== undefined ? `${s.gForce.toFixed(2)} G` : '—'}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{s.a !== null && s.a !== undefined ? s.a.toFixed(2) : '—'}</td>
+                      </>
+                    ) : (
+                      <>
+                        {hasZ && <td className="py-1 px-2 border-r border-[#cccccc] font-medium">{(s.z ?? 0).toFixed(3)}</td>}
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{s.vx !== null && s.vx !== undefined ? s.vx.toFixed(2) : '—'}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc]">{s.vy !== null && s.vy !== undefined ? s.vy.toFixed(2) : '—'}</td>
+                        {hasZ && <td className="py-1 px-2 border-r border-[#cccccc]">{s.vz !== null && s.vz !== undefined ? s.vz.toFixed(2) : '—'}</td>}
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-semibold">{s.v !== null && s.v !== undefined ? s.v.toFixed(2) : '—'}</td>
+                        <td className="py-1 px-2 border-r border-[#cccccc] font-semibold">{s.ay !== null && s.ay !== undefined ? s.ay.toFixed(2) : '—'}</td>
+                      </>
+                    )}
                     <td className="py-1 px-2 text-center">
                       <button
                         type="button"

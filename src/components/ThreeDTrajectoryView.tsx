@@ -1,6 +1,20 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Track, PointStep } from '../types';
-import { RotateCw, Eye, ZoomIn, ZoomOut, Maximize2, Compass, Move, Layers } from 'lucide-react';
+import {
+  RotateCw,
+  Eye,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Minimize2,
+  Compass,
+  Move,
+  Layers,
+  ChevronDown,
+  ChevronUp,
+  PanelBottom,
+  Sliders,
+} from 'lucide-react';
 
 interface ThreeDTrajectoryViewProps {
   tracks: Track[];
@@ -11,7 +25,9 @@ interface ThreeDTrajectoryViewProps {
   showTrails?: boolean;
 }
 
-type ViewPreset = 'orbit' | 'front' | 'top' | 'side' | 'isometric';
+export type ViewPreset = 'orbit' | 'front' | 'top' | 'side' | 'isometric';
+export type HudPlacement = 'bottom-left' | 'bottom-right' | 'top-left' | 'docked-bottom';
+export type HudDensity = 'expanded' | 'compact';
 
 export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
   tracks,
@@ -34,6 +50,11 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
   const [activePreset, setActivePreset] = useState<ViewPreset>('orbit');
   const [showGrid, setShowGrid] = useState<boolean>(true);
   const [showAxesBox, setShowAxesBox] = useState<boolean>(true);
+
+  // Professional HUD Coordinates Box Configuration
+  const [hudPlacement, setHudPlacement] = useState<HudPlacement>('bottom-left');
+  const [hudDensity, setHudDensity] = useState<HudDensity>('expanded');
+  const [hudTranslucent, setHudTranslucent] = useState<boolean>(true);
 
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const steps = activeTrack ? activeTrack.steps : [];
@@ -155,13 +176,36 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
     const centerY = (minY + maxY) / 2;
     const centerZ = (minZ + maxZ) / 2;
 
-    // Base scale in pixels per meter
-    const baseScale = (Math.min(width, height) * 0.45) / maxSpan;
+    // Intelligent Auto-Framing:
+    // When the HUD is floating at bottom-left or bottom-right in expanded mode,
+    // dynamically scale and offset the 3D scene center so the entire trajectory,
+    // ground grid, and coordinate axes remain in the clear viewing zone without being covered.
+    const isBottomLeftExpanded = hudPlacement === 'bottom-left' && hudDensity === 'expanded';
+    const isBottomRightExpanded = hudPlacement === 'bottom-right' && hudDensity === 'expanded';
+    const isTopLeftExpanded = hudPlacement === 'top-left' && hudDensity === 'expanded';
+
+    let defaultOffsetX = 0;
+    let defaultOffsetY = 0;
+
+    if (isBottomLeftExpanded) {
+      defaultOffsetX = width > 450 ? 44 : 22;
+      defaultOffsetY = -28;
+    } else if (isBottomRightExpanded) {
+      defaultOffsetX = width > 450 ? -44 : -22;
+      defaultOffsetY = -28;
+    } else if (isTopLeftExpanded) {
+      defaultOffsetX = width > 450 ? 44 : 22;
+      defaultOffsetY = 28;
+    }
+
+    // Base scale in pixels per meter with safe envelope margins
+    const scaleFactor = (isBottomLeftExpanded || isBottomRightExpanded) ? 0.38 : 0.45;
+    const baseScale = (Math.min(width, height) * scaleFactor) / maxSpan;
     const scale = baseScale * zoom;
 
-    // Center on screen with pan
-    const cx = width / 2 + pan.x;
-    const cy = height / 2 + pan.y;
+    // Center on screen with pan and intelligent HUD clearance offset
+    const cx = width / 2 + pan.x + defaultOffsetX;
+    const cy = height / 2 + pan.y + defaultOffsetY;
 
     // 3D to 2D projection function
     // Physics system: X = right, Y = up, Z = depth (towards viewer)
@@ -357,6 +401,8 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
     showGrid,
     showTrails,
     showVectors,
+    hudPlacement,
+    hudDensity,
   ]);
 
   return (
@@ -373,7 +419,7 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
           </span>
         </div>
 
-        {/* Camera Angle Presets */}
+        {/* Camera Angle Presets & HUD Display Modes */}
         <div className="flex items-center gap-1">
           {(['orbit', 'front', 'top', 'side', 'isometric'] as ViewPreset[]).map((p) => (
             <button
@@ -390,7 +436,7 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
             </button>
           ))}
 
-          <div className="h-4 w-px bg-[#808080] mx-1" />
+          <div className="h-4 w-px bg-[#808080] mx-0.5" />
 
           <button
             type="button"
@@ -422,6 +468,55 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
           >
             <RotateCw className="w-3.5 h-3.5" />
           </button>
+
+          <div className="h-4 w-px bg-[#808080] mx-0.5" />
+
+          {/* HUD Layout Selector */}
+          <div className="flex items-center gap-0.5 bg-[#efefef] border border-[#808080] rounded-[2px] p-0.5 text-[10px]">
+            <span className="text-[#444444] px-1 font-semibold">Box:</span>
+            <button
+              type="button"
+              onClick={() => {
+                setHudPlacement('bottom-left');
+                setHudDensity('expanded');
+              }}
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+                hudPlacement === 'bottom-left' && hudDensity === 'expanded'
+                  ? 'bg-[#1e3a5f] text-white font-bold'
+                  : 'text-black hover:bg-[#dcdcdc]'
+              }`}
+              title="Default floating box at bottom-left with smart auto-framing"
+            >
+              Default
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setHudPlacement('bottom-left');
+                setHudDensity('compact');
+              }}
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+                hudDensity === 'compact' && hudPlacement !== 'docked-bottom'
+                  ? 'bg-[#1e3a5f] text-white font-bold'
+                  : 'text-black hover:bg-[#dcdcdc]'
+              }`}
+              title="Compact single-line coordinate chip (minimal obstruction)"
+            >
+              Compact
+            </button>
+            <button
+              type="button"
+              onClick={() => setHudPlacement('docked-bottom')}
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+                hudPlacement === 'docked-bottom'
+                  ? 'bg-[#1e3a5f] text-white font-bold'
+                  : 'text-black hover:bg-[#dcdcdc]'
+              }`}
+              title="Dock coordinates to bottom bar (100% unobstructed 3D graph)"
+            >
+              Docked
+            </button>
+          </div>
         </div>
       </div>
 
@@ -437,52 +532,209 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
           className="w-full h-full block"
         />
 
-        {/* Live Coordinate HUD Overlay (Bottom-Left) */}
-        <div className="absolute bottom-2 left-2 bg-white border border-[#808080] rounded-[3px] p-2.5 font-mono text-[11px] text-black pointer-events-none">
-          <div className="font-bold text-black border-b border-[#808080] pb-1 mb-1.5 flex items-center justify-between gap-3">
-            <span>Frame #{currentFrame} Coordinates:</span>
-            <span className="text-black font-semibold">t = {currentStep?.time.toFixed(3) ?? '0.000'} s</span>
-          </div>
-          <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
-            <div>
-              <span className="text-[#555555]">X: </span>
-              <span className="font-bold text-black">{currentStep?.x?.toFixed(4) ?? '—'} m</span>
-            </div>
-            <div>
-              <span className="text-[#555555]">Y: </span>
-              <span className="font-bold text-black">{currentStep?.y?.toFixed(4) ?? '—'} m</span>
-            </div>
-            <div>
-              <span className="text-[#555555]">Z: </span>
-              <span className="font-bold text-black">{currentStep?.z?.toFixed(4) ?? '—'} m</span>
-            </div>
-            <div>
-              <span className="text-[#555555]">vx: </span>
-              <span className="text-black">{currentStep?.vx?.toFixed(2) ?? '—'} m/s</span>
-            </div>
-            <div>
-              <span className="text-[#555555]">vy: </span>
-              <span className="text-black">{currentStep?.vy?.toFixed(2) ?? '—'} m/s</span>
-            </div>
-            <div>
-              <span className="text-[#555555]">vz: </span>
-              <span className="text-black">{currentStep?.vz?.toFixed(2) ?? '—'} m/s</span>
-            </div>
-          </div>
+        {/* Live Coordinate HUD Overlay (When Floating) */}
+        {hudPlacement !== 'docked-bottom' && (
+          <div
+            id="threed-coords-hud"
+            className={`absolute ${
+              hudPlacement === 'bottom-left'
+                ? 'bottom-2 left-2'
+                : hudPlacement === 'bottom-right'
+                ? 'bottom-2 right-2'
+                : 'top-2 left-2'
+            } ${
+              hudTranslucent
+                ? 'bg-white/90 backdrop-blur-[3px] shadow-md'
+                : 'bg-white shadow-sm'
+            } border border-[#808080] rounded-[3px] p-2 font-mono text-[11px] text-black z-20 transition-all duration-150 select-none`}
+            style={{ maxWidth: 'calc(100% - 16px)' }}
+          >
+            {/* Header with Title & Quick Controls */}
+            <div className="font-bold text-black border-b border-[#808080] pb-1 mb-1.5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#1e3a5f]" />
+                <span>Frame #{currentFrame} Coordinates:</span>
+                <span className="text-[#444444] font-semibold text-[10px]">
+                  (t = {currentStep?.time.toFixed(3) ?? '0.000'}s)
+                </span>
+              </div>
 
-          <div className="mt-1.5 pt-1.5 border-t border-[#808080] flex items-center justify-between text-[10px]">
-            <span>3D Speed: <strong className="text-black font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong></span>
-            {currentStep?.triangulationResidual !== undefined && currentStep.triangulationResidual !== null && (
-              <span className="text-[#555555]">Residual: {(currentStep.triangulationResidual * 1000).toFixed(1)} mm</span>
+              {/* HUD Window Controls */}
+              <div className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => setHudPlacement('docked-bottom')}
+                  className="p-1 rounded-[2px] hover:bg-[#dcdcdc] text-black transition-colors"
+                  title="Dock to bottom bar (uncover full 3D graph)"
+                >
+                  <PanelBottom className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHudPlacement((prev) =>
+                      prev === 'bottom-left'
+                        ? 'bottom-right'
+                        : prev === 'bottom-right'
+                        ? 'top-left'
+                        : 'bottom-left'
+                    );
+                  }}
+                  className="p-1 rounded-[2px] hover:bg-[#dcdcdc] text-black transition-colors"
+                  title="Move box (Bottom-Left → Bottom-Right → Top-Left)"
+                >
+                  <Move className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setHudTranslucent(!hudTranslucent)}
+                  className={`p-1 rounded-[2px] hover:bg-[#dcdcdc] transition-colors ${
+                    hudTranslucent ? 'text-[#1e3a5f]' : 'text-[#888888]'
+                  }`}
+                  title={
+                    hudTranslucent
+                      ? 'Translucent HUD (see-through). Click for Solid background.'
+                      : 'Solid HUD. Click for Translucent background.'
+                  }
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setHudDensity((d) => (d === 'expanded' ? 'compact' : 'expanded'))
+                  }
+                  className="p-1 rounded-[2px] hover:bg-[#dcdcdc] text-black transition-colors"
+                  title={hudDensity === 'expanded' ? 'Collapse to compact HUD' : 'Expand full telemetry'}
+                >
+                  {hudDensity === 'expanded' ? (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Coordinates Body */}
+            {hudDensity === 'expanded' ? (
+              <>
+                <div className="grid grid-cols-3 gap-x-3 gap-y-0.5">
+                  <div>
+                    <span className="text-[#555555]">X: </span>
+                    <strong className="text-black font-bold">{currentStep?.x?.toFixed(4) ?? '—'} m</strong>
+                  </div>
+                  <div>
+                    <span className="text-[#555555]">Y: </span>
+                    <strong className="text-black font-bold">{currentStep?.y?.toFixed(4) ?? '—'} m</strong>
+                  </div>
+                  <div>
+                    <span className="text-[#555555]">Z: </span>
+                    <strong className="text-black font-bold">{currentStep?.z?.toFixed(4) ?? '—'} m</strong>
+                  </div>
+                  <div>
+                    <span className="text-[#555555]">vx: </span>
+                    <span className="text-black">{currentStep?.vx?.toFixed(2) ?? '—'} m/s</span>
+                  </div>
+                  <div>
+                    <span className="text-[#555555]">vy: </span>
+                    <span className="text-black">{currentStep?.vy?.toFixed(2) ?? '—'} m/s</span>
+                  </div>
+                  <div>
+                    <span className="text-[#555555]">vz: </span>
+                    <span className="text-black">{currentStep?.vz?.toFixed(2) ?? '—'} m/s</span>
+                  </div>
+                </div>
+
+                <div className="mt-1 pt-1 border-t border-[#808080] flex items-center justify-between text-[10px]">
+                  <span>
+                    3D Speed: <strong className="text-black font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong>
+                  </span>
+                  {currentStep?.triangulationResidual !== undefined && currentStep.triangulationResidual !== null && (
+                    <span className="text-[#444444]">
+                      Residual: {(currentStep.triangulationResidual * 1000).toFixed(1)} mm
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              /* Compact Single-Line Mode */
+              <div className="flex items-center gap-2.5 text-[10px] py-0.5 font-mono">
+                <span>
+                  <strong>X:</strong> {currentStep?.x?.toFixed(3) ?? '—'}m
+                </span>
+                <span>
+                  <strong>Y:</strong> {currentStep?.y?.toFixed(3) ?? '—'}m
+                </span>
+                <span>
+                  <strong>Z:</strong> {currentStep?.z?.toFixed(3) ?? '—'}m
+                </span>
+                <span className="text-[#333333]">
+                  | <strong>v:</strong> {currentStep?.v?.toFixed(2) ?? '—'}m/s
+                </span>
+              </div>
             )}
           </div>
-        </div>
+        )}
 
         {/* Interactive Controls Guide (Top-Right) */}
-        <div className="absolute top-2 right-2 bg-[#efefef] border border-[#808080] rounded-[2px] px-2 py-1 text-[10px] text-black font-medium pointer-events-none">
+        <div className="absolute top-2 right-2 bg-[#efefef]/90 border border-[#808080] rounded-[2px] px-2 py-1 text-[10px] text-black font-medium pointer-events-none z-10">
           Left Drag: Orbit • Right Drag: Pan • Scroll: Zoom
         </div>
       </div>
+
+      {/* Docked Telemetry Bottom Strip (100% Unobstructed 3D Canvas) */}
+      {hudPlacement === 'docked-bottom' && (
+        <div
+          id="threed-docked-telemetry"
+          className="bg-[#d4d0c8] border-t border-[#808080] px-3 py-1.5 font-mono text-[11px] text-black flex items-center justify-between gap-2 select-none shrink-0"
+        >
+          <div className="flex items-center gap-3 overflow-x-auto py-0.5">
+            <div className="flex items-center gap-1 shrink-0 font-bold">
+              <span className="w-2 h-2 rounded-full bg-[#1e3a5f]" />
+              <span>Frame #{currentFrame} Coordinates:</span>
+              <span className="text-[#444444] font-semibold text-[10px]">
+                (t = {currentStep?.time.toFixed(3) ?? '0.000'}s)
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 text-[10px] shrink-0">
+              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
+                X: <strong className="text-black font-bold">{currentStep?.x?.toFixed(4) ?? '—'} m</strong>
+              </span>
+              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
+                Y: <strong className="text-black font-bold">{currentStep?.y?.toFixed(4) ?? '—'} m</strong>
+              </span>
+              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
+                Z: <strong className="text-black font-bold">{currentStep?.z?.toFixed(4) ?? '—'} m</strong>
+              </span>
+              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
+                Speed: <strong className="text-black font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong>
+              </span>
+              {currentStep?.vx != null && (
+                <span className="text-[#333333]">
+                  vx: {currentStep.vx.toFixed(2)} | vy: {currentStep.vy?.toFixed(2) ?? '—'} | vz: {currentStep.vz?.toFixed(2) ?? '—'}
+                </span>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => setHudPlacement('bottom-left')}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-[10px] font-semibold text-black transition-colors"
+              title="Float coordinates box back onto bottom-left canvas"
+            >
+              <PanelBottom className="w-3 h-3 text-[#1e3a5f]" />
+              <span>Float on Canvas</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -11,4 +11,5 @@ src/org/opensourcephysics/controls/OSPLog_template.txt
 tracker.prefs
 //.classpath
 node_modules/
+dist/
 dist-electron/

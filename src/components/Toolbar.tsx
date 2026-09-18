@@ -11,6 +11,8 @@ import {
   Settings2,
   Trash2,
   Sliders,
+  Undo2,
+  Crosshair,
 } from 'lucide-react';
 
 export type ViewLayout =
@@ -27,6 +29,9 @@ interface ToolbarProps {
   onSelectTrack: (trackId: string) => void;
   onOpenTrackManager: () => void;
   onClearTrackPoints: () => void;
+  onUndoLastPoint?: () => void;
+  requireShiftToMark?: boolean;
+  onToggleRequireShiftToMark?: () => void;
   calibration: Calibration;
   onToggleCalibration: () => void;
   onOpenCalibrationModal: () => void;
@@ -57,6 +62,9 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onSelectTrack,
   onOpenTrackManager,
   onClearTrackPoints,
+  onUndoLastPoint,
+  requireShiftToMark = true,
+  onToggleRequireShiftToMark,
   calibration,
   onToggleCalibration,
   onOpenCalibrationModal,
@@ -119,6 +127,17 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           </button>
 
           <button
+            id="btn-undo-point"
+            type="button"
+            onClick={onUndoLastPoint}
+            disabled={!activeTrack || activeTrack.steps.length === 0}
+            className="p-1 rounded-[2px] text-[#444444] hover:text-black hover:bg-[#dcdcdc] disabled:opacity-30 disabled:hover:text-[#444444] disabled:hover:bg-transparent transition-colors"
+            title="Undo Last Point (Ctrl+Z)"
+          >
+            <Undo2 className="w-3.5 h-3.5" />
+          </button>
+
+          <button
             id="btn-clear-track-points"
             type="button"
             onClick={onClearTrackPoints}
@@ -129,6 +148,26 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* Shift+Click Mark Mode Toggle */}
+        <button
+          id="btn-toggle-shift-mark"
+          type="button"
+          onClick={onToggleRequireShiftToMark}
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-[3px] font-semibold border transition-colors ${
+            requireShiftToMark
+              ? 'bg-[#1e3a5f] text-white border-[#0f1d30]'
+              : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
+          }`}
+          title={
+            requireShiftToMark
+              ? 'Tracker OSP Mode: Hold Shift + Click to mark point (prevents accidental clicks). Click to switch to Single-Click mode.'
+              : 'Direct Mode: Single click marks point mass. Click to switch to Shift+Click safety mode.'
+          }
+        >
+          <Crosshair className={`w-3.5 h-3.5 ${requireShiftToMark ? 'text-white' : 'text-black'}`} />
+          <span>{requireShiftToMark ? 'Shift+Click Mark' : 'Click to Mark'}</span>
+        </button>
 
         <div className="w-[1px] h-4 bg-[#808080] hidden sm:block" />
 

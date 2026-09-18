@@ -101,7 +101,7 @@ export const SAMPLE_EXPERIMENTS: SampleExperiment[] = [
     id: 'pendulum-oscillator',
     title: 'Harmonic Motion: Simple Pendulum',
     description: 'A 1.0 m length pendulum swinging back and forth. Analyze sinusoidal displacement x(t) and phase velocity v(t), period T = 2π√(L/g) ≈ 2.0 s.',
-    videoUrl: '', // Canvas-simulated video generator
+    videoUrl: '/videos/ball_toss.mp4',
     category: 'Harmonic Motion',
     calibration: {
       active: true,
@@ -145,7 +145,7 @@ export const SAMPLE_EXPERIMENTS: SampleExperiment[] = [
     id: 'incline-cart',
     title: 'Inclined Plane (Tilted Axes a = g·sin θ)',
     description: 'A low-friction cart rolling down a track inclined at 15°. Demonstrates rotating coordinate axes along the incline so acceleration is purely along the +x axis.',
-    videoUrl: '', // Canvas-simulated video generator
+    videoUrl: '/videos/ball_toss_slow.mp4',
     category: 'Newtonian Dynamics',
     calibration: {
       active: true,

@@ -327,8 +327,22 @@ export function compute3DKinematics(
 
     if (ax !== null && ay !== null && az !== null) {
       result[i].a = Math.sqrt(ax * ax + ay * ay + az * az);
+      result[i].gForce = result[i].a! / 9.80665;
     } else {
       result[i].a = null;
+      result[i].gForce = null;
+    }
+
+    // Defense & Aerospace Trajectory Telemetry (TrackEye standard metrics)
+    const x = result[i].x;
+    const y = result[i].y;
+    const z = result[i].z ?? 0;
+    const groundRange = Math.sqrt(x * x + z * z);
+    result[i].slantRange = Math.sqrt(x * x + y * y + z * z);
+    result[i].azimuthDeg = (Math.atan2(z, x) * 180) / Math.PI;
+    result[i].elevationDeg = (Math.atan2(y, Math.max(0.0001, groundRange)) * 180) / Math.PI;
+    if (result[i].v !== null && result[i].v !== undefined) {
+      result[i].machNumber = result[i].v! / 343.0; // standard sea-level sound speed
     }
   }
 

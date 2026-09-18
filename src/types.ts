@@ -25,6 +25,11 @@ export interface PointStep {
   potentialEnergy?: number | null; // Joules
   totalEnergy?: number | null; // Joules
   triangulationResidual?: number | null; // meters error in triangulation
+  slantRange?: number | null; // Slant range to target R = sqrt(x^2 + y^2 + z^2) in meters
+  azimuthDeg?: number | null; // Azimuth angle in degrees
+  elevationDeg?: number | null; // Elevation angle in degrees
+  machNumber?: number | null; // Speed in Mach
+  gForce?: number | null; // Total acceleration in Gs (a / 9.80665)
 }
 
 export type TrackFootprint = 'circle' | 'crosshair' | 'diamond' | 'square';

@@ -6,6 +6,7 @@ import { downloadUserManualPDF } from '../utils/downloadPdf';
 
 interface NavbarProps {
   currentExperimentId: string;
+  currentExperimentTitle: string;
   onSelectExperiment: (exp: SampleExperiment) => void;
   onUploadVideo: (file: File) => void;
   onExportJSON: () => void;
@@ -15,6 +16,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentExperimentId,
+  currentExperimentTitle,
   onSelectExperiment,
   onUploadVideo,
   onExportJSON,
@@ -51,9 +53,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 
       {/* Preset Experiments & Upload */}
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1.5 bg-[#efefef] border border-[#808080] rounded-[3px] px-2.5 py-1 text-black">
-          <Video className="w-4 h-4 text-black" />
-          <span className="text-xs text-[#333333] font-semibold">Experiment:</span>
+        <div className="flex items-center gap-1.5 bg-[#efefef] border border-[#808080] rounded-[3px] px-2.5 py-1 text-black h-[28px] w-[280px] max-w-[280px] shrink-0">
+          <Video className="w-3.5 h-3.5 text-[#1e3a5f] shrink-0" />
+          <span className="text-xs text-[#333333] font-semibold shrink-0">Exp:</span>
           <select
             id="experiment-selector"
             value={currentExperimentId}
@@ -61,8 +63,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               const exp = SAMPLE_EXPERIMENTS.find((item) => item.id === e.target.value);
               if (exp) onSelectExperiment(exp);
             }}
-            className="bg-transparent text-xs text-black font-bold focus:outline-none cursor-pointer pr-1"
+            className="bg-transparent text-xs text-black font-bold focus:outline-none cursor-pointer flex-1 min-w-0 truncate pr-1"
+            title={currentExperimentTitle || 'Select Experiment'}
           >
+            {/* If the current experiment is custom, show it with a clean fixed label */}
+            {!SAMPLE_EXPERIMENTS.find(e => e.id === currentExperimentId) && (
+              <option value={currentExperimentId} className="bg-white text-black">
+                {currentExperimentTitle ? `[Custom] ${currentExperimentTitle}` : '[Custom Video Analysis]'}
+              </option>
+            )}
             {SAMPLE_EXPERIMENTS.map((exp) => (
               <option key={exp.id} value={exp.id} className="bg-white text-black">
                 {exp.title}
@@ -76,8 +85,8 @@ export const Navbar: React.FC<NavbarProps> = ({
           id="btn-upload-video"
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] active:bg-[#c8c8c0] text-black text-xs font-semibold border border-[#808080] transition-colors"
-          title="Open local MP4, WebM, or MOV video file"
+          className="flex items-center gap-1.5 px-3 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] active:bg-[#c8c8c0] text-black text-xs font-semibold border border-[#808080] h-[28px] shrink-0 transition-colors"
+          title="Open local MP4, WebM, or MOV video file for analysis"
         >
           <Upload className="w-3.5 h-3.5 text-black" />
           <span>Open Video</span>

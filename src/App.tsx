@@ -32,8 +32,8 @@ export const App: React.FC = () => {
   // Current experiment
   const [currentExp, setCurrentExp] = useState<SampleExperiment>(SAMPLE_EXPERIMENTS[0]);
   const [videoUrl, setVideoUrl] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrl);
-  const [videoUrlCam2, setVideoUrlCam2] = useState<string>('');
-  const [isSynthetic, setIsSynthetic] = useState<boolean>(!SAMPLE_EXPERIMENTS[0].videoUrl);
+  const [videoUrlCam2, setVideoUrlCam2] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrlCam2 || '');
+  const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
 
   // Analysis mode: 2D Single Video vs 3D Stereo Video
   const [analysisMode, setAnalysisMode] = useState<'2D' | '3D'>(
@@ -120,6 +120,9 @@ export const App: React.FC = () => {
     SAMPLE_EXPERIMENTS[0].is3D ? 'split-3d' : 'split'
   );
 
+  // Tracker OSP Safety: require Shift+Click to mark points (prevents accidental clicks from adding points)
+  const [requireShiftToMark, setRequireShiftToMark] = useState<boolean>(true);
+
   // Modals
   const [isCalModalOpen, setIsCalModalOpen] = useState(false);
   const [isClipModalOpen, setIsClipModalOpen] = useState(false);
@@ -162,8 +165,8 @@ export const App: React.FC = () => {
   const handleSelectExperiment = (exp: SampleExperiment) => {
     setCurrentExp(exp);
     setVideoUrl(exp.videoUrl);
-    setVideoUrlCam2('');
-    setIsSynthetic(!exp.videoUrl);
+    setVideoUrlCam2(exp.videoUrlCam2 || '');
+    setIsSynthetic(false);
     setCalibration(exp.calibration);
     setAxes(exp.axes);
     setClip(exp.clip);
@@ -218,24 +221,63 @@ export const App: React.FC = () => {
     setActiveTrackId('track-1');
   };
 
-  // Handle Custom Video Upload
+  // Handle Custom Video Upload with duration detection
   const handleUploadVideo = (file: File) => {
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
     setIsSynthetic(false);
     setCurrentFrame(0);
 
-    const newClip: ClipSettings = {
+    // Initial safe generous clip setting while probing metadata
+    const initialClip: ClipSettings = {
       startFrame: 0,
-      endFrame: 100,
+      endFrame: 9999,
       stepSize: 1,
       fps: 30,
       startTime: 0.0,
       frameDt: 1 / 30,
       dt: 1 / 30,
-      totalFrames: 100,
+      totalFrames: 10000,
     };
-    setClip(newClip);
+    setClip(initialClip);
+
+    setCurrentExp({
+      id: 'custom-upload-' + Date.now(),
+      title: file.name,
+      description: `Custom video analysis (${file.name})`,
+      category: 'custom',
+      videoUrl: url,
+      is3D: analysisMode === '3D',
+      calibration: { ...calibration },
+      axes: { ...axes },
+      clip: initialClip,
+    });
+
+    // Probe duration from HTML5 video element
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.src = url;
+    probe.onloadedmetadata = () => {
+      const dur = probe.duration;
+      if (dur && Number.isFinite(dur) && dur > 0) {
+        const calculatedFrames = Math.max(10, Math.round(dur * 30));
+        const updatedClip: ClipSettings = {
+          startFrame: 0,
+          endFrame: calculatedFrames - 1,
+          stepSize: 1,
+          fps: 30,
+          startTime: 0.0,
+          frameDt: 1 / 30,
+          dt: 1 / 30,
+          totalFrames: calculatedFrames,
+        };
+        setClip(updatedClip);
+        setCurrentExp((prev) => ({
+          ...prev,
+          clip: updatedClip,
+        }));
+      }
+    };
 
     // Reset track points for new video
     setTracks([
@@ -252,6 +294,62 @@ export const App: React.FC = () => {
         showLabels: true,
       },
     ]);
+  };
+
+  const handleUploadCam1 = (file: File) => {
+    const url = URL.createObjectURL(file);
+    setVideoUrl(url); // We map cam1 to main videoUrl in state
+    setIsSynthetic(false);
+    setCurrentExp(prev => ({ 
+      ...prev, 
+      id: 'custom-cam1-' + Date.now(), 
+      title: 'Stereo: ' + file.name,
+      description: 'Custom Camera 1 upload',
+      category: 'custom'
+    }));
+
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.src = url;
+    probe.onloadedmetadata = () => {
+      const dur = probe.duration;
+      if (dur && Number.isFinite(dur) && dur > 0) {
+        const calculatedFrames = Math.max(10, Math.round(dur * 30));
+        setClip((prev) => ({
+          ...prev,
+          totalFrames: Math.max(prev.totalFrames, calculatedFrames),
+          endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
+        }));
+      }
+    };
+  };
+
+  const handleUploadCam2 = (file: File) => {
+    const url = URL.createObjectURL(file);
+    setVideoUrlCam2(url);
+    setIsSynthetic(false);
+    setCurrentExp(prev => ({ 
+      ...prev, 
+      id: 'custom-cam2-' + Date.now(), 
+      title: 'Stereo: ' + file.name,
+      description: 'Custom Camera 2 upload',
+      category: 'custom'
+    }));
+
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.src = url;
+    probe.onloadedmetadata = () => {
+      const dur = probe.duration;
+      if (dur && Number.isFinite(dur) && dur > 0) {
+        const calculatedFrames = Math.max(10, Math.round(dur * 30));
+        setClip((prev) => ({
+          ...prev,
+          totalFrames: Math.max(prev.totalFrames, calculatedFrames),
+          endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
+        }));
+      }
+    };
   };
 
   // 3D Point addition from Dual Video Player
@@ -323,6 +421,41 @@ export const App: React.FC = () => {
       })
     );
   };
+
+  const handleUndoLastPoint = () => {
+    setTracks((prev) =>
+      prev.map((trk) => {
+        if (trk.id !== activeTrackId || trk.steps.length === 0) return trk;
+        // If current frame has a point, delete it; otherwise remove the last step point
+        const hasCur = trk.steps.some((s) => s.frame === currentFrame);
+        const filtered = hasCur
+          ? trk.steps.filter((s) => s.frame !== currentFrame)
+          : trk.steps.slice(0, -1);
+        return {
+          ...trk,
+          steps: analysisMode === '3D' ? computeKinematics3D(filtered, trk.mass) : computeKinematics(filtered, trk.mass),
+        };
+      })
+    );
+  };
+
+  // Keyboard shortcut listener for Tracker-style efficiency (Ctrl+Z to undo point, Delete to delete current frame mark)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndoLastPoint();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
+        handleDeletePoint(currentFrame);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentFrame, activeTrackId, analysisMode]);
 
   const handleClearTrackPoints = () => {
     setTracks((prev) =>
@@ -525,6 +658,7 @@ export const App: React.FC = () => {
       {/* Top Navigation Bar */}
       <Navbar
         currentExperimentId={currentExp.id}
+        currentExperimentTitle={currentExp.title}
         onSelectExperiment={handleSelectExperiment}
         onUploadVideo={handleUploadVideo}
         onExportJSON={handleExportJSON}
@@ -618,8 +752,8 @@ export const App: React.FC = () => {
                     onFrameChange={setCurrentFrame}
                     videoUrlCam1={videoUrl}
                     videoUrlCam2={videoUrlCam2}
-                    onUploadCam1={(file) => setVideoUrl(URL.createObjectURL(file))}
-                    onUploadCam2={(file) => setVideoUrlCam2(URL.createObjectURL(file))}
+                    onUploadCam1={handleUploadCam1}
+                    onUploadCam2={handleUploadCam2}
                     showTrails={showTrails}
                     showVectors={showVectors}
                     showLoupe={showLoupe}
@@ -664,8 +798,8 @@ export const App: React.FC = () => {
                     onFrameChange={setCurrentFrame}
                     videoUrlCam1={videoUrl}
                     videoUrlCam2={videoUrlCam2}
-                    onUploadCam1={(file) => setVideoUrl(URL.createObjectURL(file))}
-                    onUploadCam2={(file) => setVideoUrlCam2(URL.createObjectURL(file))}
+                    onUploadCam1={handleUploadCam1}
+                    onUploadCam2={handleUploadCam2}
                     showTrails={showTrails}
                     showVectors={showVectors}
                     showLoupe={showLoupe}
@@ -712,6 +846,8 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
+                    requireShiftToMark={requireShiftToMark}
+                    onUndoLastPoint={handleUndoLastPoint}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -743,6 +879,8 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
+                    requireShiftToMark={requireShiftToMark}
+                    onUndoLastPoint={handleUndoLastPoint}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -775,6 +913,8 @@ export const App: React.FC = () => {
                   showVectors={showVectors}
                   showLoupe={showLoupe}
                   autoAdvance={autoAdvance}
+                  requireShiftToMark={requireShiftToMark}
+                  onUndoLastPoint={handleUndoLastPoint}
                 />
               </div>
             )}
@@ -813,6 +953,8 @@ export const App: React.FC = () => {
                 showVectors={showVectors}
                 showLoupe={showLoupe}
                 autoAdvance={autoAdvance}
+                requireShiftToMark={requireShiftToMark}
+                onUndoLastPoint={handleUndoLastPoint}
               />
             </div>
 
