@@ -1,13 +1,14 @@
 import React from 'react';
-import { HelpCircle, X, Ruler, Compass, MousePointerClick, TrendingUp, Download, FileText } from 'lucide-react';
+import { HelpCircle, X, Ruler, Compass, MousePointerClick, TrendingUp, Download, FileText, Film } from 'lucide-react';
 import { downloadUserManualPDF } from '../utils/downloadPdf';
 
 interface HelpModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenFormatsModal?: () => void;
 }
 
-export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
+export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose, onOpenFormatsModal }) => {
   if (!isOpen) return null;
 
   return (
@@ -95,9 +96,47 @@ export const HelpModal: React.FC<HelpModalProps> = ({ isOpen, onClose }) => {
               </p>
             </div>
           </div>
+
+          <div className="flex items-start gap-3">
+            <div className="p-1.5 rounded-[2px] bg-[#efefef] text-[#1e3a5f] border border-[#808080] shrink-0">
+              <Film className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="font-bold text-black mb-0.5">5. Universal Video Formats & Cameras</h4>
+              <p className="text-[#333333]">
+                Accepts all formats: <strong>MP4, MOV, WebM, AVI, MKV, MTS, WMV, FLV, 3GP, GIF, and TRZ</strong> archives. Supports 120/240 fps slow-mo cameras and drag-and-drop loading.
+              </p>
+              {onOpenFormatsModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenFormatsModal();
+                  }}
+                  className="mt-1.5 inline-flex items-center gap-1 text-[#1e3a5f] font-bold text-xs underline hover:text-[#152843]"
+                >
+                  <span>Open Full Formats Catalog & Diagnostics</span>
+                  <span>&rarr;</span>
+                </button>
+              )}
+            </div>
+          </div>
         </div>
 
-        <div className="mt-5 pt-3 border-t border-[#808080] flex justify-end">
+        <div className="mt-5 pt-3 border-t border-[#808080] flex items-center justify-between">
+          {onOpenFormatsModal ? (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenFormatsModal();
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] text-black font-semibold text-xs transition-colors border border-[#808080]"
+            >
+              <Film className="w-3.5 h-3.5 text-[#1e3a5f]" />
+              <span>Accepted Formats List</span>
+            </button>
+          ) : <div />}
           <button
             type="button"
             onClick={onClose}

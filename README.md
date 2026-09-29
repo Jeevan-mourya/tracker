@@ -103,9 +103,9 @@ Whenever you push to the `main` branch (or manually trigger **workflow_dispatch*
 ├── build/               # Application icons (icon.ico, icon.png) for packaging
 ├── public/              # Static public assets, sample videos, icons
 ├── src/
-│   ├── components/      # UI components (VideoPlayer, ThreeDTrajectoryView, Toolbar, etc.)
+│   ├── components/      # UI components (VideoPlayer, SupportedFormatsModal, etc.)
 │   ├── data/            # Preset 2D/3D sample trajectories
-│   ├── utils/           # DLT triangulation, physics calculations, PDF generation
+│   ├── utils/           # DLT triangulation, physics calculations, videoFormats, PDF
 │   ├── App.tsx          # Main application layout and state manager
 │   ├── main.tsx         # React entry point
 │   └── types.ts         # TypeScript interfaces and data models
@@ -115,6 +115,30 @@ Whenever you push to the `main` branch (or manually trigger **workflow_dispatch*
 ├── vite.config.ts       # Vite bundler configuration
 └── README.md            # Project documentation
 ```
+
+---
+
+## 🎥 Accepted Input Video Formats & Specifications
+
+Tracker includes a universal video format engine supporting video import via file picker and drag-and-drop. Below is the complete catalog of accepted containers and codecs:
+
+| Format / Extension | Type | Codec Compatibility | Recommended For |
+| :--- | :--- | :--- | :--- |
+| **`.mp4` / `.m4v`** | MPEG-4 Part 14 | H.264 (AVC), H.265 (HEVC), AV1 | **Universal Gold Standard** - Phones, action cameras, lab instruments |
+| **`.mov` / `.qt`** | Apple QuickTime | H.264, HEVC, Apple ProRes | iPhone & iPad high-speed slow-mo (120 & 240 fps) |
+| **`.webm`** | WebM Container | VP8, VP9, AV1 | Native open web video & screen captures |
+| **`.avi`** | Audio Video Interleave | MJPEG, H.264, Uncompressed | Legacy scientific cameras & industrial capture software |
+| **`.mkv`** | Matroska Multimedia | Any video/audio stream | Multi-track recordings and high-bitrate lab capture |
+| **`.mts` / `.m2ts`** | AVCHD Stream | MPEG-4 AVC / H.264 | Sony, Panasonic, and Canon camcorders |
+| **`.wmv`** | Windows Media Video | WMV9, VC-1 | Windows lab software exports |
+| **`.flv`** | Flash Video | H.264, Sorenson Spark | Historical physics video archives |
+| **`.3gp` / `.3g2`** | 3GPP Mobile | H.263, MPEG-4 Part 2 | Ultra-low bitrate mobile sensors |
+| **`.gif`** | Animated Graphics | Frame sequence | Repetitive physics oscillations & cyclical demonstrations |
+| **`.trz` / `.zip`** | OSP Video Archive | Auto-extracts embedded videos | Open Source Physics (OSP) Tracker bundled experiments |
+
+### High-Speed Video & Frame Rate Support
+- **120 fps / 240 fps Slow Motion:** Fully supported. Tracker automatically calculates sub-millisecond frame intervals ($\Delta t = 0.00416\text{ s}$ at 240 fps) for precision ballistics, impacts, and harmonic oscillations.
+- **In-App Formats Inspector:** Click the **Formats** button in the top navigation bar or status strip to test any local video file for browser/Electron hardware playback capability before importing.
 
 ---
 

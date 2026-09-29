@@ -194,6 +194,21 @@ export function computeKinematics(
     result[i].ax = ax;
     result[i].ay = ay;
     result[i].a = ax !== null && ay !== null ? Math.hypot(ax, ay) : null;
+
+    // Defense & Aerospace Ballistics Metrics (Photron / Phantom high-speed standards)
+    if (result[i].v !== null && result[i].v !== undefined) {
+      result[i].machNumber = result[i].v! / 343.0; // Mach at sea level standard atmosphere
+    } else {
+      result[i].machNumber = null;
+    }
+
+    if (result[i].a !== null && result[i].a !== undefined) {
+      result[i].gForce = result[i].a! / 9.80665; // G-force (1 g = 9.80665 m/s²)
+    } else {
+      result[i].gForce = null;
+    }
+
+    result[i].slantRange = Math.hypot(result[i].x, result[i].y);
   }
 
   return result;

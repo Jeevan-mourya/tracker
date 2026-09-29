@@ -1,4 +1,4 @@
-import { DLT11, PointStep, TriangulationConfig, TriangulationMethod } from '../types';
+import { DLT11, PointStep, TriangulationConfig, TriangulationMethod, TemporalInterpMethod } from '../types';
 
 /**
  * Solve a 3x3 linear system M * x = b via Cramer's rule / Gaussian elimination
@@ -350,3 +350,260 @@ export function compute3DKinematics(
 }
 
 export const computeKinematics3D = compute3DKinematics;
+
+/**
+ * Convert physical elapsed time (seconds) to camera frame index
+ */
+export function timeToCameraFrame(
+  timeSec: number,
+  fps: number,
+  timeOffsetSec: number = 0
+): number {
+  const effectiveTime = timeSec - timeOffsetSec;
+  return Math.max(0, Math.round(effectiveTime * fps));
+}
+
+/**
+ * Convert camera frame index to physical elapsed time (seconds)
+ */
+export function cameraFrameToTime(
+  frame: number,
+  fps: number,
+  timeOffsetSec: number = 0
+): number {
+  return timeOffsetSec + frame / Math.max(1, fps);
+}
+
+/**
+ * Compute the frame rate ratio and description between two cameras
+ */
+export function calculateMultiRateFrameRatio(
+  fps1: number,
+  fps2: number
+): {
+  ratioStr: string;
+  ratioNumber: number;
+  isIntegerRatio: boolean;
+  cam1Faster: boolean;
+} {
+  const f1 = Math.max(1, fps1);
+  const f2 = Math.max(1, fps2);
+  const ratio = f1 / f2;
+  const isInteger = Math.abs(ratio - Math.round(ratio)) < 1e-4;
+  const invRatio = f2 / f1;
+  const isInvInteger = Math.abs(invRatio - Math.round(invRatio)) < 1e-4;
+
+  let ratioStr = '';
+  if (Math.abs(ratio - 1) < 1e-4) {
+    ratioStr = '1:1 (Synchronous)';
+  } else if (isInteger) {
+    ratioStr = `${Math.round(ratio)}:1`;
+  } else if (isInvInteger) {
+    ratioStr = `1:${Math.round(invRatio)}`;
+  } else {
+    ratioStr = `${ratio.toFixed(2)}:1`;
+  }
+
+  return {
+    ratioStr,
+    ratioNumber: ratio,
+    isIntegerRatio: isInteger || isInvInteger,
+    cam1Faster: f1 >= f2,
+  };
+}
+
+export interface TemporalInterpolationResult {
+  px: number;
+  py: number;
+  isExact: boolean;
+  timeDelta: number; // discrepancy in seconds between target time and nearest keyframe
+  closestFrame?: number;
+}
+
+/**
+ * Sub-frame temporal interpolation of 2D pixel coordinates for a camera track.
+ * Handles mismatched frame rates (e.g. 10,000 fps Cam 1 vs 5,000 fps Cam 2).
+ */
+export function interpolateCameraCoordinates(
+  samples: { time: number; px: number; py: number; frame?: number }[],
+  targetTime: number,
+  method: TemporalInterpMethod = 'cubic-spline'
+): TemporalInterpolationResult | null {
+  if (!samples || samples.length === 0) return null;
+
+  const sorted = [...samples].sort((a, b) => a.time - b.time);
+  const n = sorted.length;
+
+  // Exact match check (tolerance 1 microsecond)
+  for (let i = 0; i < n; i++) {
+    if (Math.abs(sorted[i].time - targetTime) <= 1e-6) {
+      return {
+        px: sorted[i].px,
+        py: sorted[i].py,
+        isExact: true,
+        timeDelta: 0,
+        closestFrame: sorted[i].frame,
+      };
+    }
+  }
+
+  // Single sample
+  if (n === 1) {
+    return {
+      px: sorted[0].px,
+      py: sorted[0].py,
+      isExact: false,
+      timeDelta: Math.abs(sorted[0].time - targetTime),
+      closestFrame: sorted[0].frame,
+    };
+  }
+
+  // Before first sample
+  if (targetTime <= sorted[0].time) {
+    const dt = sorted[1].time - sorted[0].time;
+    const factor = (targetTime - sorted[0].time) / Math.max(1e-9, dt);
+    return {
+      px: sorted[0].px + factor * (sorted[1].px - sorted[0].px),
+      py: sorted[0].py + factor * (sorted[1].py - sorted[0].py),
+      isExact: false,
+      timeDelta: sorted[0].time - targetTime,
+      closestFrame: sorted[0].frame,
+    };
+  }
+
+  // After last sample
+  if (targetTime >= sorted[n - 1].time) {
+    const dt = sorted[n - 1].time - sorted[n - 2].time;
+    const factor = (targetTime - sorted[n - 1].time) / Math.max(1e-9, dt);
+    return {
+      px: sorted[n - 1].px + factor * (sorted[n - 1].px - sorted[n - 2].px),
+      py: sorted[n - 1].py + factor * (sorted[n - 1].py - sorted[n - 2].py),
+      isExact: false,
+      timeDelta: targetTime - sorted[n - 1].time,
+      closestFrame: sorted[n - 1].frame,
+    };
+  }
+
+  // Find bracketing segment [idx, idx+1]
+  let idx = 0;
+  for (let i = 0; i < n - 1; i++) {
+    if (targetTime >= sorted[i].time && targetTime <= sorted[i + 1].time) {
+      idx = i;
+      break;
+    }
+  }
+
+  const p0 = sorted[idx];
+  const p1 = sorted[idx + 1];
+  const dt = p1.time - p0.time;
+  if (dt <= 1e-12) {
+    return {
+      px: p0.px,
+      py: p0.py,
+      isExact: false,
+      timeDelta: 0,
+      closestFrame: p0.frame,
+    };
+  }
+
+  const u = (targetTime - p0.time) / dt;
+  const closest = u < 0.5 ? p0 : p1;
+  const timeDelta = Math.min(Math.abs(targetTime - p0.time), Math.abs(targetTime - p1.time));
+
+  if (method === 'nearest') {
+    return {
+      px: closest.px,
+      py: closest.py,
+      isExact: false,
+      timeDelta,
+      closestFrame: closest.frame,
+    };
+  }
+
+  if (method === 'linear') {
+    return {
+      px: p0.px + u * (p1.px - p0.px),
+      py: p0.py + u * (p1.py - p0.py),
+      isExact: false,
+      timeDelta,
+      closestFrame: closest.frame,
+    };
+  }
+
+  // Cubic Hermite / Catmull-Rom Spline Interpolation
+  const pPrev = idx > 0 ? sorted[idx - 1] : p0;
+  const pNext = idx + 2 < n ? sorted[idx + 2] : p1;
+
+  // Tangents at p0 and p1
+  const dt0 = idx > 0 ? p1.time - pPrev.time : dt;
+  const dt1 = idx + 2 < n ? pNext.time - p0.time : dt;
+
+  const m0x = dt0 > 0 ? (p1.px - pPrev.px) / dt0 : (p1.px - p0.px) / dt;
+  const m0y = dt0 > 0 ? (p1.py - pPrev.py) / dt0 : (p1.py - p0.py) / dt;
+
+  const m1x = dt1 > 0 ? (pNext.px - p0.px) / dt1 : (p1.px - p0.px) / dt;
+  const m1y = dt1 > 0 ? (pNext.py - p0.py) / dt1 : (p1.py - p0.py) / dt;
+
+  // Hermite basis functions
+  const u2 = u * u;
+  const u3 = u2 * u;
+  const h00 = 2 * u3 - 3 * u2 + 1;
+  const h10 = u3 - 2 * u2 + u;
+  const h01 = -2 * u3 + 3 * u2;
+  const h11 = u3 - u2;
+
+  const interpX = h00 * p0.px + h10 * dt * m0x + h01 * p1.px + h11 * dt * m1x;
+  const interpY = h00 * p0.py + h10 * dt * m0y + h01 * p1.py + h11 * dt * m1y;
+
+  return {
+    px: interpX,
+    py: interpY,
+    isExact: false,
+    timeDelta,
+    closestFrame: closest.frame,
+  };
+}
+
+/**
+ * Asynchronous 3D Triangulation with temporal interpolation and residual quantification
+ */
+export function triangulateAsynchronousDLT(
+  targetTime: number,
+  cam1Point: { px: number; py: number; time: number },
+  cam2Samples: { time: number; px: number; py: number; frame?: number }[],
+  dlt1: DLT11,
+  dlt2: DLT11,
+  interpMethod: TemporalInterpMethod = 'cubic-spline'
+): {
+  x: number;
+  y: number;
+  z: number;
+  residual: number;
+  isCam2Interpolated: boolean;
+  temporalDeltaSeconds: number;
+  cam2EstimatedPoint: { px: number; py: number };
+} | null {
+  const interp2 = interpolateCameraCoordinates(cam2Samples, targetTime, interpMethod);
+  if (!interp2) return null;
+
+  const tri = triangulateDLT(
+    cam1Point.px,
+    cam1Point.py,
+    dlt1,
+    interp2.px,
+    interp2.py,
+    dlt2
+  );
+
+  if (!tri) return null;
+
+  return {
+    x: tri.x,
+    y: tri.y,
+    z: tri.z,
+    residual: tri.residual,
+    isCam2Interpolated: !interp2.isExact,
+    temporalDeltaSeconds: interp2.timeDelta,
+    cam2EstimatedPoint: { px: interp2.px, py: interp2.py },
+  };
+}

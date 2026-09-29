@@ -1,8 +1,9 @@
 import React, { useRef } from 'react';
 import { SAMPLE_EXPERIMENTS } from '../data/samples';
 import { SampleExperiment } from '../types';
-import { FolderOpen, Download, Upload, HelpCircle, Activity, Video } from 'lucide-react';
+import { FolderOpen, Download, Upload, HelpCircle, Activity, Video, Film } from 'lucide-react';
 import { downloadUserManualPDF } from '../utils/downloadPdf';
+import { ACCEPTED_VIDEO_ACCEPT_STRING } from '../utils/videoFormats';
 
 interface NavbarProps {
   currentExperimentId: string;
@@ -12,6 +13,7 @@ interface NavbarProps {
   onExportJSON: () => void;
   onExportCSV: () => void;
   onOpenHelp: () => void;
+  onOpenFormatsModal?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -22,6 +24,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onExportJSON,
   onExportCSV,
   onOpenHelp,
+  onOpenFormatsModal,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -86,15 +89,28 @@ export const Navbar: React.FC<NavbarProps> = ({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           className="flex items-center gap-1.5 px-3 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] active:bg-[#c8c8c0] text-black text-xs font-semibold border border-[#808080] h-[28px] shrink-0 transition-colors"
-          title="Open local MP4, WebM, or MOV video file for analysis"
+          title="Open local video file for analysis (MP4, MOV, WebM, AVI, MKV, MTS, GIF, TRZ, etc.)"
         >
           <Upload className="w-3.5 h-3.5 text-black" />
           <span>Open Video</span>
         </button>
+
+        {/* Accepted Video Formats List & Diagnostics Modal Trigger */}
+        <button
+          id="btn-video-formats"
+          type="button"
+          onClick={onOpenFormatsModal}
+          className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] active:bg-[#c8c8c0] text-[#1e3a5f] text-xs font-bold border border-[#808080] h-[28px] shrink-0 transition-colors"
+          title="View all 13+ accepted video formats, codecs, and run compatibility diagnostics"
+        >
+          <Film className="w-3.5 h-3.5" />
+          <span>Formats</span>
+        </button>
+
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/*"
+          accept={ACCEPTED_VIDEO_ACCEPT_STRING}
           className="hidden"
           onChange={handleFileChange}
         />

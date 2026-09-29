@@ -59,6 +59,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
           case 'kineticEnergy': yVal = step.kineticEnergy; break;
           case 'potentialEnergy': yVal = step.potentialEnergy; break;
           case 'totalEnergy': yVal = step.totalEnergy; break;
+          case 'mach': yVal = step.machNumber ?? (step.v ? step.v / 343 : 0); break;
+          case 'gForce': yVal = step.gForce ?? (step.a ? step.a / 9.80665 : 0); break;
+          case 'slantRange': yVal = step.slantRange ?? Math.hypot(step.x, step.y, step.z ?? 0); break;
         }
 
         return {
@@ -125,6 +128,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
       case 'kineticEnergy':
       case 'potentialEnergy':
       case 'totalEnergy': return 'J';
+      case 'mach': return 'Mach';
+      case 'gForce': return 'g';
+      case 'slantRange': return 'm';
     }
   };
 
@@ -161,6 +167,11 @@ export const PlotView: React.FC<PlotViewProps> = ({
                 <option value="ax">ax (Horizontal Accel)</option>
                 <option value="az">az (Lateral Accel)</option>
                 <option value="a">a (3D Total Accel)</option>
+              </optgroup>
+              <optgroup label="Defense & Ballistics">
+                <option value="mach">Mach Number (M)</option>
+                <option value="gForce">G-Force (g)</option>
+                <option value="slantRange">Slant Range (m)</option>
               </optgroup>
               <optgroup label="Energy">
                 <option value="kineticEnergy">Kinetic Energy (K)</option>

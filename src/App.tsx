@@ -11,6 +11,7 @@ import { ClipSettingsModal } from './components/ClipSettingsModal';
 import { TrackManagerModal } from './components/TrackManagerModal';
 import { TriangulationModal } from './components/TriangulationModal';
 import { HelpModal } from './components/HelpModal';
+import { SupportedFormatsModal } from './components/SupportedFormatsModal';
 import { SAMPLE_EXPERIMENTS } from './data/samples';
 import {
   Track,
@@ -27,13 +28,14 @@ import {
   buildDefaultDLT,
   triangulateDLT,
 } from './utils/triangulation';
+import { extractVideoFromArchive } from './utils/videoFormats';
 
 export const App: React.FC = () => {
   // Current experiment
   const [currentExp, setCurrentExp] = useState<SampleExperiment>(SAMPLE_EXPERIMENTS[0]);
   const [videoUrl, setVideoUrl] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrl);
   const [videoUrlCam2, setVideoUrlCam2] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrlCam2 || '');
-  const [isSynthetic, setIsSynthetic] = useState<boolean>(false);
+  const [isSynthetic, setIsSynthetic] = useState<boolean>(Boolean(SAMPLE_EXPERIMENTS[0].syntheticType));
 
   // Analysis mode: 2D Single Video vs 3D Stereo Video
   const [analysisMode, setAnalysisMode] = useState<'2D' | '3D'>(
@@ -72,17 +74,28 @@ export const App: React.FC = () => {
     const defaultExp = SAMPLE_EXPERIMENTS[0];
     const initialSteps: PointStep[] = (defaultExp.samplePoints || []).map((pt) => {
       const world = pixelToWorld(pt.px, pt.py, defaultExp.axes, defaultExp.calibration);
+      const time = (pt.frame - defaultExp.clip.startFrame) * (1 / defaultExp.clip.fps);
+      const fps2 = defaultExp.triangulation?.fpsCam2 || defaultExp.clip.fps;
+      const offset = defaultExp.triangulation?.timeOffsetCam2Sec || 0;
       return {
         frame: pt.frame,
-        time: (pt.frame - defaultExp.clip.startFrame) * (1 / defaultExp.clip.fps),
+        time,
         px: pt.px,
         py: pt.py,
-        x: world.x,
-        y: world.y,
+        cam1: { px: pt.px, py: pt.py },
+        cam2: pt.cam2Px !== undefined && pt.cam2Py !== undefined ? { px: pt.cam2Px, py: pt.cam2Py } : undefined,
         cam1Px: pt.px,
         cam1Py: pt.py,
         cam2Px: pt.cam2Px,
         cam2Py: pt.cam2Py,
+        cam1Time: time,
+        cam2Time: time - offset,
+        cam2Frame: Math.round((time - offset) * fps2),
+        isInterpolatedCam1: false,
+        isInterpolatedCam2: (pt as any).isInterpolatedCam2 ?? false,
+        temporalDeltaSeconds: (pt as any).temporalDeltaSeconds ?? 0,
+        x: world.x,
+        y: world.y,
         z: pt.z,
       };
     });
@@ -129,6 +142,7 @@ export const App: React.FC = () => {
   const [isTrackManagerOpen, setIsTrackManagerOpen] = useState(false);
   const [isTriModalOpen, setIsTriModalOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [isFormatsModalOpen, setIsFormatsModalOpen] = useState(false);
 
   // Recompute world coordinates and kinematics for all tracks when axes or calibration changes (2D)
   const refreshAllTrackKinematics = useCallback(
@@ -166,7 +180,7 @@ export const App: React.FC = () => {
     setCurrentExp(exp);
     setVideoUrl(exp.videoUrl);
     setVideoUrlCam2(exp.videoUrlCam2 || '');
-    setIsSynthetic(false);
+    setIsSynthetic(Boolean(exp.syntheticType));
     setCalibration(exp.calibration);
     setAxes(exp.axes);
     setClip(exp.clip);
@@ -185,17 +199,28 @@ export const App: React.FC = () => {
 
     const initialSteps: PointStep[] = (exp.samplePoints || []).map((pt) => {
       const world = pixelToWorld(pt.px, pt.py, exp.axes, exp.calibration);
+      const time = (pt.frame - exp.clip.startFrame) * (1 / exp.clip.fps);
+      const fps2 = exp.triangulation?.fpsCam2 || exp.clip.fps;
+      const offset = exp.triangulation?.timeOffsetCam2Sec || 0;
       return {
         frame: pt.frame,
-        time: (pt.frame - exp.clip.startFrame) * (1 / exp.clip.fps),
+        time,
         px: pt.px,
         py: pt.py,
-        x: world.x,
-        y: world.y,
+        cam1: { px: pt.px, py: pt.py },
+        cam2: pt.cam2Px !== undefined && pt.cam2Py !== undefined ? { px: pt.cam2Px, py: pt.cam2Py } : undefined,
         cam1Px: pt.px,
         cam1Py: pt.py,
         cam2Px: pt.cam2Px,
         cam2Py: pt.cam2Py,
+        cam1Time: time,
+        cam2Time: time - offset,
+        cam2Frame: Math.round((time - offset) * fps2),
+        isInterpolatedCam1: false,
+        isInterpolatedCam2: (pt as any).isInterpolatedCam2 ?? false,
+        temporalDeltaSeconds: (pt as any).temporalDeltaSeconds ?? 0,
+        x: world.x,
+        y: world.y,
         z: pt.z,
       };
     });
@@ -221,8 +246,23 @@ export const App: React.FC = () => {
     setActiveTrackId('track-1');
   };
 
-  // Handle Custom Video Upload with duration detection
-  const handleUploadVideo = (file: File) => {
+  // Helper to extract video from .trz / .zip archives or pass through regular videos
+  const resolveUploadedFile = async (rawFile: File): Promise<File> => {
+    const ext = rawFile.name.toLowerCase();
+    if (ext.endsWith('.trz') || ext.endsWith('.zip')) {
+      try {
+        const extracted = await extractVideoFromArchive(rawFile);
+        return extracted.videoFile;
+      } catch (err) {
+        console.warn('Could not extract archive as zip/trz, attempting native loading:', err);
+      }
+    }
+    return rawFile;
+  };
+
+  // Handle Custom Video Upload with duration detection & universal formats
+  const handleUploadVideo = async (rawFile: File) => {
+    const file = await resolveUploadedFile(rawFile);
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
     setIsSynthetic(false);
@@ -253,14 +293,12 @@ export const App: React.FC = () => {
       clip: initialClip,
     });
 
-    // Probe duration from HTML5 video element
-    const probe = document.createElement('video');
-    probe.preload = 'metadata';
-    probe.src = url;
-    probe.onloadedmetadata = () => {
-      const dur = probe.duration;
-      if (dur && Number.isFinite(dur) && dur > 0) {
-        const calculatedFrames = Math.max(10, Math.round(dur * 30));
+    const isGif = file.name.toLowerCase().endsWith('.gif') || file.type === 'image/gif';
+    if (isGif) {
+      const img = new Image();
+      img.src = url;
+      img.onload = () => {
+        const calculatedFrames = 60; // Standard 2-second default animation cycle
         const updatedClip: ClipSettings = {
           startFrame: 0,
           endFrame: calculatedFrames - 1,
@@ -276,8 +314,34 @@ export const App: React.FC = () => {
           ...prev,
           clip: updatedClip,
         }));
-      }
-    };
+      };
+    } else {
+      // Probe duration from HTML5 video element
+      const probe = document.createElement('video');
+      probe.preload = 'metadata';
+      probe.src = url;
+      probe.onloadedmetadata = () => {
+        const dur = probe.duration;
+        if (dur && Number.isFinite(dur) && dur > 0) {
+          const calculatedFrames = Math.max(10, Math.round(dur * 30));
+          const updatedClip: ClipSettings = {
+            startFrame: 0,
+            endFrame: calculatedFrames - 1,
+            stepSize: 1,
+            fps: 30,
+            startTime: 0.0,
+            frameDt: 1 / 30,
+            dt: 1 / 30,
+            totalFrames: calculatedFrames,
+          };
+          setClip(updatedClip);
+          setCurrentExp((prev) => ({
+            ...prev,
+            clip: updatedClip,
+          }));
+        }
+      };
+    }
 
     // Reset track points for new video
     setTracks([
@@ -296,7 +360,8 @@ export const App: React.FC = () => {
     ]);
   };
 
-  const handleUploadCam1 = (file: File) => {
+  const handleUploadCam1 = async (rawFile: File) => {
+    const file = await resolveUploadedFile(rawFile);
     const url = URL.createObjectURL(file);
     setVideoUrl(url); // We map cam1 to main videoUrl in state
     setIsSynthetic(false);
@@ -324,7 +389,8 @@ export const App: React.FC = () => {
     };
   };
 
-  const handleUploadCam2 = (file: File) => {
+  const handleUploadCam2 = async (rawFile: File) => {
+    const file = await resolveUploadedFile(rawFile);
     const url = URL.createObjectURL(file);
     setVideoUrlCam2(url);
     setIsSynthetic(false);
@@ -664,6 +730,7 @@ export const App: React.FC = () => {
         onExportJSON={handleExportJSON}
         onExportCSV={handleExportCSV}
         onOpenHelp={() => setIsHelpOpen(true)}
+        onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
       />
 
       {/* Physics Toolbar */}
@@ -729,6 +796,7 @@ export const App: React.FC = () => {
                       tracks={tracks}
                       activeTrackId={activeTrackId}
                       currentFrame={currentFrame}
+                      clip={clip}
                       onSelectFrame={setCurrentFrame}
                       onDeletePoint={handleDeletePoint}
                     />
@@ -758,6 +826,7 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
+                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
                   />
                 </div>
                 <div className="w-1/2 lg:w-5/12 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -804,6 +873,8 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
+                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                    onOpenTriangulationModal={() => setIsTriModalOpen(true)}
                   />
                 </div>
                 <div className="w-1/2 lg:w-5/12 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -820,6 +891,7 @@ export const App: React.FC = () => {
                       tracks={tracks}
                       activeTrackId={activeTrackId}
                       currentFrame={currentFrame}
+                      clip={clip}
                       onSelectFrame={setCurrentFrame}
                       onDeletePoint={handleDeletePoint}
                     />
@@ -848,6 +920,8 @@ export const App: React.FC = () => {
                     autoAdvance={autoAdvance}
                     requireShiftToMark={requireShiftToMark}
                     onUndoLastPoint={handleUndoLastPoint}
+                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                    onOpenTriangulationModal={() => setIsTriModalOpen(true)}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -881,6 +955,8 @@ export const App: React.FC = () => {
                     autoAdvance={autoAdvance}
                     requireShiftToMark={requireShiftToMark}
                     onUndoLastPoint={handleUndoLastPoint}
+                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                    onOpenTriangulationModal={() => setIsTriModalOpen(true)}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -888,6 +964,7 @@ export const App: React.FC = () => {
                     tracks={tracks}
                     activeTrackId={activeTrackId}
                     currentFrame={currentFrame}
+                    clip={clip}
                     onSelectFrame={setCurrentFrame}
                     onDeletePoint={handleDeletePoint}
                   />
@@ -915,6 +992,8 @@ export const App: React.FC = () => {
                   autoAdvance={autoAdvance}
                   requireShiftToMark={requireShiftToMark}
                   onUndoLastPoint={handleUndoLastPoint}
+                  onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                  onOpenTriangulationModal={() => setIsTriModalOpen(true)}
                 />
               </div>
             )}
@@ -935,7 +1014,10 @@ export const App: React.FC = () => {
               <VideoPlayerView
                 videoUrl={videoUrl}
                 isSynthetic={isSynthetic}
-                syntheticType={currentExp.id}
+                syntheticType={currentExp.syntheticType || currentExp.id}
+                fileName={currentExp.title}
+                onUploadVideo={handleUploadVideo}
+                onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
                 tracks={tracks}
                 activeTrackId={activeTrackId}
                 onAddPoint={handleAddPoint}
@@ -981,6 +1063,7 @@ export const App: React.FC = () => {
                         tracks={tracks}
                         activeTrackId={activeTrackId}
                         currentFrame={currentFrame}
+                        clip={clip}
                         onSelectFrame={setCurrentFrame}
                         onDeletePoint={handleDeletePoint}
                       />
@@ -1003,6 +1086,7 @@ export const App: React.FC = () => {
                       tracks={tracks}
                       activeTrackId={activeTrackId}
                       currentFrame={currentFrame}
+                      clip={clip}
                       onSelectFrame={setCurrentFrame}
                       onDeletePoint={handleDeletePoint}
                     />
@@ -1047,7 +1131,17 @@ export const App: React.FC = () => {
         onSave={handleSaveTriangulation}
       />
 
-      <HelpModal isOpen={isHelpOpen} onClose={() => setIsHelpOpen(false)} />
+      <HelpModal
+        isOpen={isHelpOpen}
+        onClose={() => setIsHelpOpen(false)}
+        onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+      />
+
+      <SupportedFormatsModal
+        isOpen={isFormatsModalOpen}
+        onClose={() => setIsFormatsModalOpen(false)}
+        onSelectVideoFile={handleUploadVideo}
+      />
     </div>
   );
 };

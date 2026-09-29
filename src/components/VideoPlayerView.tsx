@@ -13,12 +13,20 @@ import {
   Trash,
   Maximize2,
   Undo2,
+  Upload,
+  AlertCircle,
+  Film,
 } from 'lucide-react';
+import { ACCEPTED_VIDEO_ACCEPT_STRING } from '../utils/videoFormats';
+import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 interface VideoPlayerViewProps {
   videoUrl: string;
   isSynthetic: boolean;
   syntheticType?: string;
+  fileName?: string;
+  onUploadVideo?: (file: File) => void;
+  onOpenFormatsModal?: () => void;
   tracks: Track[];
   activeTrackId: string;
   onAddPoint: (step: PointStep) => void;
@@ -73,11 +81,16 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   requireShiftToMark = true,
   onToggleRequireShiftToMark,
   onUndoLastPoint,
+  fileName,
+  onUploadVideo,
+  onOpenFormatsModal,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement>(null);
+  const hiddenFileInputRef = useRef<HTMLInputElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(0.5);
@@ -87,7 +100,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
   const [isShiftPressed, setIsShiftPressed] = useState<boolean>(false);
   const [showShiftWarning, setShowShiftWarning] = useState<boolean>(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isGif = Boolean(videoUrl?.toLowerCase().includes('.gif') || fileName?.toLowerCase().endsWith('.gif'));
 
   // Monitor Shift key for visual feedback and safety
   useEffect(() => {
@@ -108,19 +125,22 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const activeStep = activeTrack?.steps.find((s) => s.frame === currentFrame);
 
-  // Time calculations
-  const currentTime = (currentFrame - clip.startFrame) * (1 / clip.fps);
+  // Physical time calculations
+  const currentTime = (clip.startTime ?? 0) + (currentFrame - clip.startFrame) * (1 / clip.fps);
+
+  // Container playback fps (for seeking MP4/AVI files that were recorded at 1,000-100,000 fps but packaged at 30/60 fps)
+  const containerFps = clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps);
 
   // Synchronize video element with current frame
   useEffect(() => {
     const video = videoRef.current;
     if (!video || isSynthetic) return;
 
-    const targetTime = Math.max(0.001, currentFrame / clip.fps);
+    const targetTime = Math.max(0.001, currentFrame / containerFps);
     if (Math.abs(video.currentTime - targetTime) > 0.03) {
       video.currentTime = targetTime;
     }
-  }, [currentFrame, clip.fps, isSynthetic]);
+  }, [currentFrame, clip.fps, containerFps, isSynthetic]);
 
   // Video playback loop
   useEffect(() => {
@@ -128,7 +148,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
     if (isPlaying) {
       let lastTime = performance.now();
-      const interval = (1000 / clip.fps) / playbackRate;
+      // For high speed videos (e.g. 1,000 to 100,000 fps), advance frames smoothly at container playback rate
+      const playFps = Math.min(60, containerFps);
+      const interval = (1000 / playFps) / playbackRate;
 
       const tick = (now: number) => {
         if (now - lastTime >= interval) {
@@ -231,7 +253,215 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         ctx.stroke();
       }
 
-      if (syntheticType === 'incline-cart') {
+      if (syntheticType === 'ballistic-bullet-10k') {
+        // High-Speed Defense Ballistic Range: Photron FASTCAM SA-Z (10,000 fps)
+        // Draw Ballistic Target Block (Armor / Gelatin) from x = 350 to 570
+        ctx.save();
+        ctx.fillStyle = 'rgba(234, 179, 8, 0.25)'; // Amber ballistic gel
+        ctx.strokeStyle = '#eab308';
+        ctx.lineWidth = 2;
+        ctx.fillRect(350, 140, 220, 200);
+        ctx.strokeRect(350, 140, 220, 200);
+
+        // Grid fiducials inside gelatin block (50mm grid)
+        ctx.strokeStyle = 'rgba(234, 179, 8, 0.4)';
+        ctx.setLineDash([2, 4]);
+        for (let gx = 400; gx < 570; gx += 50) {
+          ctx.beginPath();
+          ctx.moveTo(gx, 140);
+          ctx.lineTo(gx, 340);
+          ctx.stroke();
+        }
+        for (let gy = 190; gy < 340; gy += 50) {
+          ctx.beginPath();
+          ctx.moveTo(350, gy);
+          ctx.lineTo(570, gy);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Projectile position calculation
+        // Frame 0-3: Free flight at ~920 m/s (92 px/frame)
+        // Frame 4+: Deceleration inside gelatin with cavitation bubble
+        let bulletX = 50 + currentFrame * 92;
+        if (currentFrame === 4) bulletX = 395;
+        else if (currentFrame === 5) bulletX = 445;
+        else if (currentFrame === 6) bulletX = 480;
+        else if (currentFrame === 7) bulletX = 503;
+        else if (currentFrame === 8) bulletX = 518;
+        else if (currentFrame === 9) bulletX = 527;
+        else if (currentFrame === 10) bulletX = 532;
+        else if (currentFrame >= 11) bulletX = 535;
+
+        const bulletY = 240;
+
+        // Cavitation bubble inside gelatin block
+        if (currentFrame >= 4) {
+          const cavRadius = Math.min(65, (currentFrame - 3) * 12);
+          const cavCenterX = 350 + (bulletX - 350) * 0.55;
+
+          // Temporary Cavity
+          const grad = ctx.createRadialGradient(cavCenterX, bulletY, 5, cavCenterX, bulletY, cavRadius);
+          grad.addColorStop(0, 'rgba(255, 255, 255, 0.85)');
+          grad.addColorStop(0.5, 'rgba(251, 191, 36, 0.6)');
+          grad.addColorStop(1, 'rgba(234, 88, 12, 0.05)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.ellipse(cavCenterX, bulletY, cavRadius * 1.3, cavRadius * 0.9, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Permanent wound tract
+          ctx.strokeStyle = '#ef4444';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(350, bulletY);
+          ctx.lineTo(bulletX, bulletY);
+          ctx.stroke();
+        }
+
+        // Impact flash star at frame 4
+        if (currentFrame === 4) {
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(350, bulletY, 14, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#fbbf24';
+          ctx.lineWidth = 2;
+          for (let a = 0; a < Math.PI * 2; a += Math.PI / 4) {
+            ctx.beginPath();
+            ctx.moveTo(350, bulletY);
+            ctx.lineTo(350 + Math.cos(a) * 26, bulletY + Math.sin(a) * 26);
+            ctx.stroke();
+          }
+        }
+
+        // Supersonic Shockwave (Mach cone) in air prior to impact
+        if (currentFrame < 4) {
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(bulletX, bulletY);
+          ctx.lineTo(bulletX - 80, bulletY - 35);
+          ctx.moveTo(bulletX, bulletY);
+          ctx.lineTo(bulletX - 80, bulletY + 35);
+          ctx.stroke();
+        }
+
+        // Draw 5.56mm Spitzer Bullet
+        ctx.fillStyle = '#f59e0b'; // Copper jacket
+        ctx.strokeStyle = '#78350f';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        // Spitzer ogive pointed nose
+        ctx.moveTo(bulletX, bulletY);
+        ctx.quadraticCurveTo(bulletX - 8, bulletY - 4, bulletX - 18, bulletY - 4);
+        ctx.lineTo(bulletX - 22, bulletY - 3); // boat tail
+        ctx.lineTo(bulletX - 22, bulletY + 3);
+        ctx.lineTo(bulletX - 18, bulletY + 4);
+        ctx.quadraticCurveTo(bulletX - 8, bulletY + 4, bulletX, bulletY);
+        ctx.fill();
+        ctx.stroke();
+
+        // High-Speed Defense HUD Annotation
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = '10px monospace';
+        ctx.fillText('PHOTRON FASTCAM SA-Z · 10,000 FPS · 100 µs/frame', 20, 30);
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText(
+          currentFrame < 4
+            ? `FREE FLIGHT: v = 920 m/s (Mach 2.68) · Sub-frame dt = 100.00 µs`
+            : currentFrame <= 11
+            ? `PENETRATION DECELERATION: a = -4.8e5 m/s² (~49,000 g)`
+            : `PROJECTILE ARRESTED · Max penetration = 185 mm`,
+          20,
+          45
+        );
+        ctx.restore();
+      } else if (syntheticType === 'supersonic-shockwave-25k') {
+        // High-Speed Schlieren Imaging: Phantom v2512 (25,000 fps)
+        ctx.save();
+        // Circular Schlieren optical mirror field
+        const centerSchlierenX = width / 2;
+        const centerSchlierenY = height / 2;
+        const schlierenRadius = 180;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(centerSchlierenX, centerSchlierenY, schlierenRadius, 0, Math.PI * 2);
+        ctx.clip();
+
+        // Schlieren optical background gradient (simulating knife-edge illumination)
+        const schlierenGrad = ctx.createLinearGradient(
+          centerSchlierenX - schlierenRadius,
+          centerSchlierenY - schlierenRadius,
+          centerSchlierenX + schlierenRadius,
+          centerSchlierenY + schlierenRadius
+        );
+        schlierenGrad.addColorStop(0, '#27272a');
+        schlierenGrad.addColorStop(0.5, '#3f3f46');
+        schlierenGrad.addColorStop(1, '#18181b');
+        ctx.fillStyle = schlierenGrad;
+        ctx.fillRect(0, 0, width, height);
+
+        const projX = Math.round(50 + currentFrame * 33);
+        const projY = 240;
+
+        // Oblique Conical Shockwave (Mach cone, μ = 24.62° for Mach 2.40)
+        const machAngleRad = (24.62 * Math.PI) / 180;
+        const coneLen = 260;
+        const dy = Math.tan(machAngleRad) * coneLen;
+
+        // Leading Head Shock
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(projX, projY);
+        ctx.lineTo(projX - coneLen, projY - dy);
+        ctx.moveTo(projX, projY);
+        ctx.lineTo(projX - coneLen, projY + dy);
+        ctx.stroke();
+
+        // Trailing Base Shock
+        ctx.strokeStyle = 'rgba(200, 200, 220, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(projX - 30, projY - 5);
+        ctx.lineTo(projX - 30 - coneLen * 0.8, projY - 5 - dy * 0.8);
+        ctx.moveTo(projX - 30, projY + 5);
+        ctx.lineTo(projX - 30 - coneLen * 0.8, projY + 5 + dy * 0.8);
+        ctx.stroke();
+
+        // Supersonic projectile body
+        ctx.fillStyle = '#e4e4e7';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(projX, projY);
+        ctx.lineTo(projX - 12, projY - 5);
+        ctx.lineTo(projX - 30, projY - 5);
+        ctx.lineTo(projX - 30, projY + 5);
+        ctx.lineTo(projX - 12, projY + 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.restore();
+
+        // Schlieren mirror bezel
+        ctx.strokeStyle = '#52525b';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(centerSchlierenX, centerSchlierenY, schlierenRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Telemetry readout
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = '10px monospace';
+        ctx.fillText('VISION RESEARCH PHANTOM v2512 · 25,000 FPS · 40 µs/frame', 20, 30);
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillText('SCHLIEREN OPTICAL ENVELOPE: Mach 2.40 (825 m/s) · Shock Angle μ = 24.6°', 20, 45);
+        ctx.restore();
+      } else if (syntheticType === 'incline-cart') {
         // Draw 15-degree inclined plane
         ctx.save();
         ctx.strokeStyle = '#52525b';
@@ -752,21 +982,62 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       {/* Video & Canvas Stage */}
       <div
         ref={containerRef}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsDraggingFile(true);
+        }}
+        onDragLeave={() => setIsDraggingFile(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDraggingFile(false);
+          setVideoError(null);
+          const file = e.dataTransfer.files?.[0];
+          if (file) onUploadVideo?.(file);
+        }}
         className="relative flex-1 bg-[#141414] flex items-center justify-center p-2 min-h-0 overflow-hidden"
       >
+        {/* Drag & Drop Visual HUD Overlay */}
+        {isDraggingFile && (
+          <div className="absolute inset-0 z-40 bg-[#1e3a5f]/85 border-2 border-dashed border-white text-white flex flex-col items-center justify-center pointer-events-none p-4 backdrop-blur-xs">
+            <Upload className="w-12 h-12 mb-2 animate-bounce" />
+            <p className="text-sm font-bold">Drop Video to Load into Tracker</p>
+            <p className="text-xs text-blue-200 mt-1">
+              Accepts MP4, MOV, WebM, AVI, MKV, MTS, GIF, TRZ, ZIP, etc.
+            </p>
+          </div>
+        )}
+
+        {/* Hidden File Input for local fallback picker */}
+        <input
+          ref={hiddenFileInputRef}
+          type="file"
+          accept={ACCEPTED_VIDEO_ACCEPT_STRING}
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+              setVideoError(null);
+              onUploadVideo?.(file);
+            }
+          }}
+        />
+
         <div
           className="relative rounded-[2px] overflow-hidden border border-[#555555] shadow-sm"
           style={{ maxWidth: '100%', maxHeight: '100%' }}
         >
-          {/* Real HTML5 Video element */}
-          {!isSynthetic && (
-            <video
-              ref={videoRef}
+          {/* Animated GIF / Image Sequence View */}
+          {!isSynthetic && isGif && (
+            <img
+              ref={imageRef}
               src={videoUrl}
-              preload="auto"
-              playsInline
-              muted
-              onLoadedMetadata={handleLoadedMetadata}
+              alt="Tracked physics media"
+              onLoad={(e) => {
+                const img = e.currentTarget;
+                if (img.naturalWidth && img.naturalHeight) {
+                  setCanvasSize({ width: img.naturalWidth, height: img.naturalHeight });
+                }
+              }}
               className="block object-contain"
               style={{
                 maxWidth: '100%',
@@ -774,6 +1045,59 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 display: 'block',
               }}
             />
+          )}
+
+          {/* Real HTML5 Video element */}
+          {!isSynthetic && !isGif && (
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              preload="auto"
+              playsInline
+              muted
+              onLoadedMetadata={handleLoadedMetadata}
+              onError={() => {
+                setVideoError(
+                  'The video stream could not be decoded. The file container is recognized by Tracker, but this specific file uses a proprietary or legacy codec (e.g. 1990s Indeo AVI, MPEG-1, or raw stream) unsupported by hardware decoding in this browser.'
+                );
+              }}
+              className="block object-contain"
+              style={{
+                maxWidth: '100%',
+                maxHeight: 'calc(100vh - 220px)',
+                display: 'block',
+              }}
+            />
+          )}
+
+          {/* Video Codec / Stream Error Diagnostic Card */}
+          {videoError && (
+            <div className="absolute inset-0 z-30 bg-slate-900/95 text-white flex flex-col items-center justify-center p-6 text-center">
+              <AlertCircle className="w-10 h-10 text-amber-400 mb-2.5 animate-pulse" />
+              <h4 className="font-bold text-sm mb-1 text-white">Video Stream Codec Notice</h4>
+              <p className="text-xs text-slate-300 max-w-md mb-2">{videoError}</p>
+              <p className="text-[11px] text-slate-400 max-w-sm mb-4">
+                Recommended: Convert the video to standard <strong>MP4 (H.264 / AAC)</strong> or <strong>WebM (VP9)</strong> for 100% native hardware acceleration.
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => hiddenFileInputRef.current?.click()}
+                  className="px-3 py-1.5 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-xs font-semibold rounded-[2px] transition-colors"
+                >
+                  Choose Another Video
+                </button>
+                {onOpenFormatsModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenFormatsModal}
+                    className="px-3 py-1.5 bg-white/20 hover:bg-white/30 text-white text-xs font-semibold rounded-[2px] transition-colors"
+                  >
+                    View Accepted Formats Guide
+                  </button>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Canvas Overlay for tracking and drawings */}
@@ -853,10 +1177,26 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               <span>
                 Frame: <strong className="text-black font-bold">{currentFrame}</strong> / {clip.totalFrames - 1}
               </span>
-              <span className="text-[#333333] ml-1 font-semibold">
-                (t = {currentTime.toFixed(3)}s)
+              <span className="text-[#1e3a5f] ml-1 font-bold">
+                (t = {formatHighSpeedTime(currentTime, clip.fps, clip.timeUnit)})
               </span>
             </div>
+
+            {/* Video Format & High-Speed Specification Badge */}
+            <button
+              type="button"
+              onClick={onOpenFormatsModal}
+              className="pointer-events-auto bg-[#e0e0e0] hover:bg-[#d0d0d0] border border-[#808080] rounded-[3px] px-2 py-0.5 text-[10px] font-mono text-black flex items-center gap-1 transition-colors cursor-pointer"
+              title="Click to view accepted formats, high-speed camera profiles and specifications"
+            >
+              <Film className="w-3 h-3 text-[#1e3a5f]" />
+              <span className="font-bold text-[#1e3a5f]">
+                {clip.cameraModel || fileName?.split('.').pop()?.toUpperCase() || 'HIGH-SPEED'}
+              </span>
+              <span className="text-[#444444] font-semibold">
+                @{clip.fps.toLocaleString()} fps
+              </span>
+            </button>
 
             {/* Shift+Click Tracker OSP Safety Badge */}
             {requireShiftToMark && (
@@ -957,9 +1297,12 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           </div>
 
           {/* Time readout */}
-          <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-black shrink-0">
-            <span className="text-right">
-              {Math.floor(currentTime / 60).toString().padStart(2, '0')}:{(currentTime % 60).toFixed(3).padStart(6, '0')} ({currentTime.toFixed(2)}s)
+          <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-black shrink-0">
+            <span className="text-right text-[#1e3a5f] font-bold">
+              {formatHighSpeedTime(currentTime, clip.fps, clip.timeUnit)}
+            </span>
+            <span className="text-[10px] text-[#666666]">
+              ({currentTime >= 1 ? `${currentTime.toFixed(3)}s` : `${(currentTime * 1000).toFixed(2)}ms`})
             </span>
           </div>
         </div>

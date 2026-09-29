@@ -2,6 +2,82 @@ import { SampleExperiment } from '../types';
 
 export const SAMPLE_3D_EXPERIMENTS: SampleExperiment[] = [
   {
+    id: 'defense-asymmetric-multirate-10k-5k',
+    title: 'Photron Dual-Rate: Hypersonic Kinetic Projectile (Cam1: 10k fps | Cam2: 5k fps)',
+    description: 'Defense multi-rate optical triangulation test. Primary frontal camera operates at 10,000 fps (100 µs exposure) while orthogonal transverse camera operates at 5,000 fps (200 µs exposure). Demonstrates continuous Catmull-Rom cubic Hermite spline sub-frame interpolation, eliminating temporal misalignment for hypersonic trajectory (Mach 3.8).',
+    videoUrl: '/videos/ball_toss.mp4',
+    videoUrlCam2: '/videos/ball_toss_slow.mp4',
+    category: 'Defense & Ballistics (High-Speed)',
+    syntheticType: 'ballistic-bullet-10k',
+    is3D: true,
+    calibration: {
+      active: true,
+      pointA: { x: 50, y: 350 },
+      pointB: { x: 550, y: 350 },
+      realLength: 1.0,
+      unit: 'm',
+      scale: 500,
+      locked: true,
+      visible: true,
+    },
+    axes: {
+      origin: { x: 50, y: 240 },
+      angle: 0,
+      visible: true,
+      locked: false,
+      gridVisible: true,
+    },
+    clip: {
+      startFrame: 0,
+      endFrame: 16,
+      stepSize: 1,
+      fps: 10000,
+      playbackFps: 30,
+      startTime: 0.0,
+      frameDt: 1 / 10000,
+      dt: 1 / 10000,
+      totalFrames: 17,
+      cameraModel: 'Photron FASTCAM SA-Z (Cam1) & Nova S12 (Cam2)',
+      timeUnit: 'us',
+    },
+    triangulation: {
+      method: 'orthogonal-front-side',
+      pixelsPerMeterCam1: 500,
+      pixelsPerMeterCam2: 500,
+      originCam1: { x: 50, y: 240 },
+      originCam2: { x: 50, y: 240 },
+      baselineMeters: 2.5,
+      convergenceAngleDeg: 90,
+      calibrated: true,
+      meanResidualMeters: 0.0003,
+      fpsCam1: 10000,
+      fpsCam2: 5000,
+      timeOffsetCam2Sec: 0,
+      temporalInterpolation: 'cubic-spline',
+    },
+    samplePoints: Array.from({ length: 17 }, (_, i) => {
+      const t = i * 0.0001; // 100 us per frame
+      const xMeters = 1300 * t; // 1,300 m/s ~ Mach 3.8
+      const yMeters = 0.5 - 0.5 * 9.81 * t * t;
+      const zMeters = 0.06 * Math.sin(t * 1500); // slight yaw oscillation
+      const scale = 500;
+
+      // Odd frames are interpolated from 5,000 fps Camera 2 samples
+      const isOdd = i % 2 !== 0;
+
+      return {
+        frame: i,
+        px: Math.round(50 + xMeters * scale),
+        py: Math.round(240 - yMeters * scale),
+        cam2Px: Math.round(50 + zMeters * scale),
+        cam2Py: Math.round(240 - yMeters * scale),
+        z: zMeters,
+        isInterpolatedCam2: isOdd,
+        temporalDeltaSeconds: isOdd ? 0.00005 : 0,
+      } as any;
+    }),
+  },
+  {
     id: '3d-projectile-crosswind',
     title: '3D Projectile with Lateral Deflection',
     description: 'Dual-camera 3D video recording of a projectile subjected to a crosswind. Observe the vertical parabolic arc (Y), constant forward velocity (X), and transverse 3D deflection (Z) triangulated from synchronized cameras.',

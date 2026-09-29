@@ -30,6 +30,13 @@ export interface PointStep {
   elevationDeg?: number | null; // Elevation angle in degrees
   machNumber?: number | null; // Speed in Mach
   gForce?: number | null; // Total acceleration in Gs (a / 9.80665)
+  // High-speed stereo asynchronous tracking metadata (when Cam 1 & Cam 2 frame rates differ)
+  cam1Time?: number;
+  cam2Time?: number;
+  cam2Frame?: number;
+  isInterpolatedCam1?: boolean;
+  isInterpolatedCam2?: boolean;
+  temporalDeltaSeconds?: number;
 }
 
 export type TrackFootprint = 'circle' | 'crosshair' | 'diamond' | 'square';
@@ -70,11 +77,15 @@ export interface ClipSettings {
   startFrame: number;
   endFrame: number;
   stepSize: number;
-  fps: number; // Frame rate in frames per second
+  fps: number; // Capture sensor frame rate (e.g. 1000, 10000, 100000 fps)
   startTime: number; // Start time in seconds (t0)
   frameDt: number; // Time step per frame step (dt = stepSize / fps)
   dt: number; // Alias for backward compatibility
   totalFrames: number;
+  playbackFps?: number; // Container video playback rate (defaults to 30 fps)
+  cameraModel?: string; // e.g. "Photron FASTCAM SA-Z", "Phantom v2512"
+  timeUnit?: 'auto' | 's' | 'ms' | 'us' | 'ns'; // Unit for display
+  shutterSpeed?: string; // e.g. "1/100,000 s" or "5 µs"
 }
 
 export type PlotVariable =
@@ -91,7 +102,10 @@ export type PlotVariable =
   | 'a'
   | 'kineticEnergy'
   | 'potentialEnergy'
-  | 'totalEnergy';
+  | 'totalEnergy'
+  | 'mach'
+  | 'gForce'
+  | 'slantRange';
 
 export type FitType = 'none' | 'linear' | 'parabolic' | 'cubic';
 
@@ -120,6 +134,8 @@ export type DLT11 = [
   number, number, number
 ];
 
+export type TemporalInterpMethod = 'linear' | 'cubic-spline' | 'nearest';
+
 export interface TriangulationConfig {
   method: TriangulationMethod;
   pixelsPerMeterCam1: number;
@@ -132,6 +148,13 @@ export interface TriangulationConfig {
   dltCam2?: DLT11;
   calibrated: boolean;
   meanResidualMeters: number;
+
+  // Asynchronous / Mismatched Frame Rates & Temporal Synchronization
+  fpsCam1?: number; // Capture rate Camera 1 (e.g. 10000)
+  fpsCam2?: number; // Capture rate Camera 2 (e.g. 5000, 2500, 1000)
+  timeOffsetCam2Sec?: number; // Time sync offset between Cam 2 and Cam 1 in seconds (t_cam2 = t_cam1 - offset)
+  temporalInterpolation?: TemporalInterpMethod; // Method for sub-frame spatial interpolation
+  allowAsymmetricFrameRates?: boolean;
 }
 
 export interface CameraFeedConfig {
@@ -154,6 +177,7 @@ export interface SampleExperiment {
   axes: CoordinateAxes;
   clip: ClipSettings;
   triangulation?: TriangulationConfig;
+  syntheticType?: string;
   samplePoints?: {
     frame: number;
     px: number;
