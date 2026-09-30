@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Navbar } from './components/Navbar';
 import { Toolbar, ViewLayout } from './components/Toolbar';
 import { VideoPlayerView } from './components/VideoPlayerView';
@@ -11,7 +11,11 @@ import { ClipSettingsModal } from './components/ClipSettingsModal';
 import { TrackManagerModal } from './components/TrackManagerModal';
 import { TriangulationModal } from './components/TriangulationModal';
 import { HelpModal } from './components/HelpModal';
-import { SupportedFormatsModal } from './components/SupportedFormatsModal';
+import { SupportedFormatsModal, FormatsModalTab } from './components/SupportedFormatsModal';
+import { FormatWarningToast } from './components/FormatWarningToast';
+import { DownloadExeModal } from './components/DownloadExeModal';
+import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
+import { ExperimentReportModal } from './components/ExperimentReportModal';
 import { SAMPLE_EXPERIMENTS } from './data/samples';
 import {
   Track,
@@ -28,7 +32,11 @@ import {
   buildDefaultDLT,
   triangulateDLT,
 } from './utils/triangulation';
-import { extractVideoFromArchive } from './utils/videoFormats';
+import {
+  extractVideoFromArchive,
+  probeVideoMetadata,
+  VideoMetadataProbeResult,
+} from './utils/videoFormats';
 
 export const App: React.FC = () => {
   // Current experiment
@@ -143,6 +151,26 @@ export const App: React.FC = () => {
   const [isTriModalOpen, setIsTriModalOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isFormatsModalOpen, setIsFormatsModalOpen] = useState(false);
+  const [formatsModalInitialTab, setFormatsModalInitialTab] = useState<FormatsModalTab>('catalog');
+  const [formatWarningProbe, setFormatWarningProbe] = useState<VideoMetadataProbeResult | null>(null);
+  const [isDownloadExeOpen, setIsDownloadExeOpen] = useState(false);
+  const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [videoSnapshotUrl, setVideoSnapshotUrl] = useState<string | null>(null);
+  const snapshotGetterRef = useRef<(() => string | null) | null>(null);
+
+  const handleOpenReportModal = () => {
+    if (snapshotGetterRef.current) {
+      const snap = snapshotGetterRef.current();
+      setVideoSnapshotUrl(snap);
+    }
+    setIsReportModalOpen(true);
+  };
+
+  const handleOpenFormatsModal = (tab: FormatsModalTab = 'catalog') => {
+    setFormatsModalInitialTab(tab);
+    setIsFormatsModalOpen(true);
+  };
 
   // Recompute world coordinates and kinematics for all tracks when axes or calibration changes (2D)
   const refreshAllTrackKinematics = useCallback(
@@ -263,6 +291,20 @@ export const App: React.FC = () => {
   // Handle Custom Video Upload with duration detection & universal formats
   const handleUploadVideo = async (rawFile: File) => {
     const file = await resolveUploadedFile(rawFile);
+
+    // Client-side video metadata probe to detect unsupported or sub-optimal codec profiles
+    probeVideoMetadata(file)
+      .then((result) => {
+        if (result.warningLevel !== 'none') {
+          setFormatWarningProbe(result);
+        } else {
+          setFormatWarningProbe(null);
+        }
+      })
+      .catch((err) => {
+        console.warn('Metadata probe check error:', err);
+      });
+
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
     setIsSynthetic(false);
@@ -362,6 +404,19 @@ export const App: React.FC = () => {
 
   const handleUploadCam1 = async (rawFile: File) => {
     const file = await resolveUploadedFile(rawFile);
+
+    // Client-side video metadata probe for Camera 1
+    probeVideoMetadata(file)
+      .then((result) => {
+        if (result.warningLevel !== 'none') {
+          setFormatWarningProbe({
+            ...result,
+            warningTitle: `Camera 1: ${result.warningTitle || 'Codec Profile Warning'}`,
+          });
+        }
+      })
+      .catch(() => {});
+
     const url = URL.createObjectURL(file);
     setVideoUrl(url); // We map cam1 to main videoUrl in state
     setIsSynthetic(false);
@@ -391,6 +446,19 @@ export const App: React.FC = () => {
 
   const handleUploadCam2 = async (rawFile: File) => {
     const file = await resolveUploadedFile(rawFile);
+
+    // Client-side video metadata probe for Camera 2
+    probeVideoMetadata(file)
+      .then((result) => {
+        if (result.warningLevel !== 'none') {
+          setFormatWarningProbe({
+            ...result,
+            warningTitle: `Camera 2: ${result.warningTitle || 'Codec Profile Warning'}`,
+          });
+        }
+      })
+      .catch(() => {});
+
     const url = URL.createObjectURL(file);
     setVideoUrlCam2(url);
     setIsSynthetic(false);
@@ -505,23 +573,108 @@ export const App: React.FC = () => {
     );
   };
 
-  // Keyboard shortcut listener for Tracker-style efficiency (Ctrl+Z to undo point, Delete to delete current frame mark)
+  // Keyboard shortcut listener for Tracker-style efficiency (Frame nav, Undo, Delete, Tool toggles)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept when user is typing in form inputs, textareas, or selects
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
         return;
       }
+
+      // 1. Frame-by-frame navigation
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        const step = e.shiftKey ? clip.stepSize * 5 : clip.stepSize;
+        setCurrentFrame((curr) => Math.min(clip.endFrame, curr + step));
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const step = e.shiftKey ? clip.stepSize * 5 : clip.stepSize;
+        setCurrentFrame((curr) => Math.max(clip.startFrame, curr - step));
+        return;
+      }
+      if (e.key === 'Home') {
+        e.preventDefault();
+        setCurrentFrame(clip.startFrame);
+        return;
+      }
+      if (e.key === 'End') {
+        e.preventDefault();
+        setCurrentFrame(clip.endFrame);
+        return;
+      }
+
+      // 2. Undo & Point Management
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         handleUndoLastPoint();
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault();
+        handleClearTrackPoints();
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         handleDeletePoint(currentFrame);
+        return;
+      }
+
+      // 3. Tab to cycle tracks
+      if (e.key === 'Tab' && tracks.length > 1) {
+        e.preventDefault();
+        const trackIdx = tracks.findIndex((t) => t.id === activeTrackId);
+        if (trackIdx !== -1) {
+          const nextIdx = e.shiftKey
+            ? (trackIdx - 1 + tracks.length) % tracks.length
+            : (trackIdx + 1) % tracks.length;
+          setActiveTrackId(tracks[nextIdx].id);
+        }
+        return;
+      }
+
+      // 4. Keyboard Shortcuts Modal toggle (? or F1)
+      if (e.key === '?' || (e.shiftKey && e.key === '/') || e.key === 'F1') {
+        e.preventDefault();
+        setIsShortcutsModalOpen((prev) => !prev);
+        return;
+      }
+
+      // 5. Tools & Overlays toggles (single-key shortcuts without Ctrl/Cmd/Alt)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const key = e.key.toLowerCase();
+        if (key === 'm') {
+          e.preventDefault();
+          setShowLoupe((prev) => !prev);
+        } else if (key === 'a') {
+          e.preventDefault();
+          setAxes((prev) => ({ ...prev, visible: !prev.visible }));
+        } else if (key === 'c') {
+          e.preventDefault();
+          setCalibration((prev) => ({ ...prev, visible: !prev.visible }));
+        } else if (key === 'v') {
+          e.preventDefault();
+          setShowVectors((prev) => !prev);
+        } else if (key === 't') {
+          e.preventDefault();
+          setShowTrails((prev) => !prev);
+        }
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentFrame, activeTrackId, analysisMode]);
+  }, [
+    currentFrame,
+    activeTrackId,
+    analysisMode,
+    clip.startFrame,
+    clip.endFrame,
+    clip.stepSize,
+    tracks,
+  ]);
 
   const handleClearTrackPoints = () => {
     setTracks((prev) =>
@@ -729,8 +882,11 @@ export const App: React.FC = () => {
         onUploadVideo={handleUploadVideo}
         onExportJSON={handleExportJSON}
         onExportCSV={handleExportCSV}
+        onOpenPdfReport={handleOpenReportModal}
         onOpenHelp={() => setIsHelpOpen(true)}
-        onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+        onOpenFormatsModal={handleOpenFormatsModal}
+        onOpenDownloadExe={() => setIsDownloadExeOpen(true)}
       />
 
       {/* Physics Toolbar */}
@@ -762,6 +918,7 @@ export const App: React.FC = () => {
         onChangeAnalysisMode={handleChangeAnalysisMode}
         onOpenTriangulationModal={() => setIsTriModalOpen(true)}
         triangulationCalibrated={triangulation.calibrated}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
       />
 
       {/* Dynamic View Layout Area */}
@@ -826,7 +983,10 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
-                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                    onOpenFormatsModal={handleOpenFormatsModal}
+                    onRegisterSnapshotGetter={(getter) => {
+                      snapshotGetterRef.current = getter;
+                    }}
                   />
                 </div>
                 <div className="w-1/2 lg:w-5/12 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -873,8 +1033,11 @@ export const App: React.FC = () => {
                     showVectors={showVectors}
                     showLoupe={showLoupe}
                     autoAdvance={autoAdvance}
-                    onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                    onOpenFormatsModal={handleOpenFormatsModal}
                     onOpenTriangulationModal={() => setIsTriModalOpen(true)}
+                    onRegisterSnapshotGetter={(getter) => {
+                      snapshotGetterRef.current = getter;
+                    }}
                   />
                 </div>
                 <div className="w-1/2 lg:w-5/12 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -922,6 +1085,9 @@ export const App: React.FC = () => {
                     onUndoLastPoint={handleUndoLastPoint}
                     onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
                     onOpenTriangulationModal={() => setIsTriModalOpen(true)}
+                    onRegisterSnapshotGetter={(getter) => {
+                      snapshotGetterRef.current = getter;
+                    }}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -957,6 +1123,9 @@ export const App: React.FC = () => {
                     onUndoLastPoint={handleUndoLastPoint}
                     onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
                     onOpenTriangulationModal={() => setIsTriModalOpen(true)}
+                    onRegisterSnapshotGetter={(getter) => {
+                      snapshotGetterRef.current = getter;
+                    }}
                   />
                 </div>
                 <div className="w-1/2 h-full flex flex-col min-w-0 border-l border-[#808080]">
@@ -992,8 +1161,11 @@ export const App: React.FC = () => {
                   autoAdvance={autoAdvance}
                   requireShiftToMark={requireShiftToMark}
                   onUndoLastPoint={handleUndoLastPoint}
-                  onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                  onOpenFormatsModal={handleOpenFormatsModal}
                   onOpenTriangulationModal={() => setIsTriModalOpen(true)}
+                  onRegisterSnapshotGetter={(getter) => {
+                    snapshotGetterRef.current = getter;
+                  }}
                 />
               </div>
             )}
@@ -1017,7 +1189,7 @@ export const App: React.FC = () => {
                 syntheticType={currentExp.syntheticType || currentExp.id}
                 fileName={currentExp.title}
                 onUploadVideo={handleUploadVideo}
-                onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+                onOpenFormatsModal={handleOpenFormatsModal}
                 tracks={tracks}
                 activeTrackId={activeTrackId}
                 onAddPoint={handleAddPoint}
@@ -1037,6 +1209,9 @@ export const App: React.FC = () => {
                 autoAdvance={autoAdvance}
                 requireShiftToMark={requireShiftToMark}
                 onUndoLastPoint={handleUndoLastPoint}
+                onRegisterSnapshotGetter={(getter) => {
+                  snapshotGetterRef.current = getter;
+                }}
               />
             </div>
 
@@ -1134,13 +1309,47 @@ export const App: React.FC = () => {
       <HelpModal
         isOpen={isHelpOpen}
         onClose={() => setIsHelpOpen(false)}
-        onOpenFormatsModal={() => setIsFormatsModalOpen(true)}
+        onOpenFormatsModal={handleOpenFormatsModal}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
       />
 
       <SupportedFormatsModal
         isOpen={isFormatsModalOpen}
         onClose={() => setIsFormatsModalOpen(false)}
         onSelectVideoFile={handleUploadVideo}
+        initialTab={formatsModalInitialTab}
+      />
+
+      <DownloadExeModal
+        isOpen={isDownloadExeOpen}
+        onClose={() => setIsDownloadExeOpen(false)}
+      />
+
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsModalOpen}
+        onClose={() => setIsShortcutsModalOpen(false)}
+      />
+
+      <ExperimentReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+        experimentTitle={currentExp.title}
+        tracks={tracks}
+        activeTrackId={activeTrackId}
+        clip={clip}
+        calibration={calibration}
+        axes={axes}
+        videoSnapshotUrl={videoSnapshotUrl}
+      />
+
+      {/* Client-side Video Format Warning Toast */}
+      <FormatWarningToast
+        probeResult={formatWarningProbe}
+        onDismiss={() => setFormatWarningProbe(null)}
+        onOpenPrepTips={() => {
+          handleOpenFormatsModal('video-prep');
+          setFormatWarningProbe(null);
+        }}
       />
     </div>
   );

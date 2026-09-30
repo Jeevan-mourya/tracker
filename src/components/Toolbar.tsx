@@ -13,6 +13,7 @@ import {
   Sliders,
   Undo2,
   Crosshair,
+  Keyboard,
 } from 'lucide-react';
 
 export type ViewLayout =
@@ -54,6 +55,7 @@ interface ToolbarProps {
   onChangeAnalysisMode?: (mode: '2D' | '3D') => void;
   onOpenTriangulationModal?: () => void;
   triangulationCalibrated?: boolean;
+  onOpenShortcuts?: () => void;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
@@ -86,6 +88,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   analysisMode = '2D',
   onChangeAnalysisMode,
   onOpenTriangulationModal,
+  onOpenShortcuts,
 }) => {
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
 
@@ -424,6 +427,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             Video
           </button>
         </div>
+
+        {/* Overview of Keyboard Shortcuts Modal Button */}
+        {onOpenShortcuts && (
+          <button
+            id="toolbar-btn-shortcuts"
+            type="button"
+            onClick={onOpenShortcuts}
+            className="p-1 rounded-[2px] text-black hover:bg-[#dcdcdc] border border-[#808080] transition-colors flex items-center justify-center cursor-pointer ml-1"
+            title="Overview of Keyboard Shortcuts (? or F1)"
+          >
+            <Keyboard className="w-3.5 h-3.5 text-[#1e3a5f]" />
+          </button>
+        )}
       </div>
     </div>
   );

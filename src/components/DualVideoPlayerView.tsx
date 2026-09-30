@@ -37,6 +37,8 @@ import {
 import { ACCEPTED_VIDEO_ACCEPT_STRING } from '../utils/videoFormats';
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
+import { FormatsModalTab } from './SupportedFormatsModal';
+
 interface DualVideoPlayerViewProps {
   tracks: Track[];
   activeTrackId: string;
@@ -58,8 +60,9 @@ interface DualVideoPlayerViewProps {
   autoAdvance?: boolean;
   requireShiftToMark?: boolean;
   onUndoLastPoint?: () => void;
-  onOpenFormatsModal?: () => void;
+  onOpenFormatsModal?: (tab?: FormatsModalTab) => void;
   onOpenTriangulationModal?: () => void;
+  onRegisterSnapshotGetter?: (getter: () => string | null) => void;
 }
 
 type DualLayout = 'side-by-side' | 'cam1-focus' | 'cam2-focus';
@@ -87,6 +90,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   onUndoLastPoint,
   onOpenFormatsModal,
   onOpenTriangulationModal,
+  onRegisterSnapshotGetter,
 }) => {
   // Video, Canvas, and Input references
   const videoRefCam1 = useRef<HTMLVideoElement | null>(null);
@@ -158,6 +162,36 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       window.removeEventListener('keyup', handleKeyUp);
     };
   }, []);
+
+  // Snapshot capture for field reports
+  const captureSnapshot = useCallback((): string | null => {
+    const canvas = canvasRefCam1.current;
+    if (!canvas) return null;
+    const offscreen = document.createElement('canvas');
+    offscreen.width = canvas.width;
+    offscreen.height = canvas.height;
+    const ctx = offscreen.getContext('2d');
+    if (!ctx) return null;
+
+    if (videoRefCam1.current && videoRefCam1.current.readyState >= 2) {
+      try {
+        ctx.drawImage(videoRefCam1.current, 0, 0, canvas.width, canvas.height);
+      } catch {
+        // ignore
+      }
+    }
+    ctx.drawImage(canvas, 0, 0);
+
+    try {
+      return offscreen.toDataURL('image/png');
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    onRegisterSnapshotGetter?.(captureSnapshot);
+  }, [captureSnapshot, onRegisterSnapshotGetter]);
 
   // Frame Playback Loop
   useEffect(() => {
@@ -811,25 +845,52 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                     className="absolute inset-0 w-full h-full cursor-crosshair"
                   />
                   {cam1Error && (
-                    <div className="absolute inset-0 z-20 bg-slate-900/90 text-white flex flex-col items-center justify-center p-3 text-center">
-                      <AlertCircle className="w-6 h-6 text-amber-400 mb-1" />
+                    <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
+                      <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5 animate-pulse" />
                       <span className="font-bold text-xs mb-1">Camera 1 Codec Notice</span>
-                      <span className="text-[10px] text-slate-300 max-w-xs mb-2.5">{cam1Error}</span>
-                      <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam1Error}</span>
+                      <div className="flex flex-wrap items-center justify-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => fileInputCam1Ref.current?.click()}
-                          className="px-2.5 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-[11px] font-semibold rounded-[2px]"
+                          className="px-2.5 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
                         >
                           Select Other File
                         </button>
                         {onOpenFormatsModal && (
                           <button
                             type="button"
-                            onClick={onOpenFormatsModal}
-                            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white text-[11px] rounded-[2px]"
+                            onClick={() => onOpenFormatsModal('video-prep')}
+                            className="px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
                           >
-                            View Formats
+                            Video Prep Tips
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('why-codecs')}
+                            className="px-2.5 py-1 bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Why Tracker Worked
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('converters')}
+                            className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Converter Tools
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('electron-exe')}
+                            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Windows .EXE Setup
                           </button>
                         )}
                       </div>
@@ -960,25 +1021,52 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                     className="absolute inset-0 w-full h-full cursor-crosshair"
                   />
                   {cam2Error && (
-                    <div className="absolute inset-0 z-20 bg-slate-900/90 text-white flex flex-col items-center justify-center p-3 text-center">
-                      <AlertCircle className="w-6 h-6 text-amber-400 mb-1" />
+                    <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
+                      <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5 animate-pulse" />
                       <span className="font-bold text-xs mb-1">Camera 2 Codec Notice</span>
-                      <span className="text-[10px] text-slate-300 max-w-xs mb-2.5">{cam2Error}</span>
-                      <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam2Error}</span>
+                      <div className="flex flex-wrap items-center justify-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => fileInputCam2Ref.current?.click()}
-                          className="px-2.5 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-[11px] font-semibold rounded-[2px]"
+                          className="px-2.5 py-1 bg-[#1e3a5f] hover:bg-[#2a4d7d] text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
                         >
                           Select Other File
                         </button>
                         {onOpenFormatsModal && (
                           <button
                             type="button"
-                            onClick={onOpenFormatsModal}
-                            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white text-[11px] rounded-[2px]"
+                            onClick={() => onOpenFormatsModal('video-prep')}
+                            className="px-2.5 py-1 bg-purple-700 hover:bg-purple-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
                           >
-                            View Formats
+                            Video Prep Tips
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('why-codecs')}
+                            className="px-2.5 py-1 bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Why Tracker Worked
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('converters')}
+                            className="px-2.5 py-1 bg-emerald-700 hover:bg-emerald-800 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Converter Tools
+                          </button>
+                        )}
+                        {onOpenFormatsModal && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenFormatsModal('electron-exe')}
+                            className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white text-[11px] font-semibold rounded-[2px] cursor-pointer"
+                          >
+                            Windows .EXE Setup
                           </button>
                         )}
                       </div>

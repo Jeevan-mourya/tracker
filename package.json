@@ -22,15 +22,11 @@
     "files": [
       "dist/**/*",
       "electron.js",
-      "build/**/*",
       "public/**/*"
     ],
     "win": {
-      "target": [
-        "nsis",
-        "portable"
-      ],
-      "icon": "build/icon.ico"
+      "target": "dir",
+      "icon": "public/icon.ico"
     },
     "nsis": {
       "oneClick": false,

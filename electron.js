@@ -9,6 +9,9 @@ const __dirname = path.dirname(__filename);
 // Ensure hardware acceleration for smooth video & 3D canvas rendering
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+app.commandLine.appendSwitch('ignore-gpu-blocklist');
 
 let mainWindow = null;
 
