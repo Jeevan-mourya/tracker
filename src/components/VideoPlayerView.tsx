@@ -1604,12 +1604,10 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               }}
               onError={(e) => {
                 const mediaError = (e.target as HTMLVideoElement)?.error;
-                // Only show codec error if it's an explicit decode or format unsupported error
-                if (mediaError && (mediaError.code === 3 || mediaError.code === 4)) {
-                  setVideoError(
-                    'The video stream could not be decoded. The file container is recognized by Tracker, but this specific file uses an unsupported or legacy codec. Transcoding to standard H.264 MP4 is recommended.'
-                  );
-                }
+                const detail = mediaError?.message ? ` (${mediaError.message})` : '';
+                setVideoError(
+                  `The video could not be loaded or decoded${detail}. The file may use an unsupported codec or container. Transcoding to standard H.264 MP4 is recommended.`
+                );
               }}
               className="block"
               style={{
