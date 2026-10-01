@@ -34,7 +34,7 @@ import {
   calculateMultiRateFrameRatio,
   interpolateCameraCoordinates,
 } from '../utils/triangulation';
-import { ACCEPTED_VIDEO_ACCEPT_STRING } from '../utils/videoFormats';
+import { ACCEPTED_VIDEO_ACCEPT_STRING, normalizeVideoUrl } from '../utils/videoFormats';
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
@@ -257,13 +257,21 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     const seekTime2 = Math.max(0.001, currentFrameCam2 / containerFps2);
 
     if (videoRefCam1.current && videoUrlCam1) {
-      if (Math.abs(videoRefCam1.current.currentTime - seekTime1) > 0.03) {
-        videoRefCam1.current.currentTime = seekTime1;
+      if (Math.abs(videoRefCam1.current.currentTime - seekTime1) > 0.002 || videoRefCam1.current.currentTime === 0) {
+        try {
+          videoRefCam1.current.currentTime = seekTime1;
+        } catch {
+          // ignore
+        }
       }
     }
     if (videoRefCam2.current && videoUrlCam2) {
-      if (Math.abs(videoRefCam2.current.currentTime - seekTime2) > 0.03) {
-        videoRefCam2.current.currentTime = seekTime2;
+      if (Math.abs(videoRefCam2.current.currentTime - seekTime2) > 0.002 || videoRefCam2.current.currentTime === 0) {
+        try {
+          videoRefCam2.current.currentTime = seekTime2;
+        } catch {
+          // ignore
+        }
       }
     }
   }, [currentFrame, currentFrameCam2, containerFps1, containerFps2, videoUrlCam1, videoUrlCam2]);
@@ -277,6 +285,21 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
       const { width, height } = canvas;
       ctx.clearRect(0, 0, width, height);
+
+      // 0. Paint video frame directly to canvas if present
+      if (camId === 'cam1' && videoRefCam1.current && videoRefCam1.current.readyState >= 2) {
+        try {
+          ctx.drawImage(videoRefCam1.current, 0, 0, width, height);
+        } catch {
+          // ignore
+        }
+      } else if (camId === 'cam2' && videoRefCam2.current && videoRefCam2.current.readyState >= 2) {
+        try {
+          ctx.drawImage(videoRefCam2.current, 0, 0, width, height);
+        } catch {
+          // ignore
+        }
+      }
 
       // 1. Draw origin crosshair & coordinate axes for this camera
       const origin = camId === 'cam1' ? triangulation.originCam1 : triangulation.originCam2;
@@ -392,6 +415,41 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     renderOverlay(canvasRefCam1.current, 'cam1');
     renderOverlay(canvasRefCam2.current, 'cam2');
   }, [renderOverlay, currentFrame, steps, canvasSizeCam1, canvasSizeCam2]);
+
+  // Video element repaint listener so paused frames always draw on Cam 1 & Cam 2
+  useEffect(() => {
+    const v1 = videoRefCam1.current;
+    const v2 = videoRefCam2.current;
+
+    const onRepaintCam1 = () => {
+      renderOverlay(canvasRefCam1.current, 'cam1');
+    };
+    const onRepaintCam2 = () => {
+      renderOverlay(canvasRefCam2.current, 'cam2');
+    };
+
+    v1?.addEventListener('seeked', onRepaintCam1);
+    v1?.addEventListener('loadeddata', onRepaintCam1);
+    v1?.addEventListener('canplay', onRepaintCam1);
+    v1?.addEventListener('timeupdate', onRepaintCam1);
+
+    v2?.addEventListener('seeked', onRepaintCam2);
+    v2?.addEventListener('loadeddata', onRepaintCam2);
+    v2?.addEventListener('canplay', onRepaintCam2);
+    v2?.addEventListener('timeupdate', onRepaintCam2);
+
+    return () => {
+      v1?.removeEventListener('seeked', onRepaintCam1);
+      v1?.removeEventListener('loadeddata', onRepaintCam1);
+      v1?.removeEventListener('canplay', onRepaintCam1);
+      v1?.removeEventListener('timeupdate', onRepaintCam1);
+
+      v2?.removeEventListener('seeked', onRepaintCam2);
+      v2?.removeEventListener('loadeddata', onRepaintCam2);
+      v2?.removeEventListener('canplay', onRepaintCam2);
+      v2?.removeEventListener('timeupdate', onRepaintCam2);
+    };
+  }, [renderOverlay]);
 
   // Handle Mouse movement on canvas with coordinate scaling
   const handleMouseMove = (
@@ -819,11 +877,17 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                 <div className="relative rounded-[2px] overflow-hidden border border-[#444444] max-w-full max-h-full flex items-center justify-center">
                   <video
                     ref={videoRefCam1}
-                    src={videoUrlCam1}
+                    src={normalizeVideoUrl(videoUrlCam1)}
                     playsInline
                     muted
                     preload="auto"
-                    onLoadedMetadata={handleLoadedMetadataCam1}
+                    onLoadedMetadata={() => {
+                      handleLoadedMetadataCam1();
+                      renderOverlay(canvasRefCam1.current, 'cam1');
+                    }}
+                    onSeeked={() => renderOverlay(canvasRefCam1.current, 'cam1')}
+                    onCanPlay={() => renderOverlay(canvasRefCam1.current, 'cam1')}
+                    onTimeUpdate={() => renderOverlay(canvasRefCam1.current, 'cam1')}
                     onError={() => {
                       setCam1Error('Video codec in Camera 1 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
                     }}
@@ -995,11 +1059,17 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                 <div className="relative rounded-[2px] overflow-hidden border border-[#444444] max-w-full max-h-full flex items-center justify-center">
                   <video
                     ref={videoRefCam2}
-                    src={videoUrlCam2}
+                    src={normalizeVideoUrl(videoUrlCam2)}
                     playsInline
                     muted
                     preload="auto"
-                    onLoadedMetadata={handleLoadedMetadataCam2}
+                    onLoadedMetadata={() => {
+                      handleLoadedMetadataCam2();
+                      renderOverlay(canvasRefCam2.current, 'cam2');
+                    }}
+                    onSeeked={() => renderOverlay(canvasRefCam2.current, 'cam2')}
+                    onCanPlay={() => renderOverlay(canvasRefCam2.current, 'cam2')}
+                    onTimeUpdate={() => renderOverlay(canvasRefCam2.current, 'cam2')}
                     onError={() => {
                       setCam2Error('Video codec in Camera 2 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
                     }}

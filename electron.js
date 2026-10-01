@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell, dialog } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -6,12 +6,16 @@ import fs from 'node:fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Ensure hardware acceleration for smooth video & 3D canvas rendering
+// Ensure hardware acceleration for smooth video & 3D canvas rendering and local media playback
 app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 app.commandLine.appendSwitch('ignore-gpu-blocklist');
+app.commandLine.appendSwitch('disable-web-security');
+app.commandLine.appendSwitch('allow-file-access-from-files');
+app.commandLine.appendSwitch('disable-features', 'PreloadMediaEngagementData,BlockInsecurePrivateNetworkRequests');
+app.commandLine.appendSwitch('no-sandbox');
 
 let mainWindow = null;
 
@@ -43,10 +47,11 @@ function createWindow() {
     backgroundColor: '#D4D0C8',
     show: false,
     webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
+      nodeIntegration: true,
+      contextIsolation: false,
+      sandbox: false,
+      webSecurity: false,
+      allowRunningInsecureContent: true,
     },
   });
 
@@ -106,12 +111,13 @@ function createWindow() {
         {
           label: 'About Tracker Video Analysis',
           click: () => {
-            const { dialog } = require('electron');
-            dialog.showMessageBox(mainWindow, {
-              title: 'Tracker Video Analysis',
-              message: 'Tracker Video Analysis & TrackEye 3D Workstation\nVersion 1.0.0\nHigh Precision 2D & Stereo 3D Video Kinematics Modeling',
-              buttons: ['OK'],
-            });
+            if (mainWindow) {
+              dialog.showMessageBox(mainWindow, {
+                title: 'Tracker Video Analysis',
+                message: 'Tracker Video Analysis & TrackEye 3D Workstation\nVersion 1.0.0\nHigh Precision 2D & Stereo 3D Video Kinematics Modeling',
+                buttons: ['OK'],
+              });
+            }
           },
         },
       ],

@@ -21,7 +21,7 @@ import {
   Move,
   RotateCcw,
 } from 'lucide-react';
-import { ACCEPTED_VIDEO_ACCEPT_STRING } from '../utils/videoFormats';
+import { ACCEPTED_VIDEO_ACCEPT_STRING, normalizeVideoUrl } from '../utils/videoFormats';
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
@@ -93,12 +93,12 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   onOpenFormatsModal,
   onRegisterSnapshotGetter,
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const loupeCanvasRef = useRef<HTMLCanvasElement>(null);
-  const hiddenFileInputRef = useRef<HTMLInputElement>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hiddenFileInputRef = useRef<HTMLInputElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(0.5);
@@ -254,14 +254,30 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   // Container playback fps (for seeking MP4/AVI files that were recorded at 1,000-100,000 fps but packaged at 30/60 fps)
   const containerFps = clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps);
 
-  // Synchronize video element with current frame
+  // Synchronize video element with current frame safely
   useEffect(() => {
     const video = videoRef.current;
     if (!video || isSynthetic) return;
 
     const targetTime = Math.max(0.001, currentFrame / containerFps);
-    if (Math.abs(video.currentTime - targetTime) > 0.03) {
-      video.currentTime = targetTime;
+    if (video.readyState >= 1) {
+      if (Math.abs(video.currentTime - targetTime) > 0.002 || video.currentTime === 0) {
+        try {
+          video.currentTime = targetTime;
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      const handleReady = () => {
+        try {
+          video.currentTime = targetTime;
+        } catch {
+          // ignore
+        }
+      };
+      video.addEventListener('loadeddata', handleReady, { once: true });
+      return () => video.removeEventListener('loadeddata', handleReady);
     }
   }, [currentFrame, clip.fps, containerFps, isSynthetic]);
 
@@ -303,10 +319,18 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const video = videoRef.current;
     if (!video) return;
 
-    // Force frame load on some browsers (like Safari/Chrome when hidden/paused)
+    setVideoError(null);
+    video.muted = true;
+    video.defaultMuted = true;
+
+    // Force frame load on some browsers (like Safari/Chrome/Electron when paused)
     video.play().then(() => video.pause()).catch(() => {});
     if (currentFrame === 0) {
-      video.currentTime = 0.001; // tiny offset to force frame render
+      try {
+        video.currentTime = 0.001; // tiny offset to force frame render
+      } catch {
+        // ignore
+      }
     }
 
     const duration = video.duration || 1;
@@ -321,14 +345,35 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     });
   };
 
-  // Force video reload and seek when videoUrl changes
+  // Safe video reload and seek when videoUrl changes
   useEffect(() => {
     const video = videoRef.current;
     if (video && videoUrl) {
-      video.load();
-      video.currentTime = Math.max(0.001, currentFrame / clip.fps);
+      setVideoError(null);
+      video.muted = true;
+      video.defaultMuted = true;
+
+      const handleReady = () => {
+        const targetTime = Math.max(0.001, currentFrame / containerFps);
+        try {
+          video.currentTime = targetTime;
+        } catch {
+          // ignore
+        }
+      };
+
+      video.addEventListener('loadeddata', handleReady, { once: true });
+      try {
+        video.load();
+      } catch {
+        // ignore
+      }
+
+      return () => {
+        video.removeEventListener('loadeddata', handleReady);
+      };
     }
-  }, [videoUrl]);
+  }, [videoUrl, containerFps]);
 
   // Convert client click coordinates to video/canvas intrinsic coordinate space
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -353,6 +398,23 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
     const { width, height } = canvas;
     ctx.clearRect(0, 0, width, height);
+
+    // 0. Paint video frame or animated GIF directly to canvas if present
+    if (!isSynthetic) {
+      if (isGif && imageRef.current && imageRef.current.complete) {
+        try {
+          ctx.drawImage(imageRef.current, 0, 0, width, height);
+        } catch {
+          // ignore
+        }
+      } else if (videoRef.current && videoRef.current.readyState >= 2) {
+        try {
+          ctx.drawImage(videoRef.current, 0, 0, width, height);
+        } catch {
+          // ignore
+        }
+      }
+    }
 
     // 1. Synthetic physics video simulation if no video file
     if (isSynthetic) {
@@ -944,6 +1006,28 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     renderCanvas();
   }, [renderCanvas]);
 
+  // Video element repaint listener so paused frames always draw
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const onRepaint = () => {
+      renderCanvas();
+    };
+
+    video.addEventListener('seeked', onRepaint);
+    video.addEventListener('loadeddata', onRepaint);
+    video.addEventListener('canplay', onRepaint);
+    video.addEventListener('timeupdate', onRepaint);
+
+    return () => {
+      video.removeEventListener('seeked', onRepaint);
+      video.removeEventListener('loadeddata', onRepaint);
+      video.removeEventListener('canplay', onRepaint);
+      video.removeEventListener('timeupdate', onRepaint);
+    };
+  }, [renderCanvas]);
+
   // Magnifier Loupe render effect for Tracker-style sub-pixel tracking
   useEffect(() => {
     if (!showLoupe || !mouseCoord || !loupeCanvasRef.current || !canvasRef.current) return;
@@ -1461,7 +1545,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           {!isSynthetic && isGif && (
             <img
               ref={imageRef}
-              src={videoUrl}
+              src={normalizeVideoUrl(videoUrl)}
               alt="Tracked physics media"
               onLoad={(e) => {
                 const img = e.currentTarget;
@@ -1482,16 +1566,50 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           {/* Real HTML5 Video element */}
           {!isSynthetic && !isGif && (
             <video
-              ref={videoRef}
-              src={videoUrl}
+              ref={(el) => {
+                videoRef.current = el;
+                if (el) {
+                  el.muted = true;
+                  el.defaultMuted = true;
+                }
+              }}
+              src={normalizeVideoUrl(videoUrl)}
               preload="auto"
               playsInline
               muted
-              onLoadedMetadata={handleLoadedMetadata}
-              onError={() => {
-                setVideoError(
-                  'The video stream could not be decoded. The file container is recognized by Tracker, but this specific file uses a proprietary or legacy codec (e.g. 1990s Indeo AVI, MPEG-1, or raw stream) unsupported by hardware decoding in this browser.'
-                );
+              onLoadedMetadata={() => {
+                handleLoadedMetadata();
+                renderCanvas();
+              }}
+              onLoadedData={() => {
+                setVideoError(null);
+                const video = videoRef.current;
+                if (video) {
+                  video.muted = true;
+                  video.defaultMuted = true;
+                  if (video.currentTime === 0) {
+                    try {
+                      video.currentTime = 0.001;
+                    } catch {
+                      // ignore
+                    }
+                  }
+                }
+                renderCanvas();
+              }}
+              onSeeked={() => renderCanvas()}
+              onCanPlay={() => renderCanvas()}
+              onTimeUpdate={() => {
+                if (isPlaying) renderCanvas();
+              }}
+              onError={(e) => {
+                const mediaError = (e.target as HTMLVideoElement)?.error;
+                // Only show codec error if it's an explicit decode or format unsupported error
+                if (mediaError && (mediaError.code === 3 || mediaError.code === 4)) {
+                  setVideoError(
+                    'The video stream could not be decoded. The file container is recognized by Tracker, but this specific file uses an unsupported or legacy codec. Transcoding to standard H.264 MP4 is recommended.'
+                  );
+                }
               }}
               className="block"
               style={{

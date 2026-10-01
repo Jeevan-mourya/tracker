@@ -309,6 +309,10 @@ export const App: React.FC = () => {
     setVideoUrl(url);
     setIsSynthetic(false);
     setCurrentFrame(0);
+    setAnalysisMode('2D');
+    if (layout === 'split-3d' || layout === 'trajectory-3d') {
+      setLayout('split');
+    }
 
     // Initial safe generous clip setting while probing metadata
     const initialClip: ClipSettings = {
@@ -329,7 +333,8 @@ export const App: React.FC = () => {
       description: `Custom video analysis (${file.name})`,
       category: 'custom',
       videoUrl: url,
-      is3D: analysisMode === '3D',
+      syntheticType: undefined,
+      is3D: false,
       calibration: { ...calibration },
       axes: { ...axes },
       clip: initialClip,
@@ -1336,10 +1341,18 @@ export const App: React.FC = () => {
         experimentTitle={currentExp.title}
         tracks={tracks}
         activeTrackId={activeTrackId}
+        onSelectTrack={setActiveTrackId}
         clip={clip}
         calibration={calibration}
         axes={axes}
         videoSnapshotUrl={videoSnapshotUrl}
+        videoUrl={videoUrl}
+        analysisMode={analysisMode}
+        triangulation={triangulation}
+        onUpdateTriangulation={handleSaveTriangulation}
+        currentFrame={currentFrame}
+        onSeekFrame={setCurrentFrame}
+        onCaptureSnapshot={() => (snapshotGetterRef.current ? snapshotGetterRef.current() : null)}
       />
 
       {/* Client-side Video Format Warning Toast */}

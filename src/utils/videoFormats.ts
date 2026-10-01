@@ -1,5 +1,29 @@
 import JSZip from 'jszip';
 
+/**
+ * Normalizes video URLs to ensure they work in both browser web servers
+ * and local file:// protocols in Electron desktop .exe builds.
+ */
+export function normalizeVideoUrl(url: string | undefined | null): string {
+  if (!url) return '';
+  if (
+    url.startsWith('blob:') ||
+    url.startsWith('data:') ||
+    url.startsWith('http://') ||
+    url.startsWith('https://')
+  ) {
+    return url;
+  }
+  // Convert root-relative path to relative path for Electron file:// compatibility
+  if (url.startsWith('/videos/')) {
+    return '.' + url;
+  }
+  if (url.startsWith('/')) {
+    return '.' + url;
+  }
+  return url;
+}
+
 export interface AcceptedFormatInfo {
   name: string;
   category: 'Modern Web / Native' | 'QuickTime / Apple' | 'Laboratory & Camera' | 'Container & Legacy' | 'Animated Image' | 'Tracker Package';
