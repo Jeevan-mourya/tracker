@@ -209,6 +209,12 @@ export const TableView: React.FC<TableViewProps> = ({
             'x_m',
             'y_m',
             'z_m',
+            'u1_px',
+            'v1_px',
+            'u2_px',
+            'v2_px',
+            'reproj_residual_px',
+            'reconstruction_error_3d_m',
             'vx_mps',
             'vy_mps',
             'vz_mps',
@@ -246,6 +252,14 @@ export const TableView: React.FC<TableViewProps> = ({
         ];
         if (hasZ) {
           base.push((s.z ?? 0).toFixed(5));
+          base.push(
+            s.cam1?.px != null ? s.cam1.px.toString() : (s.cam1Px != null ? s.cam1Px.toString() : ''),
+            s.cam1?.py != null ? s.cam1.py.toString() : (s.cam1Py != null ? s.cam1Py.toString() : ''),
+            s.cam2?.px != null ? s.cam2.px.toString() : (s.cam2Px != null ? s.cam2Px.toString() : ''),
+            s.cam2?.py != null ? s.cam2.py.toString() : (s.cam2Py != null ? s.cam2Py.toString() : ''),
+            s.triangulationResidual != null ? s.triangulationResidual.toFixed(3) : (s.residual != null ? s.residual.toFixed(3) : ''),
+            s.reconstructionError3D != null ? s.reconstructionError3D.toFixed(5) : ''
+          );
         }
         base.push(s.vx?.toFixed(5) ?? '', s.vy?.toFixed(5) ?? '');
         if (hasZ) {
@@ -421,6 +435,14 @@ export const TableView: React.FC<TableViewProps> = ({
                   <th className="py-1.5 px-2 border-r border-[#808080]">x (m)</th>
                   <th className="py-1.5 px-2 border-r border-[#808080]">y (m)</th>
                   {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">z (m)</th>}
+                  {hasZ && (
+                    <th
+                      className="py-1.5 px-2 border-r border-[#808080] bg-[#ecfdf5] text-[#065f46]"
+                      title="2D Reprojection residual in pixels. 3D reconstruction error available when independent ground truth is supplied."
+                    >
+                      Reproj (px)
+                    </th>
+                  )}
                   <th className="py-1.5 px-2 border-r border-[#808080]">vx</th>
                   <th className="py-1.5 px-2 border-r border-[#808080]">vy</th>
                   {hasZ && <th className="py-1.5 px-2 border-r border-[#808080]">vz</th>}
@@ -522,6 +544,18 @@ export const TableView: React.FC<TableViewProps> = ({
                         {hasZ && (
                           <td className="py-1 px-2 border-r border-[#cccccc] font-medium">
                             {(s.z ?? 0).toFixed(4)}
+                          </td>
+                        )}
+                        {hasZ && (
+                          <td
+                            className="py-1 px-2 border-r border-[#cccccc] font-mono text-[#065f46]"
+                            title="2D Reprojection residual in pixels. 3D reconstruction error available when independent ground truth is supplied."
+                          >
+                            {s.triangulationResidual != null
+                              ? s.triangulationResidual.toFixed(2)
+                              : s.residual != null
+                              ? s.residual.toFixed(2)
+                              : '—'}
                           </td>
                         )}
                         <td className="py-1 px-2 border-r border-[#cccccc]">

@@ -25,6 +25,7 @@ import { ACCEPTED_VIDEO_ACCEPT_STRING, normalizeVideoUrl } from '../utils/videoF
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
+import { mediaDiagnostics } from '../utils/mediaDiagnostics';
 
 interface VideoPlayerViewProps {
   videoUrl: string;
@@ -101,8 +102,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const imageRef = useRef<HTMLImageElement | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [playbackRate, setPlaybackRate] = useState<number>(0.5);
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
   const [isLooping, setIsLooping] = useState<boolean>(true);
+  const lastReportedFrameRef = useRef<number>(currentFrame);
   const [mouseCoord, setMouseCoord] = useState<{ px: number; py: number; x: number; y: number } | null>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget>(null);
   const [canvasSize, setCanvasSize] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
@@ -254,14 +256,168 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   // Container playback fps (for seeking MP4/AVI files that were recorded at 1,000-100,000 fps but packaged at 30/60 fps)
   const containerFps = clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps);
 
-  // Synchronize video element with current frame safely
-  useEffect(() => {
+  // Authoritative Play/Pause Toggle
+  const handleTogglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!video || isSynthetic) return;
+    if (!isSynthetic && !isGif && video) {
+      if (isPlaying) {
+        video.pause();
+        setIsPlaying(false);
+        mediaDiagnostics.stopInvariantTracking('primary');
+        mediaDiagnostics.logEvent('primary', 'pause', video);
+      } else {
+        video.playbackRate = playbackRate;
+        // Loop back to start if at or past the clip end frame
+        if (currentFrame >= clip.endFrame || video.ended) {
+          video.currentTime = Math.max(0.001, clip.startFrame / containerFps);
+        }
+        video
+          .play()
+          .then(() => {
+            setIsPlaying(true);
+            mediaDiagnostics.startInvariantTracking('primary', video.currentTime, playbackRate);
+            mediaDiagnostics.logEvent('primary', 'play', video);
+          })
+          .catch((err) => {
+            console.warn('Playback play() was prevented:', err);
+            setIsPlaying(false);
+          });
+      }
+    } else {
+      setIsPlaying((prev) => !prev);
+    }
+  }, [isPlaying, isSynthetic, isGif, playbackRate, currentFrame, clip.endFrame, clip.startFrame, containerFps]);
+
+  // Explicit Manual Stepping (stops playback and seeks)
+  const handleStepPrev = useCallback(() => {
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+    setIsPlaying(false);
+    mediaDiagnostics.stopInvariantTracking('primary');
+    const target = Math.max(clip.startFrame, currentFrame - clip.stepSize);
+    onFrameChange(target);
+  }, [clip.startFrame, clip.stepSize, currentFrame, onFrameChange]);
+
+  const handleStepNext = useCallback(() => {
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+    setIsPlaying(false);
+    mediaDiagnostics.stopInvariantTracking('primary');
+    const target = Math.min(clip.endFrame, currentFrame + clip.stepSize);
+    onFrameChange(target);
+  }, [clip.endFrame, clip.stepSize, currentFrame, onFrameChange]);
+
+  const handleJumpStart = useCallback(() => {
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+    setIsPlaying(false);
+    mediaDiagnostics.stopInvariantTracking('primary');
+    onFrameChange(clip.startFrame);
+  }, [clip.startFrame, onFrameChange]);
+
+  const handleJumpEnd = useCallback(() => {
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+    setIsPlaying(false);
+    mediaDiagnostics.stopInvariantTracking('primary');
+    onFrameChange(clip.endFrame);
+  }, [clip.endFrame, onFrameChange]);
+
+  const handlePlaybackRateChange = useCallback((newRate: number) => {
+    setPlaybackRate(newRate);
+    const video = videoRef.current;
+    if (video) {
+      video.playbackRate = newRate;
+      mediaDiagnostics.logEvent('primary', 'ratechange', video);
+    }
+  }, []);
+
+  // 1. Authoritative HTML5 Video playback monitor loop (Runs ONLY when isPlaying && !isSynthetic && !isGif)
+  useEffect(() => {
+    if (!isPlaying || isSynthetic || isGif) return;
+
+    let rafId: number;
+    const loopId = 'primary_playback_monitor';
+    mediaDiagnostics.registerLoop(loopId, 'raf');
+
+    let lastSampleTime = performance.now();
+
+    const monitorLoop = () => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      if (video.paused && !video.seeking && isPlaying) {
+        // Natural end of media
+        if (video.ended || video.currentTime >= (video.duration || 1) - 0.05) {
+          if (isLooping) {
+            video.currentTime = Math.max(0.001, clip.startFrame / containerFps);
+            video.play().catch(() => {});
+          } else {
+            setIsPlaying(false);
+            return;
+          }
+        }
+      }
+
+      // Video element's currentTime is the master media clock
+      const mediaTime = video.currentTime;
+      const derivedFrame = Math.min(
+        clip.endFrame,
+        Math.max(clip.startFrame, Math.floor(mediaTime * containerFps))
+      );
+
+      if (derivedFrame !== lastReportedFrameRef.current) {
+        lastReportedFrameRef.current = derivedFrame;
+        onFrameChange(derivedFrame);
+      }
+
+      // Sample invariant periodically (~every 500ms)
+      const now = performance.now();
+      if (now - lastSampleTime > 500) {
+        mediaDiagnostics.sampleInvariant('primary', mediaTime, playbackRate);
+        lastSampleTime = now;
+      }
+
+      // Clip boundary check
+      if (derivedFrame >= clip.endFrame) {
+        if (isLooping) {
+          video.currentTime = Math.max(0.001, clip.startFrame / containerFps);
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+          setIsPlaying(false);
+          return;
+        }
+      }
+
+      rafId = requestAnimationFrame(monitorLoop);
+    };
+
+    rafId = requestAnimationFrame(monitorLoop);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      mediaDiagnostics.unregisterLoop(loopId);
+    };
+  }, [isPlaying, isSynthetic, isGif, containerFps, clip.startFrame, clip.endFrame, isLooping, playbackRate, onFrameChange]);
+
+  // 2. Synchronize video element to currentFrame ONLY when paused or manual stepping/scrubbing
+  useEffect(() => {
+    if (isPlaying || isSynthetic || isGif) return;
+    const video = videoRef.current;
+    if (!video || !videoUrl) return;
 
     const targetTime = Math.max(0.001, currentFrame / containerFps);
     if (video.readyState >= 1) {
-      if (Math.abs(video.currentTime - targetTime) > 0.002 || video.currentTime === 0) {
+      if (Math.abs(video.currentTime - targetTime) > 0.002) {
         try {
           video.currentTime = targetTime;
         } catch {
@@ -279,81 +435,83 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       video.addEventListener('loadeddata', handleReady, { once: true });
       return () => video.removeEventListener('loadeddata', handleReady);
     }
-  }, [currentFrame, clip.fps, containerFps, isSynthetic]);
+    lastReportedFrameRef.current = currentFrame;
+  }, [currentFrame, isPlaying, isSynthetic, isGif, containerFps, videoUrl]);
 
-  // Video playback loop
+  // 3. Synthetic simulation or animated GIF frame ticker
   useEffect(() => {
+    if (!isPlaying || (!isSynthetic && !isGif)) return;
+
     let animationFrameId: number;
+    const loopId = 'synthetic_playback_tick';
+    mediaDiagnostics.registerLoop(loopId, 'raf');
 
-    if (isPlaying) {
-      let lastTime = performance.now();
-      // For high speed videos (e.g. 1,000 to 100,000 fps), advance frames smoothly at container playback rate
-      const playFps = Math.min(60, containerFps);
-      const interval = (1000 / playFps) / playbackRate;
+    let lastTime = performance.now();
+    const playFps = Math.min(60, containerFps);
+    const interval = (1000 / playFps) / playbackRate;
 
-      const tick = (now: number) => {
-        if (now - lastTime >= interval) {
-          lastTime = now;
-          let nextFrame = currentFrame + clip.stepSize;
-          if (nextFrame > clip.endFrame) {
-            if (isLooping) {
-              nextFrame = clip.startFrame;
-            } else {
-              setIsPlaying(false);
-              return;
-            }
+    const tick = (now: number) => {
+      if (now - lastTime >= interval) {
+        lastTime = now;
+        let nextFrame = currentFrame + clip.stepSize;
+        if (nextFrame > clip.endFrame) {
+          if (isLooping) {
+            nextFrame = clip.startFrame;
+          } else {
+            setIsPlaying(false);
+            return;
           }
-          onFrameChange(nextFrame);
         }
-        animationFrameId = requestAnimationFrame(tick);
-      };
-
+        onFrameChange(nextFrame);
+      }
       animationFrameId = requestAnimationFrame(tick);
-    }
+    };
 
-    return () => cancelAnimationFrame(animationFrameId);
-  }, [isPlaying, currentFrame, clip, playbackRate, isLooping, onFrameChange]);
+    animationFrameId = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      mediaDiagnostics.unregisterLoop(loopId);
+    };
+  }, [isPlaying, isSynthetic, isGif, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, containerFps, playbackRate, isLooping, onFrameChange]);
 
   // Handle video metadata loading to configure frames & size
-  const handleLoadedMetadata = () => {
+  const handleLoadedMetadata = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
 
     setVideoError(null);
     video.muted = true;
     video.defaultMuted = true;
+    mediaDiagnostics.logEvent('primary', 'loadedmetadata', video);
 
-    // Force frame load on some browsers (like Safari/Chrome/Electron when paused)
-    video.play().then(() => video.pause()).catch(() => {});
-    if (currentFrame === 0) {
-      try {
-        video.currentTime = 0.001; // tiny offset to force frame render
-      } catch {
-        // ignore
-      }
-    }
-
-    const duration = video.duration || 1;
-    const totalFrames = Math.max(10, Math.round(duration * clip.fps));
     const width = video.videoWidth || 640;
     const height = video.videoHeight || 480;
-
     setCanvasSize({ width, height });
-    onUpdateClip({
-      totalFrames,
-      endFrame: totalFrames - 1,
-    });
-  };
 
-  // Safe video reload and seek when videoUrl changes
+    const duration = video.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      const totalFrames = Math.max(10, Math.round(duration * clip.fps));
+      onUpdateClip({
+        totalFrames,
+        endFrame: totalFrames - 1,
+      });
+    }
+  }, [clip.fps, onUpdateClip]);
+
+  // 4. Safe video reload and session reset when videoUrl changes
   useEffect(() => {
     const video = videoRef.current;
     if (video && videoUrl) {
+      video.pause();
+      setIsPlaying(false);
+      mediaDiagnostics.stopInvariantTracking('primary');
       setVideoError(null);
       video.muted = true;
       video.defaultMuted = true;
 
       const handleReady = () => {
+        mediaDiagnostics.logEvent('primary', 'loadeddata', video);
         const targetTime = Math.max(0.001, currentFrame / containerFps);
         try {
           video.currentTime = targetTime;
@@ -374,6 +532,22 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       };
     }
   }, [videoUrl, containerFps]);
+
+  // 5. Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      const video = videoRef.current;
+      if (video) {
+        video.pause();
+        try {
+          video.removeAttribute('src');
+          video.load();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
 
   // Convert client click coordinates to video/canvas intrinsic coordinate space
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1006,28 +1180,6 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     renderCanvas();
   }, [renderCanvas]);
 
-  // Video element repaint listener so paused frames always draw
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const onRepaint = () => {
-      renderCanvas();
-    };
-
-    video.addEventListener('seeked', onRepaint);
-    video.addEventListener('loadeddata', onRepaint);
-    video.addEventListener('canplay', onRepaint);
-    video.addEventListener('timeupdate', onRepaint);
-
-    return () => {
-      video.removeEventListener('seeked', onRepaint);
-      video.removeEventListener('loadeddata', onRepaint);
-      video.removeEventListener('canplay', onRepaint);
-      video.removeEventListener('timeupdate', onRepaint);
-    };
-  }, [renderCanvas]);
-
   // Magnifier Loupe render effect for Tracker-style sub-pixel tracking
   useEffect(() => {
     if (!showLoupe || !mouseCoord || !loupeCanvasRef.current || !canvasRef.current) return;
@@ -1581,6 +1733,10 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 handleLoadedMetadata();
                 renderCanvas();
               }}
+              onDurationChange={() => {
+                handleLoadedMetadata();
+                renderCanvas();
+              }}
               onLoadedData={() => {
                 setVideoError(null);
                 const video = videoRef.current;
@@ -1597,17 +1753,61 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 }
                 renderCanvas();
               }}
-              onSeeked={() => renderCanvas()}
-              onCanPlay={() => renderCanvas()}
+              onPlay={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'play', video);
+              }}
+              onPause={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'pause', video);
+              }}
+              onSeeking={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'seeking', video);
+              }}
+              onSeeked={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'seeked', video);
+                renderCanvas();
+              }}
+              onRateChange={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'ratechange', video);
+              }}
+              onWaiting={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'waiting', video);
+              }}
+              onStalled={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'stalled', video);
+              }}
+              onCanPlay={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'canplay', video);
+                renderCanvas();
+              }}
               onTimeUpdate={() => {
+                const video = videoRef.current;
+                mediaDiagnostics.logEvent('primary', 'timeupdate', video);
                 if (isPlaying) renderCanvas();
               }}
               onError={(e) => {
                 const mediaError = (e.target as HTMLVideoElement)?.error;
-                const detail = mediaError?.message ? ` (${mediaError.message})` : '';
-                setVideoError(
-                  `The video could not be loaded or decoded${detail}. The file may use an unsupported codec or container. Transcoding to standard H.264 MP4 is recommended.`
-                );
+                mediaDiagnostics.logEvent('primary', 'error', videoRef.current);
+                if (mediaError) {
+                  let msg = 'Video stream error encountered.';
+                  if (mediaError.code === 1) {
+                    msg = 'Video playback was aborted by the client.';
+                  } else if (mediaError.code === 2) {
+                    msg = 'A network error caused the video download to fail.';
+                  } else if (mediaError.code === 3) {
+                    msg = 'The video stream could not be decoded (corrupted data or hardware decoder error). Transcoding to standard H.264 MP4 is recommended.';
+                  } else if (mediaError.code === 4) {
+                    msg = 'The video format or codec is not supported by Chromium hardware pipeline. Transcoding to standard H.264 MP4 is recommended.';
+                  }
+                  setVideoError(msg);
+                }
               }}
               className="block"
               style={{
@@ -1776,7 +1976,13 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               max={clip.endFrame}
               step={1}
               value={currentFrame}
-              onChange={(e) => onFrameChange(parseInt(e.target.value, 10))}
+              onChange={(e) => {
+                if (videoRef.current && !videoRef.current.paused) {
+                  videoRef.current.pause();
+                  setIsPlaying(false);
+                }
+                onFrameChange(parseInt(e.target.value, 10));
+              }}
               className="w-full h-2 bg-transparent rounded-[2px] appearance-none cursor-pointer focus:outline-none z-2"
             />
           </div>
@@ -1799,7 +2005,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <button
               id="btn-first-frame"
               type="button"
-              onClick={() => onFrameChange(clip.startFrame)}
+              onClick={handleJumpStart}
               className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
               title="Jump to Start Frame (Home)"
             >
@@ -1808,7 +2014,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <button
               id="btn-prev-frame"
               type="button"
-              onClick={() => onFrameChange(Math.max(clip.startFrame, currentFrame - clip.stepSize))}
+              onClick={handleStepPrev}
               className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
               title="Step Backward (← Left Arrow)"
             >
@@ -1817,7 +2023,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <button
               id="btn-play-pause"
               type="button"
-              onClick={() => setIsPlaying(!isPlaying)}
+              onClick={handleTogglePlay}
               className="px-3 py-1 rounded-[3px] bg-[#1e3a5f] hover:bg-[#152843] active:bg-[#0f1d30] text-white font-semibold text-xs flex items-center gap-1 transition-all border border-[#0f1d30] active:scale-95 cursor-pointer"
               title={isPlaying ? 'Pause video (Space)' : 'Play video (Space)'}
             >
@@ -1827,7 +2033,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <button
               id="btn-next-frame"
               type="button"
-              onClick={() => onFrameChange(Math.min(clip.endFrame, currentFrame + clip.stepSize))}
+              onClick={handleStepNext}
               className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
               title="Step Forward (→ Right Arrow)"
             >
@@ -1836,7 +2042,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <button
               id="btn-last-frame"
               type="button"
-              onClick={() => onFrameChange(clip.endFrame)}
+              onClick={handleJumpEnd}
               className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
               title="Jump to End Frame (End)"
             >
@@ -1891,7 +2097,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               <select
                 id="playback-rate-select"
                 value={playbackRate}
-                onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                onChange={(e) => handlePlaybackRateChange(parseFloat(e.target.value))}
                 className="bg-transparent text-black font-bold focus:outline-none cursor-pointer"
               >
                 <option value={0.1} className="bg-white">0.1x</option>

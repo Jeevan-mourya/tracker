@@ -653,12 +653,32 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
                   <span>
                     3D Speed: <strong className="text-black font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong>
                   </span>
-                  {currentStep?.triangulationResidual !== undefined && currentStep.triangulationResidual !== null && (
-                    <span className="text-[#444444]">
-                      Residual: {(currentStep.triangulationResidual * 1000).toFixed(1)} mm
+                  {currentStep?.triangulationResidual !== undefined && currentStep.triangulationResidual !== null ? (
+                    <span
+                      className="text-[#444444]"
+                      title="2D sensor reprojection residual in pixels. 3D reconstruction error available when independent ground truth is supplied."
+                    >
+                      Reproj: <strong className="text-black">{currentStep.triangulationResidual.toFixed(2)} px</strong>
+                    </span>
+                  ) : (
+                    <span
+                      className="text-[#777777] italic"
+                      title="3D reconstruction error available when independent ground truth is supplied."
+                    >
+                      [3D error: GT required]
                     </span>
                   )}
                 </div>
+                {currentStep?.reconstructionError3D !== undefined && currentStep.reconstructionError3D !== null ? (
+                  <div className="text-[10px] text-emerald-800 font-semibold flex items-center justify-between mt-0.5">
+                    <span>Physical 3D Error:</span>
+                    <span>{(currentStep.reconstructionError3D * 1000).toFixed(2)} mm</span>
+                  </div>
+                ) : (
+                  <div className="text-[9px] text-[#666666] italic mt-0.5">
+                    * 3D reconstruction error available when independent ground truth is supplied.
+                  </div>
+                )}
               </>
             ) : (
               /* Compact Single-Line Mode */

@@ -37,6 +37,7 @@ import {
   probeVideoMetadata,
   VideoMetadataProbeResult,
 } from './utils/videoFormats';
+import { mediaDiagnostics } from './utils/mediaDiagnostics';
 
 export const App: React.FC = () => {
   // Current experiment
@@ -159,6 +160,62 @@ export const App: React.FC = () => {
   const [videoSnapshotUrl, setVideoSnapshotUrl] = useState<string | null>(null);
   const snapshotGetterRef = useRef<(() => string | null) | null>(null);
 
+  // Object URL lifecycle management to prevent memory leaks and dangling media streams
+  const activeBlobUrlCam1Ref = useRef<string | null>(null);
+  const activeBlobUrlCam2Ref = useRef<string | null>(null);
+  const pendingRevokeUrlsRef = useRef<Set<string>>(new Set());
+
+  const registerBlobUrl = useCallback((newUrl: string, target: 'cam1' | 'cam2' = 'cam1') => {
+    const oldUrl = target === 'cam1' ? activeBlobUrlCam1Ref.current : activeBlobUrlCam2Ref.current;
+    if (oldUrl && oldUrl.startsWith('blob:') && oldUrl !== newUrl) {
+      pendingRevokeUrlsRef.current.add(oldUrl);
+      setTimeout(() => {
+        if (pendingRevokeUrlsRef.current.has(oldUrl)) {
+          pendingRevokeUrlsRef.current.delete(oldUrl);
+          try {
+            URL.revokeObjectURL(oldUrl);
+          } catch {
+            // ignore
+          }
+        }
+      }, 2500);
+    }
+
+    if (target === 'cam1') {
+      activeBlobUrlCam1Ref.current = newUrl.startsWith('blob:') ? newUrl : null;
+    } else {
+      activeBlobUrlCam2Ref.current = newUrl.startsWith('blob:') ? newUrl : null;
+    }
+  }, []);
+
+  // Cleanup object URLs on unmount
+  useEffect(() => {
+    return () => {
+      pendingRevokeUrlsRef.current.forEach((url) => {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      });
+      pendingRevokeUrlsRef.current.clear();
+      if (activeBlobUrlCam1Ref.current && activeBlobUrlCam1Ref.current.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(activeBlobUrlCam1Ref.current);
+        } catch {
+          // ignore
+        }
+      }
+      if (activeBlobUrlCam2Ref.current && activeBlobUrlCam2Ref.current.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(activeBlobUrlCam2Ref.current);
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }, []);
+
   const handleOpenReportModal = () => {
     if (snapshotGetterRef.current) {
       const snap = snapshotGetterRef.current();
@@ -205,6 +262,9 @@ export const App: React.FC = () => {
 
   // Handle Experiment Selection
   const handleSelectExperiment = (exp: SampleExperiment) => {
+    mediaDiagnostics.setSession(exp.id);
+    registerBlobUrl('', 'cam1');
+    registerBlobUrl('', 'cam2');
     setCurrentExp(exp);
     setVideoUrl(exp.videoUrl);
     setVideoUrlCam2(exp.videoUrlCam2 || '');
@@ -306,6 +366,7 @@ export const App: React.FC = () => {
       });
 
     const url = URL.createObjectURL(file);
+    registerBlobUrl(url, 'cam1');
     setVideoUrl(url);
     setIsSynthetic(false);
     setCurrentFrame(0);
@@ -327,8 +388,11 @@ export const App: React.FC = () => {
     };
     setClip(initialClip);
 
+    const uploadSessionId = 'custom-upload-' + Date.now();
+    mediaDiagnostics.setSession(uploadSessionId, file.name);
+
     setCurrentExp({
-      id: 'custom-upload-' + Date.now(),
+      id: uploadSessionId,
       title: file.name,
       description: `Custom video analysis (${file.name})`,
       category: 'custom',
@@ -363,13 +427,25 @@ export const App: React.FC = () => {
         }));
       };
     } else {
-      // Probe duration from HTML5 video element
+      // Probe duration from HTML5 video element with proper resource cleanup
       const probe = document.createElement('video');
       probe.preload = 'metadata';
+      probe.muted = true;
       probe.src = url;
-      probe.onloadedmetadata = () => {
+      const cleanupProbe = () => {
+        probe.onloadedmetadata = null;
+        probe.ondurationchange = null;
+        probe.onerror = null;
+        try {
+          probe.removeAttribute('src');
+          probe.load();
+        } catch {
+          // ignore
+        }
+      };
+      const onProbeMeta = () => {
         const dur = probe.duration;
-        if (dur && Number.isFinite(dur) && dur > 0) {
+        if (Number.isFinite(dur) && dur > 0) {
           const calculatedFrames = Math.max(10, Math.round(dur * 30));
           const updatedClip: ClipSettings = {
             startFrame: 0,
@@ -386,8 +462,13 @@ export const App: React.FC = () => {
             ...prev,
             clip: updatedClip,
           }));
+          cleanupProbe();
         }
       };
+      probe.onloadedmetadata = onProbeMeta;
+      probe.ondurationchange = onProbeMeta;
+      probe.onerror = cleanupProbe;
+      setTimeout(cleanupProbe, 5000);
     }
 
     // Reset track points for new video
@@ -423,11 +504,15 @@ export const App: React.FC = () => {
       .catch(() => {});
 
     const url = URL.createObjectURL(file);
+    registerBlobUrl(url, 'cam1');
     setVideoUrl(url); // We map cam1 to main videoUrl in state
     setIsSynthetic(false);
+    const uploadSessionId = 'custom-cam1-' + Date.now();
+    mediaDiagnostics.setSession(uploadSessionId, file.name);
+
     setCurrentExp(prev => ({ 
       ...prev, 
-      id: 'custom-cam1-' + Date.now(), 
+      id: uploadSessionId, 
       title: 'Stereo: ' + file.name,
       description: 'Custom Camera 1 upload',
       category: 'custom'
@@ -435,18 +520,35 @@ export const App: React.FC = () => {
 
     const probe = document.createElement('video');
     probe.preload = 'metadata';
+    probe.muted = true;
     probe.src = url;
-    probe.onloadedmetadata = () => {
+    const cleanupProbe = () => {
+      probe.onloadedmetadata = null;
+      probe.ondurationchange = null;
+      probe.onerror = null;
+      try {
+        probe.removeAttribute('src');
+        probe.load();
+      } catch {
+        // ignore
+      }
+    };
+    const onProbeMeta = () => {
       const dur = probe.duration;
-      if (dur && Number.isFinite(dur) && dur > 0) {
+      if (Number.isFinite(dur) && dur > 0) {
         const calculatedFrames = Math.max(10, Math.round(dur * 30));
         setClip((prev) => ({
           ...prev,
           totalFrames: Math.max(prev.totalFrames, calculatedFrames),
           endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
         }));
+        cleanupProbe();
       }
     };
+    probe.onloadedmetadata = onProbeMeta;
+    probe.ondurationchange = onProbeMeta;
+    probe.onerror = cleanupProbe;
+    setTimeout(cleanupProbe, 5000);
   };
 
   const handleUploadCam2 = async (rawFile: File) => {
@@ -465,11 +567,15 @@ export const App: React.FC = () => {
       .catch(() => {});
 
     const url = URL.createObjectURL(file);
+    registerBlobUrl(url, 'cam2');
     setVideoUrlCam2(url);
     setIsSynthetic(false);
+    const uploadSessionId = 'custom-cam2-' + Date.now();
+    mediaDiagnostics.setSession(uploadSessionId, file.name);
+
     setCurrentExp(prev => ({ 
       ...prev, 
-      id: 'custom-cam2-' + Date.now(), 
+      id: uploadSessionId, 
       title: 'Stereo: ' + file.name,
       description: 'Custom Camera 2 upload',
       category: 'custom'
@@ -477,18 +583,35 @@ export const App: React.FC = () => {
 
     const probe = document.createElement('video');
     probe.preload = 'metadata';
+    probe.muted = true;
     probe.src = url;
-    probe.onloadedmetadata = () => {
+    const cleanupProbe2 = () => {
+      probe.onloadedmetadata = null;
+      probe.ondurationchange = null;
+      probe.onerror = null;
+      try {
+        probe.removeAttribute('src');
+        probe.load();
+      } catch {
+        // ignore
+      }
+    };
+    const onProbeMeta2 = () => {
       const dur = probe.duration;
-      if (dur && Number.isFinite(dur) && dur > 0) {
+      if (Number.isFinite(dur) && dur > 0) {
         const calculatedFrames = Math.max(10, Math.round(dur * 30));
         setClip((prev) => ({
           ...prev,
           totalFrames: Math.max(prev.totalFrames, calculatedFrames),
           endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
         }));
+        cleanupProbe2();
       }
     };
+    probe.onloadedmetadata = onProbeMeta2;
+    probe.ondurationchange = onProbeMeta2;
+    probe.onerror = cleanupProbe2;
+    setTimeout(cleanupProbe2, 5000);
   };
 
   // 3D Point addition from Dual Video Player
@@ -737,12 +860,18 @@ export const App: React.FC = () => {
               dlt2
             );
             if (tri) {
+              const err3D =
+                step.referenceX != null && step.referenceY != null && step.referenceZ != null
+                  ? Math.hypot(tri.x - step.referenceX, tri.y - step.referenceY, tri.z - step.referenceZ)
+                  : null;
               return {
                 ...step,
                 x: tri.x,
                 y: tri.y,
                 z: tri.z,
                 residual: tri.residual,
+                triangulationResidual: tri.residual,
+                reconstructionError3D: err3D,
               };
             }
           }
@@ -833,7 +962,29 @@ export const App: React.FC = () => {
 
     const hasZ = activeTrack.steps.some((s) => s.z !== undefined);
     const headers = hasZ
-      ? ['Frame', 'Time_s', 'x_m', 'y_m', 'z_m', 'vx_mps', 'vy_mps', 'vz_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'az_mps2', 'a_mps2', 'KE_J', 'PE_J']
+      ? [
+          'Frame',
+          'Time_s',
+          'x_m',
+          'y_m',
+          'z_m',
+          'u1_px',
+          'v1_px',
+          'u2_px',
+          'v2_px',
+          'reprojection_residual_px',
+          'reconstruction_error_3d_m',
+          'vx_mps',
+          'vy_mps',
+          'vz_mps',
+          'v_mps',
+          'ax_mps2',
+          'ay_mps2',
+          'az_mps2',
+          'a_mps2',
+          'KE_J',
+          'PE_J',
+        ]
       : ['Frame', 'Time_s', 'x_m', 'y_m', 'vx_mps', 'vy_mps', 'v_mps', 'ax_mps2', 'ay_mps2', 'a_mps2', 'KE_J', 'PE_J'];
 
     const rows = activeTrack.steps.map((s) => {
@@ -845,6 +996,14 @@ export const App: React.FC = () => {
       ];
       if (hasZ) {
         base.push((s.z ?? 0).toFixed(5));
+        base.push(
+          s.cam1?.px != null ? s.cam1.px.toString() : (s.cam1Px != null ? s.cam1Px.toString() : ''),
+          s.cam1?.py != null ? s.cam1.py.toString() : (s.cam1Py != null ? s.cam1Py.toString() : ''),
+          s.cam2?.px != null ? s.cam2.px.toString() : (s.cam2Px != null ? s.cam2Px.toString() : ''),
+          s.cam2?.py != null ? s.cam2.py.toString() : (s.cam2Py != null ? s.cam2Py.toString() : ''),
+          s.triangulationResidual != null ? s.triangulationResidual.toFixed(3) : (s.residual != null ? s.residual.toFixed(3) : ''),
+          s.reconstructionError3D != null ? s.reconstructionError3D.toFixed(5) : ''
+        );
       }
       base.push(
         s.vx?.toFixed(5) ?? '',

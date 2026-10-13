@@ -27,6 +27,7 @@ import {
   Clock,
   Sparkles,
   Activity,
+  Repeat,
 } from 'lucide-react';
 import {
   triangulateDLT,
@@ -36,6 +37,7 @@ import {
 } from '../utils/triangulation';
 import { ACCEPTED_VIDEO_ACCEPT_STRING, normalizeVideoUrl } from '../utils/videoFormats';
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
+import { mediaDiagnostics } from '../utils/mediaDiagnostics';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
 
@@ -105,6 +107,8 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   const [dualLayout, setDualLayout] = useState<DualLayout>('side-by-side');
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
+  const [isLooping, setIsLooping] = useState<boolean>(true);
+  const lastReportedFrameRef = useRef<number>(currentFrame);
   const [activeCameraHover, setActiveCameraHover] = useState<'cam1' | 'cam2' | null>(null);
   const [mouseCoord, setMouseCoord] = useState<{ x: number; y: number } | null>(null);
   const [canvasSizeCam1, setCanvasSizeCam1] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
@@ -132,6 +136,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   const timeOffsetSec = triangulation.timeOffsetCam2Sec || 0;
   const ratioInfo = calculateMultiRateFrameRatio(fpsCam1, fpsCam2);
   const isMultiRate = Math.abs(fpsCam1 - fpsCam2) > 0.01;
+  const fpsRatio = fpsCam1 > 0 ? fpsCam2 / fpsCam1 : 1.0;
 
   // Master Physical Time (seconds)
   const masterTime = clip.startTime + currentFrame * (clip.frameDt || clip.dt || 1 / fpsCam1);
@@ -193,88 +198,377 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     onRegisterSnapshotGetter?.(captureSnapshot);
   }, [captureSnapshot, onRegisterSnapshotGetter]);
 
-  // Frame Playback Loop
-  useEffect(() => {
-    if (!isPlaying) return;
-
-    let animId: number;
-    let lastTime = performance.now();
-    // Playback rate: 1 frame per interval based on container playback or clip playback rate
-    const effectivePlaybackFps = clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps);
-    const frameInterval = 1000 / (effectivePlaybackFps * playbackSpeed);
-
-    const stepLoop = (now: number) => {
-      const delta = now - lastTime;
-      if (delta >= frameInterval) {
-        onFrameChange(
-          currentFrame + clip.stepSize > clip.endFrame
-            ? clip.startFrame
-            : currentFrame + clip.stepSize
-        );
-        lastTime = now - (delta % frameInterval);
-      }
-      animId = requestAnimationFrame(stepLoop);
-    };
-
-    animId = requestAnimationFrame(stepLoop);
-    return () => cancelAnimationFrame(animId);
-  }, [isPlaying, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, clip.fps, clip.playbackFps, playbackSpeed, onFrameChange]);
-
   // Video Loaded Metadata Handlers
-  const handleLoadedMetadataCam1 = () => {
+  const handleLoadedMetadataCam1 = useCallback(() => {
     const v = videoRefCam1.current;
     if (!v) return;
-    setCanvasSizeCam1({ width: v.videoWidth || 640, height: v.videoHeight || 480 });
-    v.currentTime = Math.max(0.001, currentFrame / containerFps1);
-  };
+    setCam1Error(null);
+    v.muted = true;
+    v.defaultMuted = true;
+    mediaDiagnostics.logEvent('cam1', 'loadedmetadata', v);
 
-  const handleLoadedMetadataCam2 = () => {
+    const width = v.videoWidth || 640;
+    const height = v.videoHeight || 480;
+    setCanvasSizeCam1({ width, height });
+
+    const dur = v.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      const calculatedFrames = Math.max(10, Math.round(dur * clip.fps));
+      onUpdateClip({
+        totalFrames: calculatedFrames,
+        endFrame: calculatedFrames - 1,
+      });
+    }
+  }, [clip.fps, onUpdateClip]);
+
+  const handleLoadedMetadataCam2 = useCallback(() => {
     const v = videoRefCam2.current;
     if (!v) return;
-    setCanvasSizeCam2({ width: v.videoWidth || 640, height: v.videoHeight || 480 });
-    v.currentTime = Math.max(0.001, currentFrameCam2 / containerFps2);
-  };
+    setCam2Error(null);
+    v.muted = true;
+    v.defaultMuted = true;
+    mediaDiagnostics.logEvent('cam2', 'loadedmetadata', v);
 
-  useEffect(() => {
+    const width = v.videoWidth || 640;
+    const height = v.videoHeight || 480;
+    setCanvasSizeCam2({ width, height });
+  }, []);
+
+  // Authoritative Play/Pause Toggle
+  const handleTogglePlay = useCallback(() => {
     const v1 = videoRefCam1.current;
-    if (v1 && videoUrlCam1 && v1.videoWidth) {
-      setCanvasSizeCam1({ width: v1.videoWidth, height: v1.videoHeight });
-      v1.currentTime = Math.max(0.001, currentFrame / containerFps1);
-    }
-  }, [videoUrlCam1, containerFps1]);
-
-  useEffect(() => {
     const v2 = videoRefCam2.current;
-    if (v2 && videoUrlCam2 && v2.videoWidth) {
-      setCanvasSizeCam2({ width: v2.videoWidth, height: v2.videoHeight });
-      v2.currentTime = Math.max(0.001, currentFrameCam2 / containerFps2);
-    }
-  }, [videoUrlCam2, containerFps2, currentFrameCam2]);
 
-  // Synchronize HTML5 video elements to current physical frame
+    if (v1 && videoUrlCam1) {
+      if (isPlaying) {
+        v1.pause();
+        if (v2) v2.pause();
+        setIsPlaying(false);
+        mediaDiagnostics.stopInvariantTracking('cam1');
+        mediaDiagnostics.stopInvariantTracking('cam2');
+        mediaDiagnostics.logEvent('cam1', 'pause', v1);
+        if (v2) mediaDiagnostics.logEvent('cam2', 'pause', v2);
+      } else {
+        v1.playbackRate = playbackSpeed;
+        if (v2) v2.playbackRate = playbackSpeed * fpsRatio;
+
+        if (currentFrame >= clip.endFrame || v1.ended) {
+          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
+          if (v2) {
+            v2.currentTime = Math.max(
+              0.001,
+              (clip.startFrame / containerFps1 - timeOffsetSec) * fpsRatio
+            );
+          }
+        }
+
+        v1.play()
+          .then(() => {
+            setIsPlaying(true);
+            mediaDiagnostics.startInvariantTracking('cam1', v1.currentTime, playbackSpeed);
+            mediaDiagnostics.logEvent('cam1', 'play', v1);
+            if (v2 && videoUrlCam2) {
+              const expectedCam2Time = Math.max(
+                0.001,
+                (v1.currentTime - timeOffsetSec) * fpsRatio
+              );
+              try {
+                v2.currentTime = expectedCam2Time;
+              } catch {
+                // ignore
+              }
+              v2.play().catch(() => {});
+              mediaDiagnostics.startInvariantTracking(
+                'cam2',
+                v2.currentTime,
+                playbackSpeed * fpsRatio
+              );
+              mediaDiagnostics.logEvent('cam2', 'play', v2);
+            }
+          })
+          .catch((err) => {
+            console.warn('Playback play() was prevented:', err);
+            setIsPlaying(false);
+          });
+      }
+    } else {
+      setIsPlaying((prev) => !prev);
+    }
+  }, [
+    isPlaying,
+    videoUrlCam1,
+    videoUrlCam2,
+    playbackSpeed,
+    currentFrame,
+    clip.endFrame,
+    clip.startFrame,
+    containerFps1,
+    timeOffsetSec,
+    fpsRatio,
+  ]);
+
+  const handlePlaybackSpeedChange = useCallback(
+    (newSpeed: number) => {
+      setPlaybackSpeed(newSpeed);
+      const v1 = videoRefCam1.current;
+      const v2 = videoRefCam2.current;
+      if (v1) {
+        v1.playbackRate = newSpeed;
+        mediaDiagnostics.logEvent('cam1', 'ratechange', v1);
+      }
+      if (v2) {
+        v2.playbackRate = newSpeed * fpsRatio;
+        mediaDiagnostics.logEvent('cam2', 'ratechange', v2);
+      }
+    },
+    [fpsRatio]
+  );
+
+  // Authoritative HTML5 Video Playback Monitor Loop (Cam 1 is master media clock)
   useEffect(() => {
+    if (!isPlaying || !videoUrlCam1) return;
+
+    let rafId: number;
+    const loopId = 'dual_cam1_playback_monitor';
+    mediaDiagnostics.registerLoop(loopId, 'raf', 'playback');
+
+    let lastSampleTime = performance.now();
+
+    const monitorLoop = () => {
+      const v1 = videoRefCam1.current;
+      const v2 = videoRefCam2.current;
+      if (!v1) return;
+
+      if (v1.paused && !v1.seeking && isPlaying) {
+        // Natural end of media
+        if (v1.ended || v1.currentTime >= (v1.duration || 1) - 0.05) {
+          if (isLooping) {
+            v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
+            v1.play().catch(() => {});
+            if (v2) {
+              const restartCam2 = Math.max(
+                0.001,
+                (v1.currentTime - timeOffsetSec) * fpsRatio
+              );
+              v2.currentTime = restartCam2;
+              v2.play().catch(() => {});
+            }
+          } else {
+            v1.pause();
+            if (v2) v2.pause();
+            setIsPlaying(false);
+            return;
+          }
+        }
+      }
+
+      // Cam 1 is the authoritative media clock
+      const mediaTime = v1.currentTime;
+      const derivedFrame = Math.min(
+        clip.endFrame,
+        Math.max(clip.startFrame, Math.floor(mediaTime * containerFps1))
+      );
+
+      if (derivedFrame !== lastReportedFrameRef.current) {
+        lastReportedFrameRef.current = derivedFrame;
+        onFrameChange(derivedFrame);
+      }
+
+      // Phase-lock Cam 2 to Cam 1
+      if (v2 && videoUrlCam2 && !v2.seeking && !v1.seeking) {
+        const expectedCam2Time = Math.max(
+          0.001,
+          (mediaTime - timeOffsetSec) * fpsRatio
+        );
+        if (Math.abs(v2.currentTime - expectedCam2Time) > 0.05) {
+          try {
+            v2.currentTime = expectedCam2Time;
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      // Sample invariant periodically (~every 500ms)
+      const now = performance.now();
+      if (now - lastSampleTime > 500) {
+        mediaDiagnostics.sampleInvariant('cam1', mediaTime, playbackSpeed);
+        if (v2 && videoUrlCam2) {
+          mediaDiagnostics.sampleInvariant('cam2', v2.currentTime, playbackSpeed * fpsRatio);
+        }
+        lastSampleTime = now;
+      }
+
+      // Clip boundary check
+      if (derivedFrame >= clip.endFrame) {
+        if (isLooping) {
+          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
+          v1.play().catch(() => {});
+          if (v2) {
+            const restartCam2 = Math.max(
+              0.001,
+              (v1.currentTime - timeOffsetSec) * fpsRatio
+            );
+            v2.currentTime = restartCam2;
+            v2.play().catch(() => {});
+          }
+        } else {
+          v1.pause();
+          if (v2) v2.pause();
+          setIsPlaying(false);
+          return;
+        }
+      }
+
+      rafId = requestAnimationFrame(monitorLoop);
+    };
+
+    rafId = requestAnimationFrame(monitorLoop);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      mediaDiagnostics.unregisterLoop(loopId);
+    };
+  }, [
+    isPlaying,
+    videoUrlCam1,
+    videoUrlCam2,
+    containerFps1,
+    clip.startFrame,
+    clip.endFrame,
+    isLooping,
+    playbackSpeed,
+    timeOffsetSec,
+    fpsRatio,
+    onFrameChange,
+  ]);
+
+  // Synchronize HTML5 video elements to current physical frame ONLY when paused
+  useEffect(() => {
+    if (isPlaying) return;
     const seekTime1 = Math.max(0.001, currentFrame / containerFps1);
     const seekTime2 = Math.max(0.001, currentFrameCam2 / containerFps2);
 
     if (videoRefCam1.current && videoUrlCam1) {
-      if (Math.abs(videoRefCam1.current.currentTime - seekTime1) > 0.002 || videoRefCam1.current.currentTime === 0) {
-        try {
-          videoRefCam1.current.currentTime = seekTime1;
-        } catch {
-          // ignore
+      if (videoRefCam1.current.readyState >= 1) {
+        if (Math.abs(videoRefCam1.current.currentTime - seekTime1) > 0.002 || videoRefCam1.current.currentTime === 0) {
+          try {
+            videoRefCam1.current.currentTime = seekTime1;
+          } catch {
+            // ignore
+          }
         }
       }
     }
     if (videoRefCam2.current && videoUrlCam2) {
-      if (Math.abs(videoRefCam2.current.currentTime - seekTime2) > 0.002 || videoRefCam2.current.currentTime === 0) {
+      if (videoRefCam2.current.readyState >= 1) {
+        if (Math.abs(videoRefCam2.current.currentTime - seekTime2) > 0.002 || videoRefCam2.current.currentTime === 0) {
+          try {
+            videoRefCam2.current.currentTime = seekTime2;
+          } catch {
+            // ignore
+          }
+        }
+      }
+    }
+    lastReportedFrameRef.current = currentFrame;
+  }, [currentFrame, currentFrameCam2, containerFps1, containerFps2, videoUrlCam1, videoUrlCam2, isPlaying]);
+
+  // Safe video reload and session reset when videoUrlCam1 changes
+  useEffect(() => {
+    const v1 = videoRefCam1.current;
+    if (v1 && videoUrlCam1) {
+      v1.pause();
+      setIsPlaying(false);
+      mediaDiagnostics.stopInvariantTracking('cam1');
+      setCam1Error(null);
+      v1.muted = true;
+      v1.defaultMuted = true;
+
+      const handleReady = () => {
+        mediaDiagnostics.logEvent('cam1', 'loadeddata', v1);
+        const targetTime = Math.max(0.001, currentFrame / containerFps1);
         try {
-          videoRefCam2.current.currentTime = seekTime2;
+          v1.currentTime = targetTime;
+        } catch {
+          // ignore
+        }
+      };
+
+      v1.addEventListener('loadeddata', handleReady, { once: true });
+      try {
+        v1.load();
+      } catch {
+        // ignore
+      }
+
+      return () => {
+        v1.removeEventListener('loadeddata', handleReady);
+      };
+    }
+  }, [videoUrlCam1, containerFps1]);
+
+  // Safe video reload and session reset when videoUrlCam2 changes
+  useEffect(() => {
+    const v2 = videoRefCam2.current;
+    if (v2 && videoUrlCam2) {
+      v2.pause();
+      setIsPlaying(false);
+      mediaDiagnostics.stopInvariantTracking('cam2');
+      setCam2Error(null);
+      v2.muted = true;
+      v2.defaultMuted = true;
+
+      const handleReady = () => {
+        mediaDiagnostics.logEvent('cam2', 'loadeddata', v2);
+        const targetTime = Math.max(0.001, currentFrameCam2 / containerFps2);
+        try {
+          v2.currentTime = targetTime;
+        } catch {
+          // ignore
+        }
+      };
+
+      v2.addEventListener('loadeddata', handleReady, { once: true });
+      try {
+        v2.load();
+      } catch {
+        // ignore
+      }
+
+      return () => {
+        v2.removeEventListener('loadeddata', handleReady);
+      };
+    }
+  }, [videoUrlCam2, containerFps2, currentFrameCam2]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      const v1 = videoRefCam1.current;
+      if (v1) {
+        v1.pause();
+        try {
+          v1.removeAttribute('src');
+          v1.load();
         } catch {
           // ignore
         }
       }
-    }
-  }, [currentFrame, currentFrameCam2, containerFps1, containerFps2, videoUrlCam1, videoUrlCam2]);
+      const v2 = videoRefCam2.current;
+      if (v2) {
+        v2.pause();
+        try {
+          v2.removeAttribute('src');
+          v2.load();
+        } catch {
+          // ignore
+        }
+      }
+      mediaDiagnostics.stopInvariantTracking('cam1');
+      mediaDiagnostics.stopInvariantTracking('cam2');
+    };
+  }, []);
 
   // Render on Cam 1 & Cam 2 canvases
   const renderOverlay = useCallback(
@@ -613,7 +907,12 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       x: worldX,
       y: worldY,
       z: worldZ,
+      residual: residual ?? undefined,
       triangulationResidual: residual,
+      reconstructionError3D: existing?.reconstructionError3D ?? null,
+      referenceX: existing?.referenceX ?? null,
+      referenceY: existing?.referenceY ?? null,
+      referenceZ: existing?.referenceZ ?? null,
     };
 
     onAddPoint3D(newPointStep);
@@ -885,10 +1184,26 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                       handleLoadedMetadataCam1();
                       renderOverlay(canvasRefCam1.current, 'cam1');
                     }}
-                    onSeeked={() => renderOverlay(canvasRefCam1.current, 'cam1')}
-                    onCanPlay={() => renderOverlay(canvasRefCam1.current, 'cam1')}
+                    onDurationChange={() => {
+                      handleLoadedMetadataCam1();
+                      renderOverlay(canvasRefCam1.current, 'cam1');
+                    }}
+                    onSeeked={() => {
+                      mediaDiagnostics.logEvent('cam1', 'seeked', videoRefCam1.current);
+                      renderOverlay(canvasRefCam1.current, 'cam1');
+                    }}
+                    onCanPlay={() => {
+                      mediaDiagnostics.logEvent('cam1', 'canplay', videoRefCam1.current);
+                      renderOverlay(canvasRefCam1.current, 'cam1');
+                    }}
                     onTimeUpdate={() => renderOverlay(canvasRefCam1.current, 'cam1')}
+                    onPlay={() => mediaDiagnostics.logEvent('cam1', 'play', videoRefCam1.current)}
+                    onPause={() => mediaDiagnostics.logEvent('cam1', 'pause', videoRefCam1.current)}
+                    onRateChange={() => mediaDiagnostics.logEvent('cam1', 'ratechange', videoRefCam1.current)}
+                    onWaiting={() => mediaDiagnostics.logEvent('cam1', 'waiting', videoRefCam1.current)}
+                    onStalled={() => mediaDiagnostics.logEvent('cam1', 'stalled', videoRefCam1.current)}
                     onError={() => {
+                      mediaDiagnostics.logEvent('cam1', 'error', videoRefCam1.current);
                       setCam1Error('Video codec in Camera 1 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
                     }}
                     className="block object-contain"
@@ -1067,10 +1382,26 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                       handleLoadedMetadataCam2();
                       renderOverlay(canvasRefCam2.current, 'cam2');
                     }}
-                    onSeeked={() => renderOverlay(canvasRefCam2.current, 'cam2')}
-                    onCanPlay={() => renderOverlay(canvasRefCam2.current, 'cam2')}
+                    onDurationChange={() => {
+                      handleLoadedMetadataCam2();
+                      renderOverlay(canvasRefCam2.current, 'cam2');
+                    }}
+                    onSeeked={() => {
+                      mediaDiagnostics.logEvent('cam2', 'seeked', videoRefCam2.current);
+                      renderOverlay(canvasRefCam2.current, 'cam2');
+                    }}
+                    onCanPlay={() => {
+                      mediaDiagnostics.logEvent('cam2', 'canplay', videoRefCam2.current);
+                      renderOverlay(canvasRefCam2.current, 'cam2');
+                    }}
                     onTimeUpdate={() => renderOverlay(canvasRefCam2.current, 'cam2')}
+                    onPlay={() => mediaDiagnostics.logEvent('cam2', 'play', videoRefCam2.current)}
+                    onPause={() => mediaDiagnostics.logEvent('cam2', 'pause', videoRefCam2.current)}
+                    onRateChange={() => mediaDiagnostics.logEvent('cam2', 'ratechange', videoRefCam2.current)}
+                    onWaiting={() => mediaDiagnostics.logEvent('cam2', 'waiting', videoRefCam2.current)}
+                    onStalled={() => mediaDiagnostics.logEvent('cam2', 'stalled', videoRefCam2.current)}
                     onError={() => {
+                      mediaDiagnostics.logEvent('cam2', 'error', videoRefCam2.current);
                       setCam2Error('Video codec in Camera 2 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
                     }}
                     className="block object-contain"
@@ -1248,7 +1579,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
             <button
               type="button"
-              onClick={() => setIsPlaying(!isPlaying)}
+              onClick={handleTogglePlay}
               className="flex items-center gap-1 px-3 py-1 rounded-[3px] bg-[#1e3a5f] hover:bg-[#152843] active:bg-[#0f1d30] text-white font-semibold border border-[#0f1d30]"
             >
               {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
@@ -1273,6 +1604,19 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               <SkipForward className="w-3.5 h-3.5" />
             </button>
 
+            <button
+              type="button"
+              onClick={() => setIsLooping(!isLooping)}
+              className={`p-1 rounded-[3px] border ${
+                isLooping
+                  ? 'bg-[#1e3a5f] text-white border-[#0f1d30]'
+                  : 'bg-[#efefef] text-[#666666] border-[#808080]'
+              }`}
+              title={isLooping ? 'Looping Enabled' : 'Looping Disabled'}
+            >
+              <Repeat className="w-3.5 h-3.5" />
+            </button>
+
             {/* Shift+Click Status Badge */}
             {requireShiftToMark && (
               <div
@@ -1295,7 +1639,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               <span>Speed:</span>
               <select
                 value={playbackSpeed}
-                onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
                 className="bg-[#efefef] border border-[#808080] rounded-[3px] px-1 py-0.5 font-mono text-[11px] text-black font-bold cursor-pointer"
               >
                 <option value="0.25">0.25x</option>

@@ -857,7 +857,7 @@ export const ExperimentReportModal: React.FC<ExperimentReportModalProps> = ({
 
                 <div>
                   <label className="font-bold text-[11px] text-black block mb-0.5">
-                    DLT Mean Residual Tolerance (mm):
+                    Optical Ray Convergence Tolerance (mm):
                   </label>
                   <input
                     type="number"
@@ -866,7 +866,7 @@ export const ExperimentReportModal: React.FC<ExperimentReportModalProps> = ({
                     onChange={(e) => setMeanResidualToleranceMm(parseFloat(e.target.value) || 0)}
                     className="w-full bg-[#f8f9fa] border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none focus:border-purple-700"
                   />
-                  <span className="text-[10px] text-[#666666]">Allowable optical intersection residual</span>
+                  <span className="text-[10px] text-[#666666]">3D optical ray intersection miss-distance threshold (3D reconstruction error available when independent ground truth is supplied)</span>
                 </div>
 
                 <div>

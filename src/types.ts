@@ -24,7 +24,15 @@ export interface PointStep {
   kineticEnergy?: number | null; // Joules
   potentialEnergy?: number | null; // Joules
   totalEnergy?: number | null; // Joules
-  triangulationResidual?: number | null; // meters error in triangulation
+  // 2D Image Plane Reprojection Residual: mean ray reprojection discrepancy in PIXELS (not 3D error)
+  triangulationResidual?: number | null; // pixels
+  // Independent Physical 3D Ground-Truth Reference (when surveyed or physically measured)
+  referenceX?: number | null; // meters
+  referenceY?: number | null; // meters
+  referenceZ?: number | null; // meters
+  // Physical 3D Reconstruction Error: ||X_reconstructed - X_reference|| (meters)
+  // ONLY populated when independent ground truth is supplied; undefined/null otherwise
+  reconstructionError3D?: number | null;
   slantRange?: number | null; // Slant range to target R = sqrt(x^2 + y^2 + z^2) in meters
   azimuthDeg?: number | null; // Azimuth angle in degrees
   elevationDeg?: number | null; // Elevation angle in degrees
@@ -134,10 +142,112 @@ export type DLT11 = [
   number, number, number
 ];
 
+export type TriangulationStatus =
+  | 'valid'
+  | 'invalid_input'
+  | 'degenerate_geometry'
+  | 'nearly_parallel_rays'
+  | 'singular_matrix'
+  | 'numerical_nonfinite';
+
+export interface RobustTriangulationResult {
+  x: number;
+  y: number;
+  z: number;
+  residual: number; // Backward-compatible mean residual in pixels
+  reprojectionErrorLeft: number;
+  reprojectionErrorRight: number;
+  reprojectionRms: number;
+  reprojectionMax: number;
+  reprojectionMedian: number;
+  conditionMetric: number; // Matrix condition estimate (1.0 = ideal, > 1e6 = ill-conditioned)
+  rayAngleDeg: number; // Intersection angle between optical rays in degrees
+  valid: boolean;
+  status: TriangulationStatus;
+  statusMessage?: string;
+}
+
 export type TemporalInterpMethod = 'linear' | 'cubic-spline' | 'nearest';
+
+export type CalibrationMode = 'idealized_demo' | 'empirical_measured';
+
+export type CalibrationStatus =
+  | 'successful'
+  | 'invalid_input'
+  | 'insufficient_points'
+  | 'degenerate_geometry'
+  | 'ill_conditioned'
+  | 'rank_deficient'
+  | 'non_finite_solution';
+
+export interface LensDistortionParams {
+  enabled: boolean;
+  k1: number; // Radial 1st order
+  k2: number; // Radial 2nd order
+  k3?: number; // Radial 3rd order
+  p1?: number; // Tangential 1st order
+  p2?: number; // Tangential 2nd order
+}
+
+export interface CalibrationControlPoint3D {
+  id: string;
+  x: number; // World meters
+  y: number; // World meters
+  z: number; // World meters
+  u: number; // Image pixel x
+  v: number; // Image pixel y
+  isValidation?: boolean; // If true, held out for independent cross-validation
+  residualPx?: number; // Reprojection error in pixels
+}
+
+export interface EmpiricalCalibrationResult {
+  schemaVersion: '1.0';
+  calibrationType: 'projective-dlt-11';
+  cameraId: 'cam1' | 'cam2' | string;
+  dlt: DLT11;
+  controlPointCount: number;
+  validationPointCount: number;
+  // 2D Image Plane Reprojection Residuals (Pixels)
+  // Metric A: Calibration fit residual on training control points
+  trainingResidualRms: number; // Pixels (RMS calibration fit residual)
+  trainingResidualMax: number; // Pixels
+  trainingResidualMedian: number; // Pixels
+  // Metric B: Hold-out validation residual on independent control points
+  validationResidualRms?: number; // Pixels (RMS hold-out validation residual)
+  validationResidualMax?: number; // Pixels
+  validationResidualMedian?: number; // Pixels
+
+  // Singular-Value Metrics (DLT Homogeneous Design Matrix A, 2N x 12, rank 11):
+  // Metric 1: Largest-to-smallest non-null singular-value ratio (subspace conditioning)
+  kappaNonNull: number; // sigma_1 / sigma_11
+  // Metric 2: Null-space separation ratio (spectral gap)
+  nullSpaceSeparation: number; // gamma = sigma_11 / sigma_12
+  // Metric 3: Full spectral condition number sigma_1 / sigma_12
+  // (Mathematically infinite/undefined for exact noiseless rank-11 null space where sigma_12 = 0)
+  fullSpectralConditionNumber: number | null;
+  // Backward compatibility alias for kappaNonNull
+  conditionNumber: number;
+  conditionEstimate?: number; // QR-based diagonal ratio estimate: max(|R_ii|) / min(|R_ii|)
+  singularValues: number[]; // Singular values sigma_1 >= ... >= sigma_12 of normalized design matrix A
+  status: CalibrationStatus;
+  statusMessage: string;
+  valid: boolean;
+  distortion: LensDistortionParams;
+  distortionMethod: 'none' | 'supplied_parameters'; // Explicitly distinguish supplied correction parameters from estimated calibration
+  normalization?: {
+    centroid3D: { x: number; y: number; z: number };
+    scale3D: number;
+    centroid2D: { u: number; v: number };
+    scale2D: number;
+  };
+  points?: CalibrationControlPoint3D[];
+  timestamp: string;
+  notes?: string;
+}
 
 export interface TriangulationConfig {
   method: TriangulationMethod;
+  calibrationMode?: CalibrationMode; // 'idealized_demo' vs 'empirical_measured'
   pixelsPerMeterCam1: number;
   pixelsPerMeterCam2: number;
   originCam1: { x: number; y: number };
@@ -148,6 +258,12 @@ export interface TriangulationConfig {
   dltCam2?: DLT11;
   calibrated: boolean;
   meanResidualMeters: number;
+
+  // Empirical calibration details
+  empiricalCam1?: EmpiricalCalibrationResult;
+  empiricalCam2?: EmpiricalCalibrationResult;
+  distortionCam1?: LensDistortionParams;
+  distortionCam2?: LensDistortionParams;
 
   // Asynchronous / Mismatched Frame Rates & Temporal Synchronization
   fpsCam1?: number; // Capture rate Camera 1 (e.g. 10000)

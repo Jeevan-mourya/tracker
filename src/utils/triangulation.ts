@@ -1,4 +1,12 @@
-import { DLT11, PointStep, TriangulationConfig, TriangulationMethod, TemporalInterpMethod } from '../types';
+import {
+  DLT11,
+  PointStep,
+  TriangulationConfig,
+  TriangulationMethod,
+  TemporalInterpMethod,
+  RobustTriangulationResult,
+  TriangulationStatus,
+} from '../types';
 
 /**
  * Solve a 3x3 linear system M * x = b via Cramer's rule / Gaussian elimination
@@ -9,7 +17,7 @@ export function solve3x3(M: number[][], b: number[]): [number, number, number] |
     M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) +
     M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
 
-  if (Math.abs(det) < 1e-12) {
+  if (Math.abs(det) < 1e-12 || !Number.isFinite(det)) {
     return null; // Singular or degenerate matrix
   }
 
@@ -32,15 +40,124 @@ export function solve3x3(M: number[][], b: number[]): [number, number, number] |
   const y = invDet * (c01 * b[0] + c11 * b[1] + c21 * b[2]);
   const z = invDet * (c02 * b[0] + c12 * b[1] + c22 * b[2]);
 
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return null;
+  }
+
   return [x, y, z];
 }
 
 /**
+ * Robust QR Decomposition with Householder reflections for overdetermined m x n system (4x3)
+ * Solves A * X = B minimizing ||A*X - B||_2 without squaring condition number (avoids A^T * A).
+ */
+export function solveLeastSquaresQR4x3(
+  A: number[][],
+  B: number[]
+): { solution: [number, number, number] | null; conditionEstimate: number } {
+  // Defensive checks on matrix inputs
+  for (let r = 0; r < 4; r++) {
+    if (!A[r] || A[r].length < 3 || !Number.isFinite(B[r])) {
+      return { solution: null, conditionEstimate: Infinity };
+    }
+    for (let c = 0; c < 3; c++) {
+      if (!Number.isFinite(A[r][c])) {
+        return { solution: null, conditionEstimate: Infinity };
+      }
+    }
+  }
+
+  // Work copies: R = A (4x3), QtB = B (4x1)
+  const R: number[][] = A.map((row) => [...row]);
+  const QtB: number[] = [...B];
+
+  // Householder reflections across 3 columns
+  for (let k = 0; k < 3; k++) {
+    // Column vector norm from row k to 3
+    let normSq = 0;
+    for (let i = k; i < 4; i++) {
+      normSq += R[i][k] * R[i][k];
+    }
+    const norm = Math.sqrt(normSq);
+
+    if (norm < 1e-12) {
+      // Column is effectively zero -> rank deficient
+      return { solution: null, conditionEstimate: Infinity };
+    }
+
+    const alpha = R[k][k] >= 0 ? -norm : norm;
+    const v0 = R[k][k] - alpha;
+
+    // Vector v
+    const v: number[] = new Array(4).fill(0);
+    v[k] = v0;
+    let vNormSq = v0 * v0;
+    for (let i = k + 1; i < 4; i++) {
+      v[i] = R[i][k];
+      vNormSq += R[i][k] * R[i][k];
+    }
+
+    if (vNormSq < 1e-15) continue;
+
+    // Apply Householder reflection H = I - 2*(v*v^T)/(v^T*v) to columns of R (from k to 2)
+    for (let j = k; j < 3; j++) {
+      let dot = 0;
+      for (let i = k; i < 4; i++) {
+        dot += v[i] * R[i][j];
+      }
+      const tau = (2 * dot) / vNormSq;
+      for (let i = k; i < 4; i++) {
+        R[i][j] -= tau * v[i];
+      }
+    }
+
+    // Apply reflection to QtB
+    let dotB = 0;
+    for (let i = k; i < 4; i++) {
+      dotB += v[i] * QtB[i];
+    }
+    const tauB = (2 * dotB) / vNormSq;
+    for (let i = k; i < 4; i++) {
+      QtB[i] -= tauB * v[i];
+    }
+  }
+
+  // Condition estimate from diagonal of R (|r_max| / |r_min|)
+  const d0 = Math.abs(R[0][0]);
+  const d1 = Math.abs(R[1][1]);
+  const d2 = Math.abs(R[2][2]);
+  const minDiag = Math.min(d0, d1, d2);
+  const maxDiag = Math.max(d0, d1, d2);
+
+  if (minDiag < 1e-10) {
+    return { solution: null, conditionEstimate: Infinity };
+  }
+
+  const conditionEstimate = maxDiag / minDiag;
+
+  // Back-substitution for upper triangular 3x3 system in R
+  const z = QtB[2] / R[2][2];
+  const y = (QtB[1] - R[1][2] * z) / R[1][1];
+  const x = (QtB[0] - R[0][1] * y - R[0][2] * z) / R[0][0];
+
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return { solution: null, conditionEstimate };
+  }
+
+  return { solution: [x, y, z], conditionEstimate };
+}
+
+/**
  * Solve a least-squares overdetermined linear system A (4x3) * X (3x1) = B (4x1)
- * via normal equations: (A^T * A) * X = A^T * B
+ * Uses numerically stable QR decomposition, falling back to Cramer normal equations if needed.
  */
 export function solveLeastSquares4x3(A: number[][], B: number[]): [number, number, number] | null {
-  // Compute AtA (3x3)
+  const qr = solveLeastSquaresQR4x3(A, B);
+  if (qr.solution && qr.conditionEstimate < 1e10) {
+    return qr.solution;
+  }
+
+  // Fallback to normal equations
   const AtA: number[][] = [
     [0, 0, 0],
     [0, 0, 0],
@@ -56,7 +173,6 @@ export function solveLeastSquares4x3(A: number[][], B: number[]): [number, numbe
     }
   }
 
-  // Compute AtB (3x1)
   const AtB: number[] = [0, 0, 0];
   for (let i = 0; i < 3; i++) {
     let sum = 0;
@@ -67,6 +183,77 @@ export function solveLeastSquares4x3(A: number[][], B: number[]): [number, numbe
   }
 
   return solve3x3(AtA, AtB);
+}
+
+/**
+ * Compute the 3D optical center of a camera in world coordinates from its 11 DLT parameters.
+ * At the camera center C = [X, Y, Z]^T, projection denominators and numerators vanish:
+ * [L1 L2 L3; L5 L6 L7; L9 L10 L11] * C = -[L4; L8; 1]
+ */
+export function getCameraCenterFromDLT(dlt: DLT11): [number, number, number] | null {
+  const M: number[][] = [
+    [dlt[0], dlt[1], dlt[2]],
+    [dlt[4], dlt[5], dlt[6]],
+    [dlt[8], dlt[9], dlt[10]],
+  ];
+  const rhs: number[] = [-dlt[3], -dlt[7], -1.0];
+  return solve3x3(M, rhs);
+}
+
+/**
+ * Compute ray intersection angle in degrees between two camera views for a 3D target point.
+ * Essential conditioning check: angles < 2.0 degrees indicate weak depth resolution.
+ */
+export function calculateRayIntersectionAngleDeg(
+  point3D: [number, number, number],
+  dlt1: DLT11,
+  dlt2: DLT11
+): number {
+  const c1 = getCameraCenterFromDLT(dlt1);
+  const c2 = getCameraCenterFromDLT(dlt2);
+
+  // If camera centers cannot be extracted (e.g. purely affine orthographic DLT),
+  // infer principal viewing vectors directly from DLT row normal gradients.
+  let v1x: number, v1y: number, v1z: number;
+  let v2x: number, v2y: number, v2z: number;
+
+  if (c1 && c2) {
+    v1x = point3D[0] - c1[0];
+    v1y = point3D[1] - c1[1];
+    v1z = point3D[2] - c1[2];
+
+    v2x = point3D[0] - c2[0];
+    v2y = point3D[1] - c2[1];
+    v2z = point3D[2] - c2[2];
+  } else {
+    // Optical axis is perpendicular to image planes u and v: cross(grad u, grad v)
+    // Camera 1
+    const u1 = [dlt1[0], dlt1[1], dlt1[2]];
+    const w1 = [dlt1[4], dlt1[5], dlt1[6]];
+    v1x = u1[1] * w1[2] - u1[2] * w1[1];
+    v1y = u1[2] * w1[0] - u1[0] * w1[2];
+    v1z = u1[0] * w1[1] - u1[1] * w1[0];
+
+    // Camera 2
+    const u2 = [dlt2[0], dlt2[1], dlt2[2]];
+    const w2 = [dlt2[4], dlt2[5], dlt2[6]];
+    v2x = u2[1] * w2[2] - u2[2] * w2[1];
+    v2y = u2[2] * w2[0] - u2[0] * w2[2];
+    v2z = u2[0] * w2[1] - u2[1] * w2[0];
+  }
+
+  const len1 = Math.hypot(v1x, v1y, v1z);
+  const len2 = Math.hypot(v2x, v2y, v2z);
+
+  if (len1 < 1e-9 || len2 < 1e-9) {
+    return 0;
+  }
+
+  const dot = (v1x * v2x + v1y * v2y + v1z * v2z) / (len1 * len2);
+  const clampedDot = Math.max(-1.0, Math.min(1.0, dot));
+  const angleRad = Math.acos(clampedDot);
+
+  return (angleRad * 180) / Math.PI;
 }
 
 /**
@@ -88,25 +275,75 @@ export function project3DToDLT(
 }
 
 /**
- * Triangulate a 3D point (X, Y, Z) in meters from 2 camera image coordinates (u1, v1) and (u2, v2)
- * using Direct Linear Transformation (DLT) matrices L1 and L2
+ * Numerically Robust 3D Triangulation with Degeneracy Defense, SVD/QR Solver,
+ * Ray Angle Conditioning, and Full Reprojection Statistics.
  */
-export function triangulateDLT(
+export function triangulateDLTRobust(
   u1: number,
   v1: number,
   dlt1: DLT11,
   u2: number,
   v2: number,
-  dlt2: DLT11
-): { x: number; y: number; z: number; residual: number } | null {
-  // Construct 4x3 matrix A and 4x1 vector B from the two cameras
-  // Camera 1:
-  // (L1,1 - u1*L1,9) X + (L1,2 - u1*L1,10) Y + (L1,3 - u1*L1,11) Z = u1 - L1,4
-  // (L1,5 - v1*L1,9) X + (L1,6 - v1*L1,10) Y + (L1,7 - v1*L1,11) Z = v1 - L1,8
-  // Camera 2:
-  // (L2,1 - u2*L2,9) X + (L2,2 - u2*L2,10) Y + (L2,3 - u2*L2,11) Z = u2 - L2,4
-  // (L2,5 - v2*L2,9) X + (L2,6 - v2*L2,10) Y + (L2,7 - v2*L2,11) Z = v2 - L2,8
+  dlt2: DLT11,
+  options?: {
+    minRayAngleDeg?: number;
+    maxReprojectionPixelError?: number;
+  }
+): RobustTriangulationResult {
+  const minRayAngle = options?.minRayAngleDeg ?? 1.5; // Warning / invalid if rays are within 1.5 deg
+  const maxAllowedResidual = options?.maxReprojectionPixelError ?? 50.0;
 
+  // 1. Defensive input validation
+  if (
+    !Number.isFinite(u1) ||
+    !Number.isFinite(v1) ||
+    !Number.isFinite(u2) ||
+    !Number.isFinite(v2)
+  ) {
+    return {
+      x: NaN,
+      y: NaN,
+      z: NaN,
+      residual: NaN,
+      reprojectionErrorLeft: NaN,
+      reprojectionErrorRight: NaN,
+      reprojectionRms: NaN,
+      reprojectionMax: NaN,
+      reprojectionMedian: NaN,
+      conditionMetric: Infinity,
+      rayAngleDeg: 0,
+      valid: false,
+      status: 'invalid_input',
+      statusMessage: 'Invalid or non-finite image coordinates provided',
+    };
+  }
+
+  // Verify DLT matrix validity
+  for (let i = 0; i < 11; i++) {
+    if (!Number.isFinite(dlt1[i]) || !Number.isFinite(dlt2[i])) {
+      return {
+        x: NaN,
+        y: NaN,
+        z: NaN,
+        residual: NaN,
+        reprojectionErrorLeft: NaN,
+        reprojectionErrorRight: NaN,
+        reprojectionRms: NaN,
+        reprojectionMax: NaN,
+        reprojectionMedian: NaN,
+        conditionMetric: Infinity,
+        rayAngleDeg: 0,
+        valid: false,
+        status: 'invalid_input',
+        statusMessage: 'DLT camera matrices contain non-finite coefficients',
+      };
+    }
+  }
+
+  // 2. Optical viewing axis angle check (baseline ray angle estimate)
+  const nominalRayAngle = calculateRayIntersectionAngleDeg([0, 0, 1], dlt1, dlt2);
+
+  // 3. Construct linear system A (4x3) * X = B (4x1)
   const A: number[][] = [
     [dlt1[0] - u1 * dlt1[8], dlt1[1] - u1 * dlt1[9], dlt1[2] - u1 * dlt1[10]],
     [dlt1[4] - v1 * dlt1[8], dlt1[5] - v1 * dlt1[9], dlt1[6] - v1 * dlt1[10]],
@@ -121,20 +358,115 @@ export function triangulateDLT(
     v2 - dlt2[7],
   ];
 
-  const solution = solveLeastSquares4x3(A, B);
-  if (!solution) return null;
+  // 4. Solve via QR Householder (avoids squaring condition number)
+  const qr = solveLeastSquaresQR4x3(A, B);
+  let solution = qr.solution;
+  const conditionMetric = qr.conditionEstimate;
+
+  if (!solution) {
+    // Attempt normal equations fallback before declaring singular
+    solution = solveLeastSquares4x3(A, B);
+  }
+
+  if (!solution || !Number.isFinite(solution[0]) || !Number.isFinite(solution[1]) || !Number.isFinite(solution[2])) {
+    return {
+      x: NaN,
+      y: NaN,
+      z: NaN,
+      residual: NaN,
+      reprojectionErrorLeft: NaN,
+      reprojectionErrorRight: NaN,
+      reprojectionRms: NaN,
+      reprojectionMax: NaN,
+      reprojectionMedian: NaN,
+      conditionMetric: Infinity,
+      rayAngleDeg: nominalRayAngle,
+      valid: false,
+      status: nominalRayAngle < minRayAngle ? 'nearly_parallel_rays' : 'singular_matrix',
+      statusMessage: nominalRayAngle < minRayAngle
+        ? `Optical rays are nearly parallel (${nominalRayAngle.toFixed(2)}° < ${minRayAngle}° threshold)`
+        : 'Triangulation system is singular or rank-deficient',
+    };
+  }
 
   const [x, y, z] = solution;
 
-  // Calculate re-projection residual
+  // 5. Reprojection Residual Calculation & Statistics
   const p1 = project3DToDLT(x, y, z, dlt1);
   const p2 = project3DToDLT(x, y, z, dlt2);
 
-  const res1 = Math.hypot(p1.u - u1, p1.v - v1);
-  const res2 = Math.hypot(p2.u - u2, p2.v - v2);
-  const residual = (res1 + res2) * 0.5;
+  const eLeft = Math.hypot(p1.u - u1, p1.v - v1);
+  const eRight = Math.hypot(p2.u - u2, p2.v - v2);
+  const meanResidual = (eLeft + eRight) * 0.5;
+  const rmsResidual = Math.sqrt((eLeft * eLeft + eRight * eRight) * 0.5);
+  const maxResidual = Math.max(eLeft, eRight);
+  const medianResidual = (eLeft + eRight) * 0.5; // For 2 points, median is mean
 
-  return { x, y, z, residual };
+  // 6. Ray Angle Conditioning for the specific reconstructed point
+  const rayAngleDeg = calculateRayIntersectionAngleDeg([x, y, z], dlt1, dlt2);
+
+  let status: TriangulationStatus = 'valid';
+  let valid = true;
+  let statusMessage = 'Valid 3D Reconstruction';
+
+  if (rayAngleDeg < minRayAngle) {
+    status = 'nearly_parallel_rays';
+    valid = false;
+    statusMessage = `Optical rays are nearly parallel (${rayAngleDeg.toFixed(2)}° < ${minRayAngle}° threshold)`;
+  } else if (conditionMetric > 1e6) {
+    status = 'degenerate_geometry';
+    valid = false;
+    statusMessage = `Matrix condition estimate indicates ill-conditioned geometry (kappa = ${conditionMetric.toExponential(2)})`;
+  } else if (meanResidual > maxAllowedResidual) {
+    status = 'degenerate_geometry';
+    valid = false;
+    statusMessage = `Reprojection residual (${meanResidual.toFixed(1)} px) exceeds maximum tolerance (${maxAllowedResidual} px)`;
+  }
+
+  return {
+    x,
+    y,
+    z,
+    residual: meanResidual,
+    reprojectionErrorLeft: eLeft,
+    reprojectionErrorRight: eRight,
+    reprojectionRms: rmsResidual,
+    reprojectionMax: maxResidual,
+    reprojectionMedian: medianResidual,
+    conditionMetric,
+    rayAngleDeg,
+    valid,
+    status,
+    statusMessage,
+  };
+}
+
+/**
+ * Triangulate a 3D point (X, Y, Z) in meters from 2 camera image coordinates (u1, v1) and (u2, v2).
+ * Backward-compatible wrapper over triangulateDLTRobust returning { x, y, z, residual } | null.
+ */
+export function triangulateDLT(
+  u1: number,
+  v1: number,
+  dlt1: DLT11,
+  u2: number,
+  v2: number,
+  dlt2: DLT11
+): { x: number; y: number; z: number; residual: number } | null {
+  const result = triangulateDLTRobust(u1, v1, dlt1, u2, v2, dlt2);
+  if (!result.valid && result.status !== 'valid') {
+    // For borderline cases where rays are valid but residual is slightly high,
+    // still return coordinates if finite, but reject on true math failure.
+    if (!Number.isFinite(result.x) || result.status === 'singular_matrix' || result.status === 'invalid_input') {
+      return null;
+    }
+  }
+  return {
+    x: result.x,
+    y: result.y,
+    z: result.z,
+    residual: result.residual,
+  };
 }
 
 /**
