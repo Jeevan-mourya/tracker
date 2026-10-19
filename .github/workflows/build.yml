@@ -1,10 +1,10 @@
 name: Build Windows EXE
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   build:
@@ -25,8 +25,9 @@ jobs:
       - name: Build Electron App
         run: npm run electron:build -- --publish never
 
-      - name: Upload EXE Artifact
+      - name: Upload Windows Executables
         uses: actions/upload-artifact@v4
         with:
-          name: Tracker-Windows-EXE
-          path: dist-electron/**/*.exe
+          name: Tracker-Windows-Executables
+          path: dist-electron/*.exe
+          if-no-files-found: error
