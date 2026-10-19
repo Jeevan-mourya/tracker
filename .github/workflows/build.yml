@@ -2,9 +2,6 @@ name: Build Windows EXE
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   build:
@@ -22,8 +19,50 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
-      - name: Build Electron App
-        run: npm run electron:build -- --publish never
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Package Windows Executables (NSIS & Portable)
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: Validate Output Executables
+        shell: pwsh
+        run: |
+          $outputDir = "dist-electron"
+          if (-not (Test-Path -Path $outputDir -PathType Container)) {
+            Write-Error "Output directory '$outputDir' does not exist."
+            exit 1
+          }
+
+          $setupFiles = Get-ChildItem -Path $outputDir -File -Filter "*-Setup-*.exe"
+          $portableFiles = Get-ChildItem -Path $outputDir -File -Filter "*-Portable-*.exe"
+
+          if ($setupFiles.Count -ne 1) {
+            Write-Error "Validation failed: Expected exactly 1 Setup installer matching '*-Setup-*.exe', but found $($setupFiles.Count)."
+            exit 1
+          }
+
+          if ($portableFiles.Count -ne 1) {
+            Write-Error "Validation failed: Expected exactly 1 Portable executable matching '*-Portable-*.exe', but found $($portableFiles.Count)."
+            exit 1
+          }
+
+          $setup = $setupFiles[0]
+          $portable = $portableFiles[0]
+
+          if ($setup.Length -le 1048576) {
+            Write-Error "Validation failed: Setup installer '$($setup.Name)' is empty or corrupt ($($setup.Length) bytes)."
+            exit 1
+          }
+
+          if ($portable.Length -le 1048576) {
+            Write-Error "Validation failed: Portable executable '$($portable.Name)' is empty or corrupt ($($portable.Length) bytes)."
+            exit 1
+          }
+
+          Write-Host "✓ Verified Setup Installer: $($setup.Name) ($([math]::Round($setup.Length / 1MB, 2)) MB)"
+          Write-Host "✓ Verified Portable Executable: $($portable.Name) ($([math]::Round($portable.Length / 1MB, 2)) MB)"
+          Write-Host "✓ All required standalone Windows executables are valid and ready for upload."
 
       - name: Upload Windows Executables
         uses: actions/upload-artifact@v4
