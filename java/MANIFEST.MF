@@ -1,0 +1,11 @@
+Manifest-Version: 1.0
+Main-Class: org.opensourcephysics.cabrillo.tracker.stereo.ui.StereoWorkstationFrame
+Specification-Title: Tracker Stereo 3D Workstation
+Specification-Version: 1.0.0
+Specification-Vendor: Open Source Physics / TrackEye
+Implementation-Title: org.opensourcephysics.cabrillo.tracker.stereo
+Implementation-Version: 1.0.0
+Implementation-Vendor: Open Source Physics
+Created-By: 21.0.0 (Oracle Corporation)
+Built-By: Desktop Software Architect
+Class-Path: .

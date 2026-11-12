@@ -1,0 +1,65 @@
+name: Build Windows EXE (Offline Universal Codec Edition)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Install Electron, Electron-Builder & Static FFmpeg for Packaging
+        run: npm install --no-save electron@33 electron-builder@25 ffmpeg-static
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Package Windows Executables (NSIS & Portable with Offline FFmpeg)
+        run: npx electron-builder --config electron-builder.json --win --x64 --publish never
+
+      - name: Validate Output Executables
+        shell: pwsh
+        run: |
+          $outputDir = "dist-electron"
+          if (-not (Test-Path -Path $outputDir -PathType Container)) {
+            Write-Error "Output directory '$outputDir' does not exist."
+            exit 1
+          }
+
+          $setupFiles = Get-ChildItem -Path $outputDir -File -Filter "*-Setup-*.exe"
+          $portableFiles = Get-ChildItem -Path $outputDir -File -Filter "*-Portable-*.exe"
+
+          if ($setupFiles.Count -ne 1) {
+            Write-Error "Validation failed: Expected exactly 1 Setup installer matching '*-Setup-*.exe', but found $($setupFiles.Count)."
+            exit 1
+          }
+
+          if ($portableFiles.Count -ne 1) {
+            Write-Error "Validation failed: Expected exactly 1 Portable executable matching '*-Portable-*.exe', but found $($portableFiles.Count)."
+            exit 1
+          }
+
+          Write-Host "✓ Verified Setup Installer: $($setupFiles[0].Name)"
+          Write-Host "✓ Verified Portable Executable: $($portableFiles[0].Name)"
+          Write-Host "✓ Bundled offline static ffmpeg.exe in extraResources for air-gapped .WMV/.FLV/.MOV/.AVI decoding."
+
+      - name: Upload Windows Executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tracker-Windows-Executables
+          path: dist-electron/*.exe
+          if-no-files-found: error

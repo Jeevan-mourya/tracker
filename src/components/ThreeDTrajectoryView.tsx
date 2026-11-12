@@ -82,11 +82,12 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
     }
   };
 
-  // Mouse drag handlers
+  // Mouse drag handlers: Left-Click = Orbit, Right-Click / Middle-Click / Shift+Drag = 3D Pan
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (e.button === 2 || e.shiftKey) {
+    if (e.button === 2 || e.button === 1 || e.shiftKey) {
+      e.preventDefault();
       setIsPanning(true);
-    } else {
+    } else if (e.button === 0) {
       setIsDragging(true);
     }
     setDragStart({ x: e.clientX, y: e.clientY });
@@ -113,11 +114,53 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
     setIsPanning(false);
   };
 
+  // Smooth Dolly Zoom (0.2x to 12.0x) anchored toward cursor/target
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoom((prev) => Math.max(0.2, Math.min(5.0, prev * factor)));
+    e.stopPropagation();
+    const canvas = canvasRef.current;
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const nextZoom = Number(Math.max(0.2, Math.min(12.0, zoom * factor)).toFixed(3));
+    if (canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const offsetX = e.clientX - rect.left - rect.width / 2;
+      const offsetY = e.clientY - rect.top - rect.height / 2;
+      const ratio = nextZoom / zoom;
+      setPan((prev) => ({
+        x: offsetX - (offsetX - prev.x) * ratio,
+        y: offsetY - (offsetY - prev.y) * ratio,
+      }));
+    }
+    setZoom(nextZoom);
   };
+
+  const handleResetViewFit = () => {
+    setPitch(25);
+    setYaw(-45);
+    setZoom(1.0);
+    setPan({ x: 0, y: 0 });
+    setActivePreset('orbit');
+  };
+
+  const [resizeTick, setResizeTick] = useState(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = canvas?.parentElement;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    let rafId: number | null = null;
+    const ro = new ResizeObserver(() => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        setResizeTick((t) => t + 1);
+      });
+    });
+    ro.observe(container);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
+  }, []);
 
   // 3D Rendering on Canvas
   useEffect(() => {
@@ -128,8 +171,8 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
 
     // Handle high-DPI displays
     const rect = canvas.getBoundingClientRect();
-    const width = rect.width;
-    const height = rect.height;
+    const width = Math.max(10, rect.width);
+    const height = Math.max(10, rect.height);
     const dpr = window.devicePixelRatio || 1;
 
     canvas.width = width * dpr;
@@ -403,87 +446,88 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
     showVectors,
     hudPlacement,
     hudDensity,
+    resizeTick,
   ]);
 
   return (
-    <div id="three-d-trajectory-view" className="flex flex-col h-full bg-white border border-[#808080] rounded-[3px] overflow-hidden select-none relative">
-      {/* 3D View Top Control Bar */}
-      <div className="bg-[#d4d0c8] border-b border-[#808080] px-3 py-1.5 flex items-center justify-between gap-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="font-bold text-black flex items-center gap-1">
-            <Compass className="w-4 h-4 text-black" />
-            3D Spatial Trajectory
+    <div
+      id="three-d-trajectory-view"
+      onContextMenu={(e) => e.preventDefault()}
+      className="flex flex-col h-full bg-white border border-[#CBD5E1] rounded-[3px] overflow-hidden select-none relative"
+    >
+      {/* 3D View Top Control Bar (MIL-STD Industrial Slate) */}
+      <div className="bg-[#F1F3F5] border-b border-[#CBD5E1] px-2.5 py-1 flex items-center justify-between gap-2 text-xs shrink-0 overflow-x-auto">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="font-bold text-[#1E293B] flex items-center gap-1 text-[11px]">
+            <Compass className="w-3.5 h-3.5 text-[#2563EB]" />
+            <span>3D Spatial Trajectory</span>
           </span>
-          <span className="text-[11px] text-[#333333] font-mono font-semibold">
-            Pitch: {Math.round(pitch)}° • Yaw: {Math.round(yaw)}° • {zoom.toFixed(1)}x
+          <span className="text-[10.5px] text-[#475569] font-mono font-semibold tabular-nums">
+            Pitch: {Math.round(pitch)}° • Yaw: {Math.round(yaw)}° • {zoom.toFixed(2)}x
           </span>
         </div>
 
         {/* Camera Angle Presets & HUD Display Modes */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 shrink-0">
           {(['orbit', 'front', 'top', 'side', 'isometric'] as ViewPreset[]).map((p) => (
             <button
               key={p}
               type="button"
               onClick={() => handleSetPreset(p)}
-              className={`px-2 py-0.5 rounded-[2px] text-[11px] font-semibold capitalize transition-colors ${
+              className={`px-2 py-0.5 rounded-[2px] text-[10.5px] font-semibold capitalize transition-colors cursor-pointer ${
                 activePreset === p
-                  ? 'bg-[#1e3a5f] text-white'
-                  : 'bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080]'
+                  ? 'bg-[#2563EB] text-white'
+                  : 'bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1]'
               }`}
             >
               {p}
             </button>
           ))}
 
-          <div className="h-4 w-px bg-[#808080] mx-0.5" />
+          <div className="h-4 w-px bg-[#CBD5E1] mx-0.5" />
 
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.min(4.0, z * 1.2))}
-            className="p-1 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black"
-            title="Zoom In"
+            onClick={() => setZoom((z) => Math.min(12.0, Number((z * 1.25).toFixed(3))))}
+            className="p-1 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] cursor-pointer"
+            title="Dolly Zoom In (or Scroll Wheel Up)"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.max(0.3, z * 0.8))}
-            className="p-1 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black"
-            title="Zoom Out"
+            onClick={() => setZoom((z) => Math.max(0.2, Number((z / 1.25).toFixed(3))))}
+            className="p-1 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] cursor-pointer"
+            title="Dolly Zoom Out (or Scroll Wheel Down)"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
           <button
+            id="btn-3d-reset-fit"
             type="button"
-            onClick={() => {
-              setPitch(25);
-              setYaw(-45);
-              setZoom(1.0);
-              setPan({ x: 0, y: 0 });
-              setActivePreset('orbit');
-            }}
-            className="p-1 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black"
-            title="Reset 3D View"
+            onClick={handleResetViewFit}
+            className="px-2 py-0.5 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] text-[10.5px] font-semibold flex items-center gap-1 cursor-pointer"
+            title="Reset View / Fit 3D Trajectory (or Double-Click Canvas)"
           >
-            <RotateCw className="w-3.5 h-3.5" />
+            <RotateCw className="w-3 h-3 text-[#2563EB]" />
+            <span>Fit Trajectory</span>
           </button>
 
-          <div className="h-4 w-px bg-[#808080] mx-0.5" />
+          <div className="h-4 w-px bg-[#CBD5E1] mx-0.5" />
 
           {/* HUD Layout Selector */}
-          <div className="flex items-center gap-0.5 bg-[#efefef] border border-[#808080] rounded-[2px] p-0.5 text-[10px]">
-            <span className="text-[#444444] px-1 font-semibold">Box:</span>
+          <div className="flex items-center gap-0.5 bg-[#E2E8F0] border border-[#CBD5E1] rounded-[2px] p-0.5 text-[10px]">
+            <span className="text-[#475569] px-1 font-semibold">HUD:</span>
             <button
               type="button"
               onClick={() => {
                 setHudPlacement('bottom-left');
                 setHudDensity('expanded');
               }}
-              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors cursor-pointer ${
                 hudPlacement === 'bottom-left' && hudDensity === 'expanded'
-                  ? 'bg-[#1e3a5f] text-white font-bold'
-                  : 'text-black hover:bg-[#dcdcdc]'
+                  ? 'bg-[#2563EB] text-white font-bold'
+                  : 'text-[#1E293B] hover:bg-white/60'
               }`}
               title="Default floating box at bottom-left with smart auto-framing"
             >
@@ -495,10 +539,10 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
                 setHudPlacement('bottom-left');
                 setHudDensity('compact');
               }}
-              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors cursor-pointer ${
                 hudDensity === 'compact' && hudPlacement !== 'docked-bottom'
-                  ? 'bg-[#1e3a5f] text-white font-bold'
-                  : 'text-black hover:bg-[#dcdcdc]'
+                  ? 'bg-[#2563EB] text-white font-bold'
+                  : 'text-[#1E293B] hover:bg-white/60'
               }`}
               title="Compact single-line coordinate chip (minimal obstruction)"
             >
@@ -507,10 +551,10 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
             <button
               type="button"
               onClick={() => setHudPlacement('docked-bottom')}
-              className={`px-1.5 py-0.5 rounded-[2px] transition-colors ${
+              className={`px-1.5 py-0.5 rounded-[2px] transition-colors cursor-pointer ${
                 hudPlacement === 'docked-bottom'
-                  ? 'bg-[#1e3a5f] text-white font-bold'
-                  : 'text-black hover:bg-[#dcdcdc]'
+                  ? 'bg-[#2563EB] text-white font-bold'
+                  : 'text-[#1E293B] hover:bg-white/60'
               }`}
               title="Dock coordinates to bottom bar (100% unobstructed 3D graph)"
             >
@@ -521,9 +565,17 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
       </div>
 
       {/* 3D Canvas Stage */}
-      <div className="flex-1 min-h-0 relative cursor-grab active:cursor-grabbing overflow-hidden">
+      <div
+        onContextMenu={(e) => e.preventDefault()}
+        className="flex-1 min-h-0 relative overflow-hidden"
+        style={{
+          cursor: isPanning ? 'move' : isDragging ? 'grabbing' : 'grab',
+        }}
+      >
         <canvas
           ref={canvasRef}
+          onContextMenu={(e) => e.preventDefault()}
+          onDoubleClick={handleResetViewFit}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -701,8 +753,8 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
         )}
 
         {/* Interactive Controls Guide (Top-Right) */}
-        <div className="absolute top-2 right-2 bg-[#efefef]/90 border border-[#808080] rounded-[2px] px-2 py-1 text-[10px] text-black font-medium pointer-events-none z-10">
-          Left Drag: Orbit • Right Drag: Pan • Scroll: Zoom
+        <div className="absolute top-2 right-2 bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] px-2 py-1 text-[10px] text-[#334155] font-medium pointer-events-none z-10 shadow-xs">
+          Left Drag: Orbit • Right/Shift Drag: Pan • Scroll: Dolly Zoom
         </div>
       </div>
 
@@ -710,32 +762,32 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
       {hudPlacement === 'docked-bottom' && (
         <div
           id="threed-docked-telemetry"
-          className="bg-[#d4d0c8] border-t border-[#808080] px-3 py-1.5 font-mono text-[11px] text-black flex items-center justify-between gap-2 select-none shrink-0"
+          className="bg-[#F1F3F5] border-t border-[#CBD5E1] px-3 py-1.5 font-mono text-[11px] text-[#1E293B] flex items-center justify-between gap-2 select-none shrink-0"
         >
           <div className="flex items-center gap-3 overflow-x-auto py-0.5">
             <div className="flex items-center gap-1 shrink-0 font-bold">
-              <span className="w-2 h-2 rounded-full bg-[#1e3a5f]" />
+              <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
               <span>Frame #{currentFrame} Coordinates:</span>
-              <span className="text-[#444444] font-semibold text-[10px]">
+              <span className="text-[#64748B] font-semibold text-[10px]">
                 (t = {currentStep?.time.toFixed(3) ?? '0.000'}s)
               </span>
             </div>
 
             <div className="flex items-center gap-2 text-[10px] shrink-0">
-              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
-                X: <strong className="text-black font-bold">{currentStep?.x?.toFixed(4) ?? '—'} m</strong>
+              <span className="bg-white border border-[#CBD5E1] px-1.5 py-0.5 rounded-[2px]">
+                X: <strong className="text-[#1E293B] font-bold">{currentStep?.x?.toFixed(4) ?? '—'} m</strong>
               </span>
-              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
-                Y: <strong className="text-black font-bold">{currentStep?.y?.toFixed(4) ?? '—'} m</strong>
+              <span className="bg-white border border-[#CBD5E1] px-1.5 py-0.5 rounded-[2px]">
+                Y: <strong className="text-[#1E293B] font-bold">{currentStep?.y?.toFixed(4) ?? '—'} m</strong>
               </span>
-              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
-                Z: <strong className="text-black font-bold">{currentStep?.z?.toFixed(4) ?? '—'} m</strong>
+              <span className="bg-white border border-[#CBD5E1] px-1.5 py-0.5 rounded-[2px]">
+                Z: <strong className="text-[#1E293B] font-bold">{currentStep?.z?.toFixed(4) ?? '—'} m</strong>
               </span>
-              <span className="bg-white border border-[#808080] px-1.5 py-0.5 rounded-[2px]">
-                Speed: <strong className="text-black font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong>
+              <span className="bg-white border border-[#CBD5E1] px-1.5 py-0.5 rounded-[2px]">
+                Speed: <strong className="text-[#1E293B] font-bold">{currentStep?.v?.toFixed(2) ?? '—'} m/s</strong>
               </span>
               {currentStep?.vx != null && (
-                <span className="text-[#333333]">
+                <span className="text-[#475569]">
                   vx: {currentStep.vx.toFixed(2)} | vy: {currentStep.vy?.toFixed(2) ?? '—'} | vz: {currentStep.vz?.toFixed(2) ?? '—'}
                 </span>
               )}
@@ -746,10 +798,10 @@ export const ThreeDTrajectoryView: React.FC<ThreeDTrajectoryViewProps> = ({
             <button
               type="button"
               onClick={() => setHudPlacement('bottom-left')}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-[10px] font-semibold text-black transition-colors"
+              className="flex items-center gap-1 px-2 py-0.5 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[10px] font-semibold text-[#1E293B] transition-colors cursor-pointer"
               title="Float coordinates box back onto bottom-left canvas"
             >
-              <PanelBottom className="w-3 h-3 text-[#1e3a5f]" />
+              <PanelBottom className="w-3 h-3 text-[#2563EB]" />
               <span>Float on Canvas</span>
             </button>
           </div>

@@ -13,6 +13,7 @@ import {
   Trash,
   Maximize2,
   Undo2,
+  Redo2,
   Upload,
   AlertCircle,
   Film,
@@ -26,9 +27,11 @@ import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
 import { mediaDiagnostics } from '../utils/mediaDiagnostics';
+import { AviHighSpeedLoader } from '../video/aviHighSpeedLoader';
 
 interface VideoPlayerViewProps {
   videoUrl: string;
+  aviLoader?: AviHighSpeedLoader | null;
   isSynthetic: boolean;
   syntheticType?: string;
   fileName?: string;
@@ -54,6 +57,13 @@ interface VideoPlayerViewProps {
   requireShiftToMark?: boolean;
   onToggleRequireShiftToMark?: () => void;
   onUndoLastPoint?: () => void;
+  onRedoLastPoint?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  undoCount?: number;
+  redoCount?: number;
+  onBeginHistoryAction?: (label: string) => void;
+  onNudgeCurrentPoint?: (dpx: number, dpy: number) => void;
   onRegisterSnapshotGetter?: (getter: () => string | null) => void;
 }
 
@@ -67,6 +77,7 @@ type DragTarget =
 
 export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   videoUrl,
+  aviLoader,
   isSynthetic,
   syntheticType,
   tracks,
@@ -89,6 +100,13 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   requireShiftToMark = true,
   onToggleRequireShiftToMark,
   onUndoLastPoint,
+  onRedoLastPoint,
+  canUndo,
+  canRedo = false,
+  undoCount = 0,
+  redoCount = 0,
+  onBeginHistoryAction,
+  onNudgeCurrentPoint,
   fileName,
   onUploadVideo,
   onOpenFormatsModal,
@@ -100,6 +118,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const hiddenFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const aviBitmapRef = useRef<ImageBitmap | null>(null);
+  const aviImageDataRef = useRef<ImageData | null>(null);
 
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackRate, setPlaybackRate] = useState<number>(1.0);
@@ -116,6 +136,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isGif = Boolean(videoUrl?.toLowerCase().includes('.gif') || fileName?.toLowerCase().endsWith('.gif'));
+  const isChunkedAvi = Boolean(aviLoader && aviLoader.metadata);
 
   // Capture composite snapshot (video frame + tracking marks & overlays) for PDF reports
   const captureSnapshot = useCallback((): string | null => {
@@ -129,7 +150,13 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
     // 1. Draw raw video / image frame
     if (!isSynthetic) {
-      if (isGif && imageRef.current && imageRef.current.complete) {
+      if (isChunkedAvi && aviBitmapRef.current) {
+        try {
+          ctx.drawImage(aviBitmapRef.current, 0, 0, canvas.width, canvas.height);
+        } catch {
+          // ignore
+        }
+      } else if (isGif && imageRef.current && imageRef.current.complete) {
         try {
           ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
         } catch {
@@ -152,18 +179,26 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     } catch {
       return null;
     }
-  }, [isSynthetic, isGif]);
+  }, [isSynthetic, isGif, isChunkedAvi]);
 
   useEffect(() => {
     onRegisterSnapshotGetter?.(captureSnapshot);
   }, [captureSnapshot, onRegisterSnapshotGetter]);
 
-  // Viewport Zoom & Pan state for flexible ballistic & defense video inspection
+  // Viewport Zoom & Pan state for flexible ballistic & defense video inspection (0.25x to 24.0x)
   const [zoom, setZoom] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState<boolean>(false);
   const [isSpacePressed, setIsSpacePressed] = useState<boolean>(false);
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const pointerGestureRef = useRef<{
+    active: boolean;
+    startClientX: number;
+    startClientY: number;
+    startPanX: number;
+    startPanY: number;
+    moved: boolean;
+  } | null>(null);
 
   // Center and fit media within viewport
   const resetZoomAndPan = useCallback((targetZoom?: number) => {
@@ -181,9 +216,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const availH = Math.max(100, contHeight - 24);
     const fitZoom = Math.min(1, availW / mediaW, availH / mediaH);
 
-    const finalZoom = targetZoom !== undefined ? targetZoom : Math.max(0.1, Number(fitZoom.toFixed(2)));
-    const centeredX = Math.round((contWidth - mediaW * finalZoom) / 2);
-    const centeredY = Math.round((contHeight - mediaH * finalZoom) / 2);
+    const finalZoom = targetZoom !== undefined ? targetZoom : Math.max(0.25, Number(fitZoom.toFixed(3)));
+    const centeredX = (contWidth - mediaW * finalZoom) / 2;
+    const centeredY = (contHeight - mediaH * finalZoom) / 2;
 
     setZoom(finalZoom);
     setPan({ x: centeredX, y: centeredY });
@@ -194,12 +229,37 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     resetZoomAndPan();
   }, [canvasSize.width, canvasSize.height, videoUrl, syntheticType, resetZoomAndPan]);
 
-  // Monitor Shift and Space keys
+  // Attach ResizeObserver to container so split-pane dragging dynamically re-centers & fits video at 60 FPS
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return;
+    let rafId: number | null = null;
+    const ro = new ResizeObserver(() => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        resetZoomAndPan();
+      });
+    });
+    ro.observe(container);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
+  }, [resetZoomAndPan]);
+
+  // Monitor Shift, Space, and 'F' (Fit to Viewport) keys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Shift') setIsShiftPressed(true);
-      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) {
+        return;
+      }
+      if (e.code === 'Space') {
         setIsSpacePressed(true);
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        resetZoomAndPan();
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -212,7 +272,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, []);
+  }, [resetZoomAndPan]);
 
   // Global mouseup listener so dragging never gets stuck
   useEffect(() => {
@@ -220,12 +280,15 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       if (e.button === 2 || e.button === 1 || isPanning) {
         setIsPanning(false);
       }
+      if (pointerGestureRef.current) {
+        pointerGestureRef.current = null;
+      }
     };
     window.addEventListener('mouseup', handleGlobalMouseUp);
     return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
   }, [isPanning]);
 
-  // Mouse wheel scroll to zoom centered at cursor position
+  // Mouse wheel / trackpad pinch scroll to zoom centered at exact cursor pixel (u, v)
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -237,14 +300,14 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    const factor = e.deltaY < 0 ? 1.25 : 0.8;
-    const newZoom = Math.min(16, Math.max(0.2, Number((zoom * factor).toFixed(3))));
+    const factor = e.deltaY < 0 ? 1.18 : 1 / 1.18;
+    const newZoom = Math.min(24.0, Math.max(0.25, Number((zoom * factor).toFixed(4))));
 
     const newPanX = mouseX - (mouseX - pan.x) * (newZoom / zoom);
     const newPanY = mouseY - (mouseY - pan.y) * (newZoom / zoom);
 
     setZoom(newZoom);
-    setPan({ x: Math.round(newPanX), y: Math.round(newPanY) });
+    setPan({ x: newPanX, y: newPanY });
   };
 
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
@@ -259,7 +322,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   // Authoritative Play/Pause Toggle
   const handleTogglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!isSynthetic && !isGif && video) {
+    if (!isSynthetic && !isGif && !isChunkedAvi && video) {
       if (isPlaying) {
         video.pause();
         setIsPlaying(false);
@@ -286,7 +349,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     } else {
       setIsPlaying((prev) => !prev);
     }
-  }, [isPlaying, isSynthetic, isGif, playbackRate, currentFrame, clip.endFrame, clip.startFrame, containerFps]);
+  }, [isPlaying, isSynthetic, isGif, isChunkedAvi, playbackRate, currentFrame, clip.endFrame, clip.startFrame, containerFps]);
 
   // Explicit Manual Stepping (stops playback and seeks)
   const handleStepPrev = useCallback(() => {
@@ -340,9 +403,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }
   }, []);
 
-  // 1. Authoritative HTML5 Video playback monitor loop (Runs ONLY when isPlaying && !isSynthetic && !isGif)
+  // 1. Authoritative HTML5 Video playback monitor loop (Runs ONLY when isPlaying && !isSynthetic && !isGif && !isChunkedAvi)
   useEffect(() => {
-    if (!isPlaying || isSynthetic || isGif) return;
+    if (!isPlaying || isSynthetic || isGif || isChunkedAvi) return;
 
     let rafId: number;
     const loopId = 'primary_playback_monitor';
@@ -407,11 +470,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       cancelAnimationFrame(rafId);
       mediaDiagnostics.unregisterLoop(loopId);
     };
-  }, [isPlaying, isSynthetic, isGif, containerFps, clip.startFrame, clip.endFrame, isLooping, playbackRate, onFrameChange]);
+  }, [isPlaying, isSynthetic, isGif, isChunkedAvi, containerFps, clip.startFrame, clip.endFrame, isLooping, playbackRate, onFrameChange]);
 
   // 2. Synchronize video element to currentFrame ONLY when paused or manual stepping/scrubbing
   useEffect(() => {
-    if (isPlaying || isSynthetic || isGif) return;
+    if (isPlaying || isSynthetic || isGif || isChunkedAvi) return;
     const video = videoRef.current;
     if (!video || !videoUrl) return;
 
@@ -436,11 +499,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       return () => video.removeEventListener('loadeddata', handleReady);
     }
     lastReportedFrameRef.current = currentFrame;
-  }, [currentFrame, isPlaying, isSynthetic, isGif, containerFps, videoUrl]);
+  }, [currentFrame, isPlaying, isSynthetic, isGif, isChunkedAvi, containerFps, videoUrl]);
 
-  // 3. Synthetic simulation or animated GIF frame ticker
+  // 3. Synthetic simulation, animated GIF, or Zero-Copy RIFF/OpenDML .AVI frame ticker
   useEffect(() => {
-    if (!isPlaying || (!isSynthetic && !isGif)) return;
+    if (!isPlaying || (!isSynthetic && !isGif && !isChunkedAvi)) return;
 
     let animationFrameId: number;
     const loopId = 'synthetic_playback_tick';
@@ -473,10 +536,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       cancelAnimationFrame(animationFrameId);
       mediaDiagnostics.unregisterLoop(loopId);
     };
-  }, [isPlaying, isSynthetic, isGif, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, containerFps, playbackRate, isLooping, onFrameChange]);
+  }, [isPlaying, isSynthetic, isGif, isChunkedAvi, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, containerFps, playbackRate, isLooping, onFrameChange]);
 
   // Handle video metadata loading to configure frames & size
   const handleLoadedMetadata = useCallback(() => {
+    if (isChunkedAvi) return;
     const video = videoRef.current;
     if (!video) return;
 
@@ -497,10 +561,18 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         endFrame: totalFrames - 1,
       });
     }
-  }, [clip.fps, onUpdateClip]);
+  }, [clip.fps, onUpdateClip, isChunkedAvi]);
 
   // 4. Safe video reload and session reset when videoUrl changes
   useEffect(() => {
+    if (isChunkedAvi && aviLoader?.metadata) {
+      setVideoError(null);
+      setCanvasSize({
+        width: aviLoader.metadata.width || 640,
+        height: aviLoader.metadata.height || 480,
+      });
+      return;
+    }
     const video = videoRef.current;
     if (video && videoUrl) {
       video.pause();
@@ -531,7 +603,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         video.removeEventListener('loadeddata', handleReady);
       };
     }
-  }, [videoUrl, containerFps]);
+  }, [videoUrl, containerFps, isChunkedAvi, aviLoader]);
 
   // 5. Cleanup on unmount
   useEffect(() => {
@@ -549,17 +621,19 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     };
   }, []);
 
-  // Convert client click coordinates to video/canvas intrinsic coordinate space
+  // Convert client click coordinates to sub-pixel video/canvas intrinsic coordinate space (u, v)
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return { px: 0, py: 0 };
 
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const scaleX = canvas.width / Math.max(1, rect.width);
+    const scaleY = canvas.height / Math.max(1, rect.height);
 
-    const px = Math.round((e.clientX - rect.left) * scaleX);
-    const py = Math.round((e.clientY - rect.top) * scaleY);
+    const rawPx = (e.clientX - rect.left) * scaleX;
+    const rawPy = (e.clientY - rect.top) * scaleY;
+    const px = Number(Math.max(0, Math.min(canvas.width, rawPx)).toFixed(2));
+    const py = Number(Math.max(0, Math.min(canvas.height, rawPy)).toFixed(2));
     return { px, py };
   };
 
@@ -572,10 +646,38 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
     const { width, height } = canvas;
     ctx.clearRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = zoom < 3.0;
 
-    // 0. Paint video frame or animated GIF directly to canvas if present
+    // 0. Paint video frame, Zero-Copy RIFF/OpenDML .AVI frame, or animated GIF directly to canvas if present
     if (!isSynthetic) {
-      if (isGif && imageRef.current && imageRef.current.complete) {
+      if (isChunkedAvi && aviLoader?.metadata) {
+        if (aviBitmapRef.current) {
+          try {
+            ctx.drawImage(aviBitmapRef.current, 0, 0, width, height);
+          } catch {
+            // ignore
+          }
+        } else if (aviImageDataRef.current) {
+          try {
+            ctx.putImageData(aviImageDataRef.current, 0, 0);
+          } catch {
+            // ignore
+          }
+        }
+        // Subtle HUD telemetry for Universal Zero-Copy Demuxer (.AVI / .MOV / .FLV / .WMV)
+        ctx.save();
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+        ctx.fillRect(10, 10, 440, 22);
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 10px monospace';
+        const meta = aviLoader.metadata;
+        ctx.fillText(
+          `UNIVERSAL DEMUX [${meta.compressionFourCC.trim()}] · ${meta.width}x${meta.height} · ${(meta.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB · Index ${(meta.indexMemoryBytes / 1024).toFixed(1)} KB`,
+          16,
+          24
+        );
+        ctx.restore();
+      } else if (isGif && imageRef.current && imageRef.current.complete) {
         try {
           ctx.drawImage(imageRef.current, 0, 0, width, height);
         } catch {
@@ -1162,8 +1264,35 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         ctx.restore();
       });
     });
+
+    // 5. Crisp 1px Sensor Pixel Grid at High Zoom (>= 800%) for Sub-Pixel Fiducial Marking
+    if (zoom >= 8.0) {
+      const contW = containerRef.current?.clientWidth || width;
+      const contH = containerRef.current?.clientHeight || height;
+      const startPx = Math.max(0, Math.floor(-pan.x / zoom));
+      const endPx = Math.min(width, Math.ceil((contW - pan.x) / zoom));
+      const startPy = Math.max(0, Math.floor(-pan.y / zoom));
+      const endPy = Math.min(height, Math.ceil((contH - pan.y) / zoom));
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.32)';
+      ctx.lineWidth = Math.max(0.04, 1 / zoom);
+      ctx.beginPath();
+      for (let x = startPx; x <= endPx; x += 1) {
+        ctx.moveTo(x, startPy);
+        ctx.lineTo(x, endPy);
+      }
+      for (let y = startPy; y <= endPy; y += 1) {
+        ctx.moveTo(startPx, y);
+        ctx.lineTo(endPx, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }, [
     isSynthetic,
+    isChunkedAvi,
+    aviLoader,
     syntheticType,
     currentFrame,
     clip,
@@ -1173,21 +1302,57 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     activeTrackId,
     showTrails,
     showVectors,
+    zoom,
+    pan.x,
+    pan.y,
   ]);
+
+  // Decode single frame on-demand when Zero-Copy .AVI loader is active
+  useEffect(() => {
+    if (!isChunkedAvi || !aviLoader) {
+      aviBitmapRef.current = null;
+      aviImageDataRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    aviLoader
+      .getFrameBitmap(currentFrame)
+      .then(async (bmp) => {
+        if (cancelled) return;
+        if (bmp) {
+          aviBitmapRef.current = bmp;
+          renderCanvas();
+        } else {
+          const imgData = await aviLoader.getFrameImageData(currentFrame);
+          if (!cancelled && imgData) {
+            aviImageDataRef.current = imgData;
+            renderCanvas();
+          }
+        }
+      })
+      .catch(() => {
+        // ignore decode error
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isChunkedAvi, aviLoader, currentFrame, renderCanvas]);
 
   // Trigger render on updates
   useEffect(() => {
     renderCanvas();
   }, [renderCanvas]);
 
-  // Magnifier Loupe render effect for Tracker-style sub-pixel tracking
+  const isLoupeVisible = Boolean(showLoupe || isShiftPressed);
+
+  // Magnifier Loupe (8x) render effect for Tracker-style sub-pixel tracking
   useEffect(() => {
-    if (!showLoupe || !mouseCoord || !loupeCanvasRef.current || !canvasRef.current) return;
+    if (!isLoupeVisible || !mouseCoord || !loupeCanvasRef.current || !canvasRef.current) return;
     const lCanvas = loupeCanvasRef.current;
     const lCtx = lCanvas.getContext('2d');
     if (!lCtx) return;
 
-    const loupeZoom = 4.0;
+    const loupeZoom = 8.0;
     const lWidth = lCanvas.width;
     const lHeight = lCanvas.height;
     const sourceW = lWidth / loupeZoom;
@@ -1250,12 +1415,30 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       );
     }
 
-    // 3. Draw high-visibility reticle and crosshairs
+    // 2b. Subtle 1px sensor grid inside the 8x Loupe
+    lCtx.strokeStyle = 'rgba(148, 163, 184, 0.22)';
+    lCtx.lineWidth = 1;
+    const firstGridX = Math.ceil(sourceX);
+    const firstGridY = Math.ceil(sourceY);
+    lCtx.beginPath();
+    for (let gx = firstGridX; gx <= sourceX + sourceW; gx += 1) {
+      const lx = Math.round((gx - sourceX) * loupeZoom) + 0.5;
+      lCtx.moveTo(lx, 0);
+      lCtx.lineTo(lx, lHeight);
+    }
+    for (let gy = firstGridY; gy <= sourceY + sourceH; gy += 1) {
+      const ly = Math.round((gy - sourceY) * loupeZoom) + 0.5;
+      lCtx.moveTo(0, ly);
+      lCtx.lineTo(lWidth, ly);
+    }
+    lCtx.stroke();
+
+    // 3. Draw high-visibility sub-pixel reticle and crosshairs
     const centerX = (mouseCoord.px - sourceX) * loupeZoom;
     const centerY = (mouseCoord.py - sourceY) * loupeZoom;
 
     // Crosshairs
-    lCtx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+    lCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
     lCtx.lineWidth = 1;
     lCtx.beginPath();
     lCtx.moveTo(centerX, 0);
@@ -1269,7 +1452,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     lCtx.stroke();
 
     // Dark crosshair shadow for contrast against light or smoke backgrounds
-    lCtx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+    lCtx.strokeStyle = 'rgba(0, 0, 0, 0.65)';
     lCtx.setLineDash([2, 2]);
     lCtx.beginPath();
     lCtx.moveTo(centerX, 0);
@@ -1280,19 +1463,19 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     lCtx.setLineDash([]);
 
     // Outer Target Reticle
-    lCtx.strokeStyle = '#1e3a5f';
+    lCtx.strokeStyle = '#2563EB';
     lCtx.lineWidth = 1.5;
     lCtx.beginPath();
     lCtx.arc(centerX, centerY, 12, 0, Math.PI * 2);
     lCtx.stroke();
 
     // Sub-pixel center point
-    lCtx.fillStyle = '#dc2626';
+    lCtx.fillStyle = '#DC2626';
     lCtx.beginPath();
-    lCtx.arc(centerX, centerY, 2.5, 0, Math.PI * 2);
+    lCtx.arc(centerX, centerY, 2.2, 0, Math.PI * 2);
     lCtx.fill();
   }, [
-    showLoupe,
+    isLoupeVisible,
     mouseCoord,
     canvasSize,
     currentFrame,
@@ -1304,9 +1487,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     axes,
   ]);
 
-  // Mouse drag & mark handlers
+  // Mouse drag, effortless click-drag pan & sub-pixel mark handlers
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    // 0. Check right-click (2), middle-click (1), or Spacebar held -> Pan video scene
+    // 0. Check right-click (2), middle-click (1), or Spacebar held -> Immediate Pan
     if (e.button === 2 || e.button === 1 || isSpacePressed) {
       e.preventDefault();
       e.stopPropagation();
@@ -1321,22 +1504,26 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     if (e.button !== 0) return;
 
     const { px, py } = getCanvasCoords(e);
+    const hitRadius = Math.max(2.5, 14 / Math.max(0.5, zoom));
 
-    // 1. Check calibration handles (within 12px)
-    if (calibration.visible) {
-      if (Math.hypot(px - calibration.pointA.x, py - calibration.pointA.y) < 14) {
+    // 1. Check calibration handles
+    if (calibration.visible && !e.shiftKey && !isShiftPressed) {
+      if (Math.hypot(px - calibration.pointA.x, py - calibration.pointA.y) < hitRadius) {
+        onBeginHistoryAction?.('Move Calibration Handle A');
         setDragTarget({ type: 'calA' });
         return;
       }
-      if (Math.hypot(px - calibration.pointB.x, py - calibration.pointB.y) < 14) {
+      if (Math.hypot(px - calibration.pointB.x, py - calibration.pointB.y) < hitRadius) {
+        onBeginHistoryAction?.('Move Calibration Handle B');
         setDragTarget({ type: 'calB' });
         return;
       }
     }
 
     // 2. Check coordinate axes handles
-    if (axes.visible) {
-      if (Math.hypot(px - axes.origin.x, py - axes.origin.y) < 14) {
+    if (axes.visible && !e.shiftKey && !isShiftPressed) {
+      if (Math.hypot(px - axes.origin.x, py - axes.origin.y) < hitRadius) {
+        onBeginHistoryAction?.('Move Coordinate Origin');
         setDragTarget({ type: 'origin' });
         return;
       }
@@ -1345,63 +1532,82 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       const rad = (axes.angle * Math.PI) / 180;
       const rotHandleX = axes.origin.x + 115 * Math.cos(rad);
       const rotHandleY = axes.origin.y - 115 * Math.sin(rad);
-      if (Math.hypot(px - rotHandleX, py - rotHandleY) < 14) {
+      if (Math.hypot(px - rotHandleX, py - rotHandleY) < hitRadius) {
+        onBeginHistoryAction?.('Rotate Coordinate Axes');
         setDragTarget({ type: 'axisRotate' });
         return;
       }
     }
 
-    // 3. Check existing point on active track
-    if (activeTrack) {
-      const existing = activeTrack.steps.find((s) => Math.hypot(px - s.px, py - s.py) < 10);
+    // 3. Check existing point on active track (when not holding Shift to place a new point)
+    if (activeTrack && !e.shiftKey && !isShiftPressed) {
+      const pointRadius = Math.max(2.0, 10 / Math.max(0.5, zoom));
+      const existing = activeTrack.steps.find((s) => Math.hypot(px - s.px, py - s.py) < pointRadius);
       if (existing) {
+        onBeginHistoryAction?.(`Drag Point F#${existing.frame}`);
         setDragTarget({ type: 'point', frame: existing.frame });
         onFrameChange(existing.frame);
         return;
       }
     }
 
-    // 4. Default: Add point for current frame (Protected by Shift+Click Tracker OSP rule)
-    if (requireShiftToMark && !e.shiftKey && !isShiftPressed) {
-      // User clicked without holding Shift: ignore point placement to prevent accidental marks
-      setShowShiftWarning(true);
-      if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
-      warningTimerRef.current = setTimeout(() => setShowShiftWarning(false), 3000);
+    // 4. Holding Shift -> Immediate Sub-Pixel Point Mark at (u, v)
+    if (e.shiftKey || isShiftPressed) {
+      const world = pixelToWorld(px, py, axes, calibration);
+      const newStep: PointStep = {
+        frame: currentFrame,
+        time: currentTime,
+        px,
+        py,
+        x: world.x,
+        y: world.y,
+      };
+      onAddPoint(newStep);
+      if (autoAdvance) {
+        const nextFrame = Math.min(clip.endFrame, currentFrame + clip.stepSize);
+        onFrameChange(nextFrame);
+      }
       return;
     }
 
-    const world = pixelToWorld(px, py, axes, calibration);
-    const newStep: PointStep = {
-      frame: currentFrame,
-      time: currentTime,
-      px,
-      py,
-      x: world.x,
-      y: world.y,
+    // 5. Left-click on empty canvas without Shift: initiate potential Pan gesture (<3px click vs >=3px drag pan)
+    pointerGestureRef.current = {
+      active: true,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startPanX: pan.x,
+      startPanY: pan.y,
+      moved: false,
     };
-
-    onAddPoint(newStep);
-
-    // Auto-advance frame if enabled
-    if (autoAdvance) {
-      const nextFrame = Math.min(clip.endFrame, currentFrame + clip.stepSize);
-      onFrameChange(nextFrame);
-    }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (isPanning) {
-      e.preventDefault();
-      setPan({
-        x: Math.round(e.clientX - panStartRef.current.x),
-        y: Math.round(e.clientY - panStartRef.current.y),
-      });
-      return;
-    }
-
     const { px, py } = getCanvasCoords(e);
     const world = pixelToWorld(px, py, axes, calibration);
     setMouseCoord({ px, py, x: world.x, y: world.y });
+
+    if (pointerGestureRef.current?.active) {
+      const dx = e.clientX - pointerGestureRef.current.startClientX;
+      const dy = e.clientY - pointerGestureRef.current.startClientY;
+      if (Math.hypot(dx, dy) >= 3 || pointerGestureRef.current.moved) {
+        pointerGestureRef.current.moved = true;
+        if (!isPanning) setIsPanning(true);
+        setPan({
+          x: pointerGestureRef.current.startPanX + dx,
+          y: pointerGestureRef.current.startPanY + dy,
+        });
+      }
+      return;
+    }
+
+    if (isPanning) {
+      e.preventDefault();
+      setPan({
+        x: e.clientX - panStartRef.current.x,
+        y: e.clientY - panStartRef.current.y,
+      });
+      return;
+    }
 
     if (!dragTarget) return;
 
@@ -1422,6 +1628,38 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   };
 
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (pointerGestureRef.current?.active) {
+      const gesture = pointerGestureRef.current;
+      pointerGestureRef.current = null;
+      setIsPanning(false);
+
+      // Clean click (< 3px movement) without Shift
+      if (!gesture.moved) {
+        if (requireShiftToMark) {
+          setShowShiftWarning(true);
+          if (warningTimerRef.current) clearTimeout(warningTimerRef.current);
+          warningTimerRef.current = setTimeout(() => setShowShiftWarning(false), 2600);
+        } else {
+          const { px, py } = getCanvasCoords(e);
+          const world = pixelToWorld(px, py, axes, calibration);
+          const newStep: PointStep = {
+            frame: currentFrame,
+            time: currentTime,
+            px,
+            py,
+            x: world.x,
+            y: world.y,
+          };
+          onAddPoint(newStep);
+          if (autoAdvance) {
+            const nextFrame = Math.min(clip.endFrame, currentFrame + clip.stepSize);
+            onFrameChange(nextFrame);
+          }
+        }
+      }
+      return;
+    }
+
     if (isPanning || e.button === 2 || e.button === 1) {
       setIsPanning(false);
       return;
@@ -1430,12 +1668,17 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   };
 
   return (
-    <div id="video-player-view" className="flex flex-col h-full bg-[#d4d0c8] select-none overflow-hidden">
+    <div id="video-player-view" className="flex flex-col h-full bg-[#F1F3F5] select-none overflow-hidden">
       {/* Video & Canvas Stage */}
       <div
         ref={containerRef}
         onContextMenu={(e) => e.preventDefault()}
         onWheel={handleWheel}
+        onDoubleClick={(e) => {
+          if (!e.shiftKey && !dragTarget) {
+            resetZoomAndPan();
+          }
+        }}
         onMouseDown={(e) => {
           if (e.button === 2 || e.button === 1 || isSpacePressed) {
             e.preventDefault();
@@ -1447,11 +1690,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           }
         }}
         onMouseMove={(e) => {
-          if (isPanning) {
+          if (isPanning && !pointerGestureRef.current?.active) {
             e.preventDefault();
             setPan({
-              x: Math.round(e.clientX - panStartRef.current.x),
-              y: Math.round(e.clientY - panStartRef.current.y),
+              x: e.clientX - panStartRef.current.x,
+              y: e.clientY - panStartRef.current.y,
             });
           }
         }}
@@ -1470,49 +1713,63 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           const file = e.dataTransfer.files?.[0];
           if (file) onUploadVideo?.(file);
         }}
-        className="relative flex-1 bg-[#141414] min-h-0 overflow-hidden select-none"
+        className="relative flex-1 bg-[#0F172A] min-h-0 overflow-hidden select-none"
       >
         {/* Floating Zoom & Pan HUD in Top-Left Corner */}
-        <div className="absolute top-2 left-2 z-20 flex items-center gap-1.5 bg-[#d4d0c8]/95 border border-[#808080] rounded-[3px] p-1 shadow-md text-xs backdrop-blur-xs select-none">
+        <div className="absolute top-2 left-2 z-20 flex items-center gap-1 bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] p-1 shadow-md text-xs backdrop-blur-xs select-none">
           <button
             type="button"
             onClick={() => {
-              const newZoom = Math.max(0.2, Number((zoom / 1.25).toFixed(2)));
+              const container = containerRef.current;
+              const cx = (container?.clientWidth || 400) / 2;
+              const cy = (container?.clientHeight || 300) / 2;
+              const newZoom = Math.max(0.25, Number((zoom / 1.25).toFixed(3)));
+              setPan({
+                x: cx - (cx - pan.x) * (newZoom / zoom),
+                y: cy - (cy - pan.y) * (newZoom / zoom),
+              });
               setZoom(newZoom);
             }}
-            className="p-1 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black font-bold text-[11px] h-6 w-6 flex items-center justify-center cursor-pointer transition-colors"
+            className="p-1 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] font-bold text-[11px] h-6 w-6 flex items-center justify-center cursor-pointer transition-colors"
             title="Zoom Out (or Scroll Wheel Down)"
           >
             <ZoomOut className="w-3.5 h-3.5" />
           </button>
 
-          <span className="font-mono font-bold text-[11px] text-black px-1 min-w-[46px] text-center">
+          <span className="font-mono font-bold text-[11px] text-[#1E293B] px-1 min-w-[48px] text-center tabular-nums">
             {Math.round(zoom * 100)}%
           </span>
 
           <button
             type="button"
             onClick={() => {
-              const newZoom = Math.min(16, Number((zoom * 1.25).toFixed(2)));
+              const container = containerRef.current;
+              const cx = (container?.clientWidth || 400) / 2;
+              const cy = (container?.clientHeight || 300) / 2;
+              const newZoom = Math.min(24.0, Number((zoom * 1.25).toFixed(3)));
+              setPan({
+                x: cx - (cx - pan.x) * (newZoom / zoom),
+                y: cy - (cy - pan.y) * (newZoom / zoom),
+              });
               setZoom(newZoom);
             }}
-            className="p-1 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] border border-[#808080] text-black font-bold text-[11px] h-6 w-6 flex items-center justify-center cursor-pointer transition-colors"
-            title="Zoom In (or Scroll Wheel Up)"
+            className="p-1 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] font-bold text-[11px] h-6 w-6 flex items-center justify-center cursor-pointer transition-colors"
+            title="Zoom In up to 2400% (or Scroll Wheel Up)"
           >
             <ZoomIn className="w-3.5 h-3.5" />
           </button>
 
-          <div className="h-4 w-[1px] bg-[#808080] mx-0.5" />
+          <div className="h-4 w-[1px] bg-[#CBD5E1] mx-0.5" />
 
           <button
             type="button"
             onClick={() => resetZoomAndPan(1)}
             className={`px-2 py-0.5 rounded-[2px] text-[10px] font-bold border transition-colors cursor-pointer ${
-              zoom === 1
-                ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                : 'bg-[#efefef] hover:bg-[#dcdcdc] text-black border-[#808080]'
+              Math.abs(zoom - 1) < 0.01
+                ? 'bg-[#2563EB] text-white border-[#1D4ED8]'
+                : 'bg-white hover:bg-[#E2E8F0] text-[#1E293B] border-[#CBD5E1]'
             }`}
-            title="Reset to 100% (1:1 Native Resolution)"
+            title="Reset to 100% (1:1 Native Sensor Resolution)"
           >
             1:1
           </button>
@@ -1520,28 +1777,28 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           <button
             type="button"
             onClick={() => resetZoomAndPan()}
-            className="px-2 py-0.5 rounded-[2px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] text-[10px] font-bold cursor-pointer transition-colors"
-            title="Fit Video to Workspace View"
+            className="px-2 py-0.5 rounded-[2px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] text-[10px] font-bold cursor-pointer transition-colors"
+            title="Fit Video to Workspace View (Key: F or Double-Click)"
           >
             Fit
           </button>
 
-          <div className="h-4 w-[1px] bg-[#808080] mx-0.5 hidden sm:block" />
+          <div className="h-4 w-[1px] bg-[#CBD5E1] mx-0.5 hidden sm:block" />
 
-          <span className="text-[10px] text-[#444444] px-1 hidden md:inline-flex items-center gap-1 font-medium">
-            <Move className="w-3 h-3 text-[#1e3a5f]" />
-            <span>Right-Click Drag: Pan &bull; Wheel: Zoom</span>
+          <span className="text-[10px] text-[#475569] px-1 hidden xl:inline-flex items-center gap-1 font-medium">
+            <Move className="w-3 h-3 text-[#2563EB]" />
+            <span>Drag: Pan &bull; Wheel: Zoom &bull; Shift+Click: Mark</span>
           </span>
         </div>
 
         {/* Status badge and Shift Mode in top center */}
         <div className="absolute top-2 left-64 md:left-72 flex items-center gap-2 pointer-events-none z-20">
-          <div className="bg-[#e0e0e0] border border-[#808080] rounded-[3px] px-2 py-0.5 text-[11px] font-mono text-black flex items-center gap-1.5 shadow-xs">
-            <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
+          <div className="bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] px-2 py-0.5 text-[11px] font-mono text-[#1E293B] flex items-center gap-1.5 shadow-xs">
+            <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
             <span>
-              Frame: <strong className="text-black font-bold">{currentFrame}</strong> / {clip.totalFrames - 1}
+              Frame: <strong className="text-[#1E293B] font-bold">{currentFrame}</strong> / {clip.totalFrames - 1}
             </span>
-            <span className="text-[#1e3a5f] ml-1 font-bold">
+            <span className="text-[#2563EB] ml-1 font-bold">
               (t = {formatHighSpeedTime(currentTime, clip.fps, clip.timeUnit)})
             </span>
           </div>
@@ -1549,14 +1806,14 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           <button
             type="button"
             onClick={() => onOpenFormatsModal?.('catalog')}
-            className="pointer-events-auto bg-[#e0e0e0] hover:bg-[#d0d0d0] border border-[#808080] rounded-[3px] px-2 py-0.5 text-[10px] font-mono text-black flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
+            className="pointer-events-auto bg-[#F1F3F5]/95 hover:bg-white border border-[#CBD5E1] rounded-[3px] px-2 py-0.5 text-[10px] font-mono text-[#1E293B] flex items-center gap-1 transition-colors cursor-pointer shadow-xs"
             title="Click to view accepted formats, high-speed camera profiles and specifications"
           >
-            <Film className="w-3 h-3 text-[#1e3a5f]" />
-            <span className="font-bold text-[#1e3a5f]">
+            <Film className="w-3 h-3 text-[#2563EB]" />
+            <span className="font-bold text-[#2563EB]">
               {clip.cameraModel || fileName?.split('.').pop()?.toUpperCase() || 'HIGH-SPEED'}
             </span>
-            <span className="text-[#444444] font-semibold">
+            <span className="text-[#475569] font-semibold">
               @{clip.fps.toLocaleString()} fps
             </span>
           </button>
@@ -1565,20 +1822,20 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <div
               className={`px-2 py-0.5 rounded-[3px] border text-[10px] font-mono flex items-center gap-1.5 transition-colors shadow-xs ${
                 isShiftPressed
-                  ? 'bg-amber-100 border-amber-600 text-amber-950 font-bold'
-                  : 'bg-[#efefef] border-[#808080] text-black font-medium'
+                  ? 'bg-amber-50 border-amber-500 text-amber-950 font-bold'
+                  : 'bg-[#F1F3F5]/95 border-[#CBD5E1] text-[#334155] font-medium'
               }`}
             >
-              <Crosshair className={`w-3 h-3 ${isShiftPressed ? 'text-amber-700' : 'text-[#555555]'}`} />
-              <span>Mark Mode:</span>
-              <strong className={isShiftPressed ? 'text-amber-700 underline' : 'text-emerald-700'}>
-                {isShiftPressed ? 'READY (Shift Held)' : 'SAFE (Hold Shift)'}
+              <Crosshair className={`w-3 h-3 ${isShiftPressed ? 'text-[#D97706]' : 'text-[#64748B]'}`} />
+              <span>Mark:</span>
+              <strong className={isShiftPressed ? 'text-[#D97706] underline' : 'text-[#2563EB]'}>
+                {isShiftPressed ? 'READY (Shift)' : 'SAFE (Hold Shift)'}
               </strong>
             </div>
           )}
 
           {activeStep && (
-            <div className="bg-white border border-[#808080] text-black font-semibold rounded-[3px] px-2 py-0.5 text-[10px] font-mono shadow-xs">
+            <div className="bg-white border border-[#CBD5E1] text-[#1E293B] font-semibold rounded-[3px] px-2 py-0.5 text-[10px] font-mono shadow-xs">
               Marked: ({activeStep.x.toFixed(3)}, {activeStep.y.toFixed(3)})m
             </div>
           )}
@@ -1586,69 +1843,79 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
         {/* Accidental Click Interception Toast Notice */}
         {showShiftWarning && (
-          <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-[#1e3a5f] text-white px-3.5 py-1.5 rounded-[3px] border border-[#0f1d30] shadow-lg flex items-center gap-2 text-xs font-mono pointer-events-none z-30 animate-pulse">
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-[#181B20] text-[#E2E8F0] px-3.5 py-1.5 rounded-[3px] border border-[#2A2E37] shadow-lg flex items-center gap-2 text-xs font-mono pointer-events-none z-30">
+            <span className="w-2 h-2 rounded-full bg-[#D97706]" />
             <span>
-              <strong>Tracker OSP Safety Mode:</strong> Hold <span className="underline font-bold text-amber-300">Shift + Click</span> on video to mark a point mass.
+              <strong>Safety Lock:</strong> Hold <span className="underline font-bold text-amber-300">Shift + Click</span> on video to mark a point mass.
             </span>
           </div>
         )}
 
-        {/* Tracker Sub-Pixel Magnifier Loupe Tool in top-right corner */}
-        {showLoupe && (
-          <div className="absolute top-2 right-2 bg-[#d4d0c8] border border-[#808080] rounded-[3px] p-2 flex flex-col gap-1.5 pointer-events-none z-20 shadow-lg select-none">
-            <div className="flex items-center justify-between text-[11px] font-bold text-black px-1 border-b border-[#808080] pb-1">
+        {/* Tracker 8x Sub-Pixel Magnifier Loupe Tool in top-right corner */}
+        {isLoupeVisible && (
+          <div className="absolute top-2 right-2 bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] p-2 flex flex-col gap-1.5 pointer-events-none z-20 shadow-lg select-none">
+            <div className="flex items-center justify-between text-[11px] font-bold text-[#1E293B] px-1 border-b border-[#CBD5E1] pb-1">
               <span className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-600 animate-pulse" />
-                <span>Optical Loupe (4×)</span>
+                <span className={`w-2 h-2 rounded-full ${isShiftPressed ? 'bg-[#D97706]' : 'bg-[#2563EB]'}`} />
+                <span>Precision Loupe (8×)</span>
               </span>
-              <span className="font-mono text-[10px] text-[#333333] bg-[#e0ded8] px-1 py-0.2 rounded border border-[#a0a0a0]">Sub-pixel</span>
+              <span className="font-mono text-[10px] text-[#334155] bg-white px-1 py-0.2 rounded-[2px] border border-[#CBD5E1]">
+                {isShiftPressed ? 'SHIFT MARK' : 'Sub-pixel'}
+              </span>
             </div>
-            <div className="relative w-36 h-36 bg-[#111111] rounded-[2px] border border-[#808080] overflow-hidden shadow-inner">
+            <div className="relative w-36 h-36 bg-[#0F172A] rounded-[2px] border border-[#CBD5E1] overflow-hidden shadow-inner">
               <canvas
                 ref={loupeCanvasRef}
                 width={144}
                 height={144}
                 className="w-full h-full block"
+                style={{ imageRendering: 'pixelated' }}
               />
             </div>
-            <div className="text-[10px] font-mono text-black px-1 flex flex-col gap-0.5">
+            <div className="text-[10px] font-mono text-[#1E293B] px-1 flex flex-col gap-0.5">
               {mouseCoord ? (
                 <>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[#555555]">World X, Y:</span>
-                    <strong className="text-black font-bold">
-                      {mouseCoord.x.toFixed(3)}, {mouseCoord.y.toFixed(3)} m
+                  <div className="flex items-center justify-between text-[#1E293B]">
+                    <span className="text-[#64748B]">u, v:</span>
+                    <strong className="text-[#2563EB] font-bold tabular-nums">
+                      {mouseCoord.px.toFixed(2)}, {mouseCoord.py.toFixed(2)} px
                     </strong>
                   </div>
-                  <div className="flex items-center justify-between text-[9px] text-[#666666]">
-                    <span>Pixel Sensor:</span>
-                    <span>{mouseCoord.px}, {mouseCoord.py} px</span>
+                  <div className="flex items-center justify-between text-[9.5px] text-[#475569]">
+                    <span>World X,Y:</span>
+                    <span className="font-semibold tabular-nums">
+                      {mouseCoord.x.toFixed(3)}, {mouseCoord.y.toFixed(3)} m
+                    </span>
                   </div>
                 </>
               ) : (
-                <span className="text-[#555555] italic text-center py-1">Hover video to inspect clip</span>
+                <span className="text-[#64748B] italic text-center py-1">Hover video to inspect clip</span>
               )}
             </div>
           </div>
         )}
 
         {/* Coordinate Readout Overlay in bottom-left corner */}
-        <div className="absolute bottom-2 left-2 bg-[#e0e0e0] border border-[#808080] rounded-[3px] px-2.5 py-1 text-[11px] font-mono text-black flex items-center gap-3 pointer-events-none z-20 shadow-md">
+        <div className="absolute bottom-2 left-2 bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] px-2.5 py-1 text-[11px] font-mono text-[#1E293B] flex items-center gap-3 pointer-events-none z-20 shadow-md tabular-nums">
           {mouseCoord ? (
             <>
               <span>
-                x: <strong className="text-black font-bold">{mouseCoord.x.toFixed(3)}</strong> m
+                x: <strong className="text-[#1E293B] font-bold">{mouseCoord.x.toFixed(3)}</strong> m
               </span>
               <span>
-                y: <strong className="text-black font-bold">{mouseCoord.y.toFixed(3)}</strong> m
+                y: <strong className="text-[#1E293B] font-bold">{mouseCoord.y.toFixed(3)}</strong> m
               </span>
-              <span className="text-[#444444] text-[10px]">
-                ({mouseCoord.px}, {mouseCoord.py}px)
+              <span className="text-[#2563EB] text-[10px] font-semibold">
+                (u: {mouseCoord.px.toFixed(2)} px, v: {mouseCoord.py.toFixed(2)} px)
               </span>
+              {zoom >= 3.0 && (
+                <span className="text-[9.5px] px-1 py-0.2 bg-[#E2E8F0] border border-[#CBD5E1] rounded-[2px] text-[#334155]">
+                  {zoom >= 8.0 ? 'PIXEL GRID ON' : 'CRISP PIXELS'}
+                </span>
+              )}
             </>
           ) : (
-            <span className="text-[#444444]">Hover video for coordinates</span>
+            <span className="text-[#64748B]">Hover video for sub-pixel coordinates</span>
           )}
         </div>
 
@@ -1658,7 +1925,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             <Upload className="w-12 h-12 mb-2 animate-bounce" />
             <p className="text-sm font-bold">Drop Video to Load into Tracker</p>
             <p className="text-xs text-blue-200 mt-1">
-              Accepts MP4, MOV, WebM, AVI, MKV, MTS, GIF, TRZ, ZIP, etc.
+              Accepts .MP4, .AVI, .WMV, .FLV, .MOV, .MKV, .WEBM, .GIF, .TRZ, .ZIP
             </p>
           </div>
         )}
@@ -1689,7 +1956,12 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})`,
             transformOrigin: '0 0',
             transition: isPanning ? 'none' : 'transform 0.04s ease-out',
-            cursor: isPanning ? 'grabbing' : isSpacePressed ? 'grab' : 'crosshair',
+            cursor: isPanning
+              ? 'grabbing'
+              : isShiftPressed || !requireShiftToMark
+              ? 'crosshair'
+              : 'grab',
+            imageRendering: zoom >= 3.0 ? 'pixelated' : 'auto',
           }}
           className="rounded-[2px] overflow-hidden border border-[#555555] shadow-2xl bg-black select-none"
         >
@@ -1711,6 +1983,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 height: '100%',
                 objectFit: 'fill',
                 display: 'block',
+                imageRendering: zoom >= 3.0 ? 'pixelated' : 'auto',
               }}
             />
           )}
@@ -1815,6 +2088,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 height: '100%',
                 objectFit: 'fill',
                 display: 'block',
+                imageRendering: zoom >= 3.0 ? 'pixelated' : 'auto',
               }}
             />
           )}
@@ -1907,25 +2181,31 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               setMouseCoord(null);
               setDragTarget(null);
               if (isPanning) setIsPanning(false);
+              if (pointerGestureRef.current) pointerGestureRef.current = null;
             }}
             className="absolute inset-0 w-full h-full"
             style={{
               width: '100%',
               height: '100%',
               display: 'block',
-              cursor: isPanning ? 'grabbing' : isSpacePressed ? 'grab' : 'crosshair',
+              cursor: isPanning
+                ? 'grabbing'
+                : isShiftPressed || !requireShiftToMark
+                ? 'crosshair'
+                : 'grab',
+              imageRendering: zoom >= 3.0 ? 'pixelated' : 'auto',
             }}
           />
         </div>
       </div>
 
-      {/* Legacy System Desktop Bottom Media Controller Bar */}
-      <div id="video-control-bar" className="bg-[#d4d0c8] border-t border-[#808080] px-3 py-2 flex flex-col gap-1.5 select-none">
+      {/* MIL-STD Slate Bottom Media Controller Bar */}
+      <div id="video-control-bar" className="bg-[#F1F3F5] border-t border-[#CBD5E1] px-3 py-1.5 flex flex-col gap-1.5 select-none">
         {/* Timeline Scrubber with Marked Steps Indicators */}
         <div className="relative w-full flex items-center gap-2">
           {/* Direct Frame Input */}
-          <div className="flex items-center gap-0.5 text-[11px] font-mono font-semibold text-black">
-            <span className="text-[#333333]">F:</span>
+          <div className="flex items-center gap-0.5 text-[11px] font-mono font-semibold text-[#1E293B]">
+            <span className="text-[#64748B]">F:</span>
             <input
               id="direct-frame-input"
               type="number"
@@ -1938,7 +2218,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                   onFrameChange(val);
                 }
               }}
-              className="w-14 px-1 py-0.5 rounded-[2px] border border-[#808080] bg-white text-black font-bold text-center outline-none"
+              className="w-14 px-1 py-0.5 rounded-[2px] border border-[#CBD5E1] bg-white text-[#1E293B] font-bold text-center outline-none"
               title="Direct frame jump"
             />
           </div>
@@ -1946,9 +2226,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           {/* Scrubber Track with Visual Data-Point Ticks */}
           <div className="relative flex-1 flex items-center h-4">
             {/* Background track */}
-            <div className="absolute inset-x-0 h-2 bg-[#999999] border border-[#808080] rounded-[2px] overflow-hidden pointer-events-none">
-              {/* Active clip region highlight */}
-              <div className="absolute inset-0 bg-[#b0b0b0]" />
+            <div className="absolute inset-x-0 h-2 bg-[#CBD5E1] border border-[#94A3B8] rounded-[2px] overflow-hidden pointer-events-none">
+              <div className="absolute inset-0 bg-[#E2E8F0]" />
             </div>
 
             {/* Marked points ticks */}
@@ -1960,7 +2239,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 return (
                   <span
                     key={step.frame}
-                    className="absolute top-0 bottom-0 w-1 bg-[#1e3a5f] rounded-none opacity-95"
+                    className="absolute top-0 bottom-0 w-1 bg-[#2563EB] rounded-none opacity-95"
                     style={{ left: `${pct}%` }}
                     title={`Marked at Frame ${step.frame}`}
                   />
@@ -1988,11 +2267,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           </div>
 
           {/* Time readout */}
-          <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-black shrink-0">
-            <span className="text-right text-[#1e3a5f] font-bold">
+          <div className="flex items-center gap-1.5 text-[11px] font-mono font-semibold text-[#1E293B] shrink-0">
+            <span className="text-right text-[#2563EB] font-bold">
               {formatHighSpeedTime(currentTime, clip.fps, clip.timeUnit)}
             </span>
-            <span className="text-[10px] text-[#666666]">
+            <span className="text-[10px] text-[#64748B]">
               ({currentTime >= 1 ? `${currentTime.toFixed(3)}s` : `${(currentTime * 1000).toFixed(2)}ms`})
             </span>
           </div>
@@ -2006,7 +2285,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-first-frame"
               type="button"
               onClick={handleJumpStart}
-              className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Jump to Start Frame (Home)"
             >
               <SkipBack className="w-3.5 h-3.5" />
@@ -2015,7 +2294,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-prev-frame"
               type="button"
               onClick={handleStepPrev}
-              className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Step Backward (← Left Arrow)"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -2024,7 +2303,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-play-pause"
               type="button"
               onClick={handleTogglePlay}
-              className="px-3 py-1 rounded-[3px] bg-[#1e3a5f] hover:bg-[#152843] active:bg-[#0f1d30] text-white font-semibold text-xs flex items-center gap-1 transition-all border border-[#0f1d30] active:scale-95 cursor-pointer"
+              className="px-3 py-1 rounded-[3px] bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold text-xs flex items-center gap-1 transition-all border border-[#1D4ED8] active:scale-95 cursor-pointer"
               title={isPlaying ? 'Pause video (Space)' : 'Play video (Space)'}
             >
               {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
@@ -2034,7 +2313,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-next-frame"
               type="button"
               onClick={handleStepNext}
-              className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Step Forward (→ Right Arrow)"
             >
               <ChevronRight className="w-4 h-4" />
@@ -2043,7 +2322,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-last-frame"
               type="button"
               onClick={handleJumpEnd}
-              className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors active:scale-95 cursor-pointer"
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Jump to End Frame (End)"
             >
               <SkipForward className="w-3.5 h-3.5" />
@@ -2053,10 +2332,10 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-toggle-loop"
               type="button"
               onClick={() => setIsLooping(!isLooping)}
-              className={`p-1.5 rounded-[3px] border transition-all active:scale-95 ${
+              className={`p-1.5 rounded-[3px] border transition-all active:scale-95 cursor-pointer ${
                 isLooping
-                  ? 'bg-[#1e3a5f] text-white border-[#1e3a5f] font-semibold'
-                  : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
+                  ? 'bg-[#2563EB] text-white border-[#1D4ED8] font-semibold'
+                  : 'bg-white text-[#334155] border-[#CBD5E1] hover:bg-[#E2E8F0]'
               }`}
               title="Toggle Playback Loop"
             >
@@ -2064,18 +2343,74 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             </button>
           </div>
 
-          {/* Right: Undo, Point deletion & playback speed */}
-          <div className="flex items-center gap-2 text-xs">
+          {/* Right: Undo, Redo, Point Nudge, Point deletion & playback speed */}
+          <div className="flex items-center gap-1.5 text-xs">
+            {activeStep && onNudgeCurrentPoint && (
+              <div
+                className="hidden sm:flex items-center gap-0.5 bg-white border border-[#CBD5E1] rounded-[3px] px-1 py-0.5 text-[10px] font-mono text-[#334155]"
+                title="Fine sub-pixel point nudge (±0.5px, or hold Shift for ±0.1px; also Alt+Arrow keys)"
+              >
+                <span className="text-[#64748B] px-0.5">Nudge:</span>
+                <button
+                  type="button"
+                  onClick={(e) => onNudgeCurrentPoint(e.shiftKey ? -0.1 : -0.5, 0)}
+                  className="px-1 hover:bg-[#E2E8F0] rounded-[2px] font-bold cursor-pointer"
+                  title="Nudge Left (-0.5px, Shift: -0.1px)"
+                >
+                  ←
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => onNudgeCurrentPoint(e.shiftKey ? 0.1 : 0.5, 0)}
+                  className="px-1 hover:bg-[#E2E8F0] rounded-[2px] font-bold cursor-pointer"
+                  title="Nudge Right (+0.5px, Shift: +0.1px)"
+                >
+                  →
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => onNudgeCurrentPoint(0, e.shiftKey ? -0.1 : -0.5)}
+                  className="px-1 hover:bg-[#E2E8F0] rounded-[2px] font-bold cursor-pointer"
+                  title="Nudge Up (-0.5px, Shift: -0.1px)"
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => onNudgeCurrentPoint(0, e.shiftKey ? 0.1 : 0.5)}
+                  className="px-1 hover:bg-[#E2E8F0] rounded-[2px] font-bold cursor-pointer"
+                  title="Nudge Down (+0.5px, Shift: +0.1px)"
+                >
+                  ↓
+                </button>
+              </div>
+            )}
+
             {onUndoLastPoint && (
               <button
-                id="btn-undo-point"
+                id="btn-transport-undo"
                 type="button"
                 onClick={onUndoLastPoint}
-                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors text-[11px] font-semibold"
-                title="Undo last marked point (Ctrl+Z)"
+                disabled={canUndo !== undefined ? !canUndo : (!activeTrack || activeTrack.steps.length === 0)}
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-white hover:bg-[#E2E8F0] disabled:opacity-40 disabled:pointer-events-none text-[#1E293B] border border-[#CBD5E1] transition-colors text-[11px] font-semibold cursor-pointer"
+                title={`Undo (Ctrl+Z)${undoCount > 0 ? ` • ${undoCount} action(s)` : ''}`}
               >
-                <Undo2 className="w-3 h-3 text-[#1e3a5f]" />
-                <span>Undo Point</span>
+                <Undo2 className="w-3 h-3 text-[#2563EB]" />
+                <span>Undo</span>
+              </button>
+            )}
+
+            {onRedoLastPoint && (
+              <button
+                id="btn-transport-redo"
+                type="button"
+                onClick={onRedoLastPoint}
+                disabled={!canRedo}
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-white hover:bg-[#E2E8F0] disabled:opacity-40 disabled:pointer-events-none text-[#1E293B] border border-[#CBD5E1] transition-colors text-[11px] font-semibold cursor-pointer"
+                title={`Redo (Ctrl+Y / Ctrl+Shift+Z)${redoCount > 0 ? ` • ${redoCount} action(s)` : ''}`}
+              >
+                <Redo2 className="w-3 h-3 text-[#2563EB]" />
+                <span>Redo</span>
               </button>
             )}
 
@@ -2084,7 +2419,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 id="btn-delete-frame-point"
                 type="button"
                 onClick={() => onDeleteCurrentPoint(currentFrame)}
-                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-[#8b0000] border border-[#808080] transition-colors text-[11px] font-semibold"
+                className="flex items-center gap-1 px-2 py-1 rounded-[3px] bg-white hover:bg-red-50 text-[#DC2626] border border-[#CBD5E1] transition-colors text-[11px] font-semibold cursor-pointer"
                 title="Delete tracking point at current frame (Del)"
               >
                 <Trash className="w-3 h-3" />
@@ -2092,13 +2427,13 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               </button>
             )}
 
-            <div className="flex items-center gap-1 bg-[#efefef] border border-[#808080] rounded-[3px] px-2 py-0.5 text-[11px]">
-              <span className="text-[#333333] font-semibold">Rate:</span>
+            <div className="flex items-center gap-1 bg-white border border-[#CBD5E1] rounded-[3px] px-2 py-0.5 text-[11px]">
+              <span className="text-[#64748B] font-semibold">Rate:</span>
               <select
                 id="playback-rate-select"
                 value={playbackRate}
                 onChange={(e) => handlePlaybackRateChange(parseFloat(e.target.value))}
-                className="bg-transparent text-black font-bold focus:outline-none cursor-pointer"
+                className="bg-transparent text-[#1E293B] font-bold focus:outline-none cursor-pointer"
               >
                 <option value={0.1} className="bg-white">0.1x</option>
                 <option value={0.25} className="bg-white">0.25x</option>

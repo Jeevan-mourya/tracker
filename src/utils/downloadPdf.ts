@@ -1,4 +1,81 @@
-import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { PDFDocument, PDFPage, PDFPageDrawTextOptions, rgb, StandardFonts } from 'pdf-lib';
+
+/**
+ * Sanitizes Unicode strings to Windows-1252 (WinAnsi) compatible text for pdf-lib StandardFonts.
+ * Maps Greek scientific symbols, mathematical operators, and keyboard glyphs to clean readable equivalents.
+ */
+export function sanitizeWinAnsiText(input: string): string {
+  const SYMBOL_MAP: Record<string, string> = {
+    'θ': 'theta',
+    'Θ': 'Theta',
+    'φ': 'phi',
+    'Φ': 'Phi',
+    'ψ': 'psi',
+    'Ψ': 'Psi',
+    'Δ': 'Delta ',
+    'δ': 'delta',
+    'σ': 'sigma',
+    'Σ': 'Sigma',
+    'ω': 'omega',
+    'Ω': 'Omega',
+    'α': 'alpha',
+    'β': 'beta',
+    'γ': 'gamma',
+    'λ': 'lambda',
+    'π': 'pi',
+    '≈': '~=',
+    '≠': '!=',
+    '≤': '<=',
+    '≥': '>=',
+    '→': '->',
+    '←': '<-',
+    '↑': 'Up',
+    '↓': 'Down',
+    '↔': '<->',
+    '⌘': 'Cmd',
+    '⌥': 'Opt',
+    '⇧': 'Shift',
+    '⌫': 'Backspace',
+    '−': '-',
+  };
+
+  let out = '';
+  for (const ch of input) {
+    if (SYMBOL_MAP[ch] !== undefined) {
+      out += SYMBOL_MAP[ch];
+      continue;
+    }
+    const code = ch.codePointAt(0) ?? 0;
+    // Standard ASCII printable + Latin-1 Supplement (0x20-0x7E, 0xA0-0xFF) + WinAnsi extras (•, —, –, etc.)
+    if (
+      (code >= 0x20 && code <= 0x7e) ||
+      (code >= 0xa0 && code <= 0xff) ||
+      ch === '•' ||
+      ch === '—' ||
+      ch === '–' ||
+      ch === '’' ||
+      ch === '“' ||
+      ch === '”' ||
+      ch === '…' ||
+      ch === '™'
+    ) {
+      out += ch;
+    } else if (code === 0x09 || code === 0x0a || code === 0x0d) {
+      out += ' ';
+    } else {
+      out += '?';
+    }
+  }
+  return out;
+}
+
+export function wrapPageWithWinAnsiSafety(page: PDFPage): PDFPage {
+  const originalDrawText = page.drawText.bind(page);
+  page.drawText = (text: string, options?: PDFPageDrawTextOptions) => {
+    return originalDrawText(sanitizeWinAnsiText(text), options);
+  };
+  return page;
+}
 
 /**
  * Generates and downloads a comprehensive, multi-page vector PDF User Manual
@@ -28,7 +105,7 @@ export async function downloadUserManualPDF(): Promise<void> {
     // =========================================================================
     // PAGE 1: TITLE, PHILOSOPHY & CORE OPERATING WORKFLOW
     // =========================================================================
-    const page1 = pdfDoc.addPage([595.28, 841.89]); // A4
+    const page1 = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89])); // A4
     const { width, height } = page1.getSize();
 
     // Top Header Banner
@@ -133,7 +210,7 @@ export async function downloadUserManualPDF(): Promise<void> {
       '  calibration stick endpoints to the object ends. Click the Calibration button on the toolbar or press "C" to toggle',
       '  visibility, set real length, and select units (meters, centimeters, millimeters, or feet).',
       '• Coordinate Axes System: Drag the purple axes origin (0, 0) to your spatial benchmark (e.g. launch muzzle, ground,',
-      '  or center of mass). Drag the angular rotation handle or input angle θ to align coordinate axes with inclined planes.',
+      '  or center of mass). Drag the angular rotation handle or input angle (theta) to align coordinate axes with inclined planes.',
       '• Sensor Clip Settings: Configure start frame, end frame, step size, and physical sensor frame rate (fps) to establish',
       '  calibrated delta-time (dt = step / fps) down to microsecond (µs) and nanosecond (ns) precision.',
     ];
@@ -183,7 +260,7 @@ export async function downloadUserManualPDF(): Promise<void> {
       '• Instant Kinematic Derivatives: Velocity vx, vy, and magnitude v are derived via centered finite-difference quotients.',
       '  Acceleration ax, ay, and total a (along with G-force a/9.81) are computed across consecutive temporal timebases.',
       '• Energy Calculations: Mechanical energy states E = Kinetic (½ m v²) + Gravitational Potential (m g y) are logged.',
-      '• Mathematical Regressions: The Plot pane computes Linear (y = A·t + B), Parabolic (y = A·t² + B·t + C, where 2A ≈ g),',
+      '• Mathematical Regressions: The Plot pane computes Linear (y = A·t + B), Parabolic (y = A·t² + B·t + C, where 2A ~= g),',
       '  and Cubic curves with coefficient of determination (R²) and Root Mean Square Error (RMSE) metrics.',
     ];
     for (const line of p1Models) {
@@ -233,7 +310,7 @@ export async function downloadUserManualPDF(): Promise<void> {
     // =========================================================================
     // PAGE 2: KEYBOARD SHORTCUTS MODAL & HOTKEYS VERIFICATION GUIDE
     // =========================================================================
-    const page2 = pdfDoc.addPage([595.28, 841.89]);
+    const page2 = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89]));
 
     // Top Header Banner Page 2
     page2.drawRectangle({
@@ -274,9 +351,9 @@ export async function downloadUserManualPDF(): Promise<void> {
     p2Y -= 13;
     const protocolSteps = [
       '1. Open Shortcuts Cheat Sheet: Tap "?" (or Shift + "/") or press F1. The interactive modal pops up with category filters.',
-      '2. Test Frame Navigation: Press Right Arrow (→) to step forward 1 frame. Press Shift + → to skip 5 frames. Tap Home to rewind.',
+      '2. Test Frame Navigation: Press Right Arrow (->) to step forward 1 frame. Press Shift + -> to skip 5 frames. Tap Home to rewind.',
       '3. Test Point Mass Marking: Hold Shift and Left-Click on the video. Observe the crosshair mark and automatic step advancement.',
-      '4. Test Undo & Deletion: Press Ctrl+Z (or ⌘+Z) to undo the last mark. Press Delete or Backspace to clear the active frame point.',
+      '4. Test Undo & Deletion: Press Ctrl+Z (or Cmd+Z) to undo the last mark. Press Delete or Backspace to clear the active frame point.',
       '5. Test Display Overlays: Press "M" to toggle 4× Magnifier Loupe; "A" for Axes; "C" for Calibration stick; "V" for Vectors.',
       '6. Test Viewport Zoom & Pan: Scroll mouse wheel over the video to zoom (20% to 1600%); Right-Click + Drag to pan across the scene.',
     ];
@@ -325,14 +402,14 @@ export async function downloadUserManualPDF(): Promise<void> {
     p2Y -= rowH;
 
     const HOTKEY_ROWS = [
-      { cat: 'Navigation', key: '→ (Right Arrow)', action: 'Step video forward 1 frame', verify: 'Frame counter increments by stepSize' },
-      { cat: 'Navigation', key: '← (Left Arrow)', action: 'Step video backward 1 frame', verify: 'Frame counter decrements by stepSize' },
-      { cat: 'Navigation', key: 'Shift + →', action: 'Fast skip forward 5 frames', verify: 'Jumps forward by 5× stepSize' },
-      { cat: 'Navigation', key: 'Shift + ←', action: 'Fast skip backward 5 frames', verify: 'Jumps backward by 5× stepSize' },
+      { cat: 'Navigation', key: '-> (Right Arrow)', action: 'Step video forward 1 frame', verify: 'Frame counter increments by stepSize' },
+      { cat: 'Navigation', key: '<- (Left Arrow)', action: 'Step video backward 1 frame', verify: 'Frame counter decrements by stepSize' },
+      { cat: 'Navigation', key: 'Shift + ->', action: 'Fast skip forward 5 frames', verify: 'Jumps forward by 5× stepSize' },
+      { cat: 'Navigation', key: 'Shift + <-', action: 'Fast skip backward 5 frames', verify: 'Jumps backward by 5× stepSize' },
       { cat: 'Navigation', key: 'Home', action: 'Seek to start frame of clip', verify: 'Video scrubs to clip.startFrame' },
       { cat: 'Navigation', key: 'End', action: 'Seek to end frame of clip', verify: 'Video scrubs to clip.endFrame' },
       { cat: 'Tracking', key: 'Shift + Left Click', action: 'Mark point mass coordinate', verify: 'Registers point (px,py) & auto-steps' },
-      { cat: 'Tracking', key: 'Ctrl + Z (or ⌘+Z)', action: 'Undo last point registration', verify: 'Removes most recent point step' },
+      { cat: 'Tracking', key: 'Ctrl + Z (or Cmd+Z)', action: 'Undo last point registration', verify: 'Removes most recent point step' },
       { cat: 'Tracking', key: 'Delete / Backspace', action: 'Delete point at current frame', verify: 'Clears point on active frame' },
       { cat: 'Tracking', key: 'Ctrl + Shift + Del', action: 'Clear all points on active track', verify: 'Resets active track step list' },
       { cat: 'Tracking', key: 'Tab (Shift+Tab)', action: 'Cycle through Point Masses', verify: 'Switches activeTrackId selector' },
@@ -417,7 +494,7 @@ export async function downloadUserManualPDF(): Promise<void> {
     // =========================================================================
     // PAGE 3: HIGH-SPEED DEFENSE CAMERAS, 3D STEREO DLT & FIELD EXPORT
     // =========================================================================
-    const page3 = pdfDoc.addPage([595.28, 841.89]);
+    const page3 = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89]));
 
     // Top Header Banner Page 3
     page3.drawRectangle({

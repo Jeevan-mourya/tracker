@@ -209,6 +209,22 @@ export function computeKinematics(
     }
 
     result[i].slantRange = Math.hypot(result[i].x, result[i].y);
+
+    // Populate 2D flight-path pitch/yaw/roll if not explicitly provided
+    const vxVal = result[i].vx ?? 0;
+    const vyVal = result[i].vy ?? 0;
+    const spdVal = result[i].v ?? Math.hypot(vxVal, vyVal);
+    if (result[i].elevationDeg === undefined && result[i].pitch === undefined) {
+      result[i].elevationDeg = spdVal > 0.01
+        ? (Math.atan2(vyVal, vxVal) * 180) / Math.PI
+        : (Math.atan2(result[i].y, Math.max(1e-6, Math.abs(result[i].x))) * 180) / Math.PI;
+    }
+    if (result[i].azimuthDeg === undefined && result[i].yaw === undefined) {
+      result[i].azimuthDeg = 0;
+    }
+    if (result[i].rollDeg === undefined && result[i].roll === undefined) {
+      result[i].rollDeg = 0;
+    }
   }
 
   return result;

@@ -1,6 +1,7 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { Track, Calibration, CoordinateAxes, ClipSettings, TriangulationConfig } from '../types';
 import { formatHighSpeedTime } from './highSpeedCameras';
+import { wrapPageWithWinAnsiSafety } from './downloadPdf';
 
 export type ReportTheme = 'defense-navy' | 'stealth-dark' | 'lab-classic' | 'monochrome';
 export type ReportGraphType = 'trajectory-yx' | 'velocity-time' | 'vy-time' | 'vx-time' | 'accel-time' | 'trajectory-3d';
@@ -1073,7 +1074,7 @@ export async function generateExperimentPdfReport(params: {
   // =========================================================================
   // PAGE 1: EXECUTIVE SUMMARY, 2D/3D TELEMETRY & VISUAL FIGURES
   // =========================================================================
-  const page1 = pdfDoc.addPage([595.28, 841.89]);
+  const page1 = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89]));
   const { width, height } = page1.getSize();
 
   // Top Header Banner
@@ -1710,7 +1711,7 @@ export async function generateExperimentPdfReport(params: {
   // OPTIONAL PAGE 2: EXTENDED WAVEFORMS (IF SECONDARY GRAPH REQUESTED)
   // =========================================================================
   if (secondaryPlotDataUrl) {
-    const pageWave = pdfDoc.addPage([595.28, 841.89]);
+    const pageWave = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89]));
     pageWave.drawRectangle({
       x: 0,
       y: height - 28,
@@ -1818,7 +1819,7 @@ export async function generateExperimentPdfReport(params: {
   // =========================================================================
   // TABULAR KINEMATIC DATA LOG (PAGE 2 OR PAGE 3)
   // =========================================================================
-  const page2 = pdfDoc.addPage([595.28, 841.89]);
+  const page2 = wrapPageWithWinAnsiSafety(pdfDoc.addPage([595.28, 841.89]));
 
   // Page 2 Header Banner
   page2.drawRectangle({

@@ -1,0 +1,321 @@
+\documentclass[a4paper,conference]{IEEEtran}
+
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs,array}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\X}{\mathbf{X}}
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\RMSE}{\mathrm{RMSE}}
+\newcommand{\kappaTwo}{\widehat{\kappa}_2}
+\newcommand{\diagratio}{\chi_R}
+\newcolumntype{P}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\setcounter{MaxMatrixCols}{12}
+\renewcommand{\algorithmicrequire}{\textbf{Require:}}
+\renewcommand{\algorithmicensure}{\textbf{Ensure:}}
+
+\begin{document}
+
+\title{Numerically Robust Two-View 3-D Reconstruction Using Normalized DLT and Householder QR Triangulation}
+
+% Double-blind submission: replace this block only when the conference requests
+% an identified camera-ready manuscript.
+\author{\IEEEauthorblockN{Anonymous Authors}
+\IEEEauthorblockA{Affiliation withheld for double-blind review}}
+
+\maketitle
+
+\begin{abstract}
+This paper substantiates Two-View Spatial Triangulation through software verification and physical validation. This work reconstructs three-dimensional (3D) points and trajectories using Direct Linear Transformation (DLT) formulation. The algorithmic pipeline combines isotropic mean-distance normalization, DLT camera calibration, Brown–Conrady distortion
+inversion, and inhomogeneous dual-view least-squares triangulation (solved by Householder QR). The software pipeline implements these numerical operations into an offline system for high frame-rate video analysis, extending 3D-modeling. 
+
+Two-view reconstruction from optical video is sensitive to calibration geometry, lens distortion, image-point error, and the intersection angle of the viewing rays. This paper presents a computational pipeline that combines isotropic mean-distance normalization, Direct Linear Transformation (DLT) camera calibration, compact Householder QR reduction followed by Jacobi singular value decomposition (SVD), Brown--Conrady distortion inversion, and inhomogeneous least-squares triangulation solved with Householder QR. Unlike a normal-equation solve, the reconstruction stage does not explicitly form $M^{T}M$. Calibration diagnostics distinguish the non-null subspace conditioning from the singular-value gap associated with the estimated null vector. Point-level checks use a spectral condition estimate, a ray-intersection angle, and reprojection error; thresholds are treated as application-dependent acceptance policies rather than universal guarantees. Reported software comparison tests show close numerical agreement between Java and TypeScript implementations, while a preliminary synthetic benchmark illustrates the growth of depth error as the ray angle narrows. These results establish numerical consistency under the tested conditions, not physical accuracy. A reproducible test-range validation protocol using surveyed control points, synchronized exposures, and an independent dynamic reference is specified for future measurement of metric accuracy and trajectory uncertainty.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Two-view reconstruction, stereo triangulation, Direct Linear Transformation, Householder QR, camera calibration, lens distortion, numerical conditioning, optical range tracking.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Recovering metric three-dimensional (3-D) trajectories from two video views is relevant to optical range instrumentation, motion measurement, and dynamic test analysis. The reconstruction is determined not only by the triangulation equations but also by camera calibration, lens-distortion correction, correspondence error, temporal association, and viewing geometry \cite{hz,abdkarara}. When the camera rays intersect at a small angle, modest image-plane errors can produce large uncertainty along depth. A numerically stable linear solve cannot remove this geometric ambiguity, so numerical diagnostics and geometric acceptance tests are both required.
+
+A common least-squares implementation forms the normal equations $M^TM\X=M^T\mathbf{b}$. Although convenient, this transforms the 2-norm condition number according to $\kappa_2(M^TM)=\kappa_2(M)^2$ when $M$ has full column rank, potentially worsening finite-precision effects \cite{golub}. Calibration from unnormalized image and world coordinates can also be poorly scaled because pixel coordinates and metric coordinates occupy different numerical ranges \cite{hz}. These issues motivate normalization and orthogonal factorization at both the calibration and reconstruction stages.
+
+This paper develops and evaluates a two-view pipeline with four principal contributions:
+\begin{enumerate}
+  \item an isotropically normalized DLT calibration procedure using a compact Householder QR factorization and Jacobi SVD to estimate the camera null vector;
+  \item distortion-aware observation preprocessing and a direct $4\times3$ inhomogeneous triangulation solve using Householder QR, without explicitly constructing normal equations;
+  \item calibration- and point-level quality diagnostics that separate non-null calibration conditioning, null-space separation, reconstruction conditioning, ray angle, and reprojection residual;
+  \item an initial numerical comparison and a test-range validation protocol that explicitly separates software agreement and synthetic sensitivity from physical measurement accuracy.
+\end{enumerate}
+
+The method is intended for the computer-vision and image/video-analysis side of optical range tracking. It does not claim that numerical stability alone guarantees field accuracy; that claim requires independent physical validation.
+
+\section{Method}
+
+\subsection{Camera Model and Coordinate Normalization}
+For a world point $\X_i=[X_i,Y_i,Z_i]^T$, define its homogeneous form $\X_{i,h}=[X_i,Y_i,Z_i,1]^T$. A pinhole camera is represented by $P\in\R^{3\times4}$ and satisfies
+\begin{equation}
+  \lambda_i\x_i=P\X_{i,h},\qquad \x_i=[u_i,v_i,1]^T,
+  \label{eq:camera}
+\end{equation}
+where $\lambda_i\ne0$. A projective camera has 11 independent degrees of freedom. For a stable DLT estimate, image and 3-D control coordinates are transformed to have zero centroid and a prescribed mean distance from the origin \cite{hz}.
+
+Let $\boldsymbol{\mu}_2$ be the centroid of the image control points and $d_2$ their mean Euclidean distance from it. Set $s_2=\sqrt{2}/d_2$ and
+\begin{equation}
+T_2=\begin{bmatrix}s_2&0&-s_2\mu_u\\0&s_2&-s_2\mu_v\\0&0&1\end{bmatrix}.
+\label{eq:t2}
+\end{equation}
+For the 3-D control points, let the centroid be $\boldsymbol{\mu}_3$ and the mean distance be $d_3$. With $s_3=\sqrt{3}/d_3$, use
+\begin{equation}
+T_3=\begin{bmatrix}
+s_3&0&0&-s_3\mu_X\\
+0&s_3&0&-s_3\mu_Y\\
+0&0&s_3&-s_3\mu_Z\\
+0&0&0&1
+\end{bmatrix}.
+\label{eq:t3}
+\end{equation}
+The normalized coordinates are $\tilde{\x}_i=T_2\x_i$ and $\tilde{\X}_{i,h}=T_3\X_{i,h}$. The control configuration must span 3-D adequately; six points is the algebraic minimum, not a recommendation for a robust noisy calibration. Calibration quality should be assessed from matrix diagnostics and held-out reprojection error rather than from point count alone.
+
+\subsection{Normalized DLT Calibration}
+Each normalized correspondence contributes two rows to the homogeneous DLT system:
+\begin{align}
+A_i^{(u)}&=[\tilde{\X}_{i,h}^{T}\quad\mathbf{0}_{1\times4}\quad-\tilde{u}_i\tilde{\X}_{i,h}^{T}],\\
+A_i^{(v)}&=[\mathbf{0}_{1\times4}\quad\tilde{\X}_{i,h}^{T}\quad-\tilde{v}_i\tilde{\X}_{i,h}^{T}].
+\label{eq:dltrows}
+\end{align}
+Stacking $n$ correspondences gives $A\mathbf{p}=\mathbf{0}$, $A\in\R^{2n\times12}$. The normalized projection matrix is obtained from the right singular vector associated with the smallest singular value. To reduce the size of the SVD, compute a thin Householder QR factorization
+\begin{equation}
+A=QR_A,\quad Q\in\R^{2n\times12},\quad R_A\in\R^{12\times12},
+\label{eq:qrA}
+\end{equation}
+then apply a cyclic one-sided Jacobi SVD to $R_A$. Since $Q$ has orthonormal columns, this reduction preserves the singular values and right singular vectors in exact arithmetic. The right singular vector $\mathbf{v}_{12}$ associated with the smallest singular value is reshaped into $\tilde{P}$, and the denormalized camera matrix is
+\begin{equation}
+P=T_2^{-1}\tilde{P}T_3.
+\label{eq:denorm}
+\end{equation}
+
+Let $\sigma_1\ge\sigma_2\ge\cdots\ge\sigma_{12}$ denote the singular values of the calibration design matrix (equivalently, of $R_A$ in exact arithmetic). Because DLT estimates a null direction, the full ratio $\sigma_1/\sigma_{12}$ is not an appropriate stand-alone condition measure. We instead report the non-null-subspace ratio
+\begin{equation}
+\kappa_{\mathrm{nonnull}}=\frac{\sigma_1}{\sigma_{11}},\qquad
+\rho_{\mathrm{null}}=\frac{\sigma_{11}}{\max(\sigma_{12},\epsilon)},
+\label{eq:caldiag}
+\end{equation}
+where $\epsilon$ prevents division by zero in finite-precision reporting. The first quantity describes conditioning away from the estimated null direction; the second measures separation of the smallest singular value from the rest. Neither replaces reprojection validation. Calibration controls, held-out points, and image observations must be expressed in the same coordinate domain.
+
+The inhomogeneous triangulation equations below use a camera gauge with $P_{34}=1$. Thus, after denormalization, each camera matrix is scaled by $P_{34}$ only when this coefficient is safely nonzero relative to $\|P\|_F$. If that gauge is numerically inadmissible, the calibration is flagged and the implementation must change gauge or use a homogeneous triangulation method; it must not divide by a near-zero coefficient silently.
+
+\subsection{Lens-Distortion Compensation}
+When lens distortion is enabled, observed pixels are first mapped through the camera intrinsic matrix $K$ to dimensionless image coordinates. Brown--Conrady radial and tangential distortion is modeled as \cite{brown}
+\begin{align}
+r^2&=x^2+y^2,\quad L_r=1+k_1r^2+k_2r^4+k_3r^6,\\
+x_d&=xL_r+2p_1xy+p_2(r^2+2x^2),\\
+y_d&=yL_r+p_1(r^2+2y^2)+2p_2xy.
+\label{eq:brown}
+\end{align}
+Here $(x,y)$ are undistorted normalized coordinates and $(x_d,y_d)$ are distorted normalized coordinates. The intrinsic matrix and distortion coefficients must be known or estimated independently; an 11-degree-of-freedom projective DLT matrix alone does not identify physical lens-distortion coefficients. Define the tangential terms as $	au_x=2p_1xy+p_2(r^2+2x^2)$ and $	au_y=p_1(r^2+2y^2)+2p_2xy$. Starting from $(x^{(0)},y^{(0)})=(x_d,y_d)$, fixed-point inversion is
+\begin{equation}
+\begin{aligned}
+x^{(m+1)}&=\frac{x_d-\tau_x(x^{(m)},y^{(m)})}{L_r(x^{(m)},y^{(m)})},\\
+y^{(m+1)}&=\frac{y_d-\tau_y(x^{(m)},y^{(m)})}{L_r(x^{(m)},y^{(m)})}.
+\end{aligned}
+\label{eq:undistort}
+\end{equation}
+Iteration stops when the update and forward-model residual meet specified tolerances. Non-finite iterates, a radial factor close to zero, or failure to converge within the iteration limit cause the observation to be rejected. Coordinates are not silently clamped to an arbitrary radius because clipping can introduce systematic image-point bias. The recovered normalized point is mapped back to an undistorted pixel coordinate, which is used consistently for DLT fitting, triangulation, and reprojection checks. If raw distorted pixels are used for residual reporting instead, the forward distortion model must be applied to the reprojected point before calculating the residual.
+
+\subsection{Inhomogeneous Householder QR Triangulation}
+Let the two calibrated camera matrices be scaled to the $P_{34}=1$ gauge and expressed by the 11 parameters
+\begin{equation}
+P_j=\begin{bmatrix}
+L_1^{(j)}&L_2^{(j)}&L_3^{(j)}&L_4^{(j)}\\
+L_5^{(j)}&L_6^{(j)}&L_7^{(j)}&L_8^{(j)}\\
+L_9^{(j)}&L_{10}^{(j)}&L_{11}^{(j)}&1
+\end{bmatrix},\quad j\in\{1,2\}.
+\end{equation}
+For undistorted image observations $(u_j,v_j)$, the projective equations can be rearranged into $M\X=\mathbf{b}$, where $M\in\R^{4\times3}$ and
+\begin{equation}
+M=\begin{bmatrix}
+u_1L_9^{(1)}-L_1^{(1)}&u_1L_{10}^{(1)}-L_2^{(1)}&u_1L_{11}^{(1)}-L_3^{(1)}\\
+v_1L_9^{(1)}-L_5^{(1)}&v_1L_{10}^{(1)}-L_6^{(1)}&v_1L_{11}^{(1)}-L_7^{(1)}\\
+u_2L_9^{(2)}-L_1^{(2)}&u_2L_{10}^{(2)}-L_2^{(2)}&u_2L_{11}^{(2)}-L_3^{(2)}\\
+v_2L_9^{(2)}-L_5^{(2)}&v_2L_{10}^{(2)}-L_6^{(2)}&v_2L_{11}^{(2)}-L_7^{(2)}
+\end{bmatrix},
+\label{eq:M}
+\end{equation}
+\begin{equation}
+\mathbf{b}=\begin{bmatrix}L_4^{(1)}-u_1\\L_8^{(1)}-v_1\\L_4^{(2)}-u_2\\L_8^{(2)}-v_2\end{bmatrix}.
+\label{eq:b}
+\end{equation}
+Compute a thin Householder QR factorization $M=Q_MR_M$, with $Q_M\in\R^{4\times3}$ and $R_M\in\R^{3\times3}$. Then solve
+\begin{equation}
+R_M\hat{\X}=Q_M^T\mathbf{b}
+\label{eq:qrx}
+\end{equation}
+by triangular back-substitution. The implementation never explicitly forms $M^TM$. A spectral 2-norm condition estimate is obtained from the singular values of the small triangular factor:
+\begin{equation}
+\kappaTwo=\frac{\sigma_{\max}(R_M)}{\sigma_{\min}(R_M)}.
+\label{eq:kappam}
+\end{equation}
+A diagonal ratio $\diagratio=\max_i|(R_M)_{ii}|/\min_i|(R_M)_{ii}|$ may be retained as a cheap warning indicator, but it is not a general condition-number estimate and must not be used as the sole numerical test.
+
+\subsection{Geometric and Reprojection Quality Gates}
+The optical centre of camera $j$ is obtained by solving $A_j\mathbf{C}_j=-\mathbf{a}_{4,j}$ for $P_j=[A_j\mid\mathbf{a}_{4,j}]$; QR or SVD is preferred over Cramer's rule. For a reconstructed point, define $\mathbf{r}_j=\hat{\X}-\mathbf{C}_j$ and
+\begin{equation}
+\theta_{\mathrm{ray}}=\cos^{-1}\!\left(\operatorname{clip}\left(\frac{\mathbf{r}_1^T\mathbf{r}_2}{\|\mathbf{r}_1\|_2\|\mathbf{r}_2\|_2},-1,1\right)\right).
+\label{eq:ray}
+\end{equation}
+Three checks are applied to each candidate point:
+\begin{enumerate}
+  \item \textit{Numerical conditioning:} reject when $R_M$ is rank deficient or $\kappaTwo$ exceeds a configured limit. A limit of $10^4$ is used as a provisional engineering policy in the implementation, not as a universal boundary between valid and invalid geometry.
+  \item \textit{Ray angle:} reject when $\theta_{\mathrm{ray}}<15^\circ$ under the current range-tracking policy. The threshold must be tuned to the baseline, working volume, noise level, and required uncertainty.
+  \item \textit{Reprojection:} project $\hat{\X}$ into both views and calculate $\delta_j=\|[u_j,v_j]^T-\pi(P_j\hat{\X}_h)\|_2$ in the undistorted pixel domain. Reject when either residual exceeds a chosen threshold (nominally $1.5$ pixels).
+\end{enumerate}
+Passing these checks indicates that a point is acceptable under the selected policy; it is not a statistical confidence interval or proof of a specified metric accuracy. For metrology, uncertainty should additionally be estimated from image-point covariance, calibration uncertainty, and the local triangulation Jacobian.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  node distance=0.32cm,
+  block/.style={rectangle,draw,rounded corners=1.5pt,align=center,text width=0.86\columnwidth,minimum height=0.52cm,font=\footnotesize},
+  line/.style={-{Latex[length=1.7mm]},thick}
+]
+\node[block] (obs) {Synchronized two-view observations and timestamps};
+\node[block,below=of obs] (cal) {Intrinsic/distortion correction and normalized DLT calibration};
+\node[block,below=of cal] (tri) {Inhomogeneous triangulation by Householder QR};
+\node[block,below=of tri] (gate) {Condition, ray-angle, and reprojection gates};
+\node[block,below=of gate] (traj) {Accepted 3-D samples, temporal derivatives, and validation logs};
+\path[line] (obs)--(cal); \path[line] (cal)--(tri); \path[line] (tri)--(gate); \path[line] (gate)--(traj);
+\end{tikzpicture}
+\caption{Processing stages and acceptance checks for two-view reconstruction.}
+\label{fig:pipeline}
+\end{figure}
+
+\begin{algorithm}[t]
+\caption{Calibration and Two-View Reconstruction}
+\label{alg:pipeline}
+\small
+\begin{algorithmic}[1]
+\REQUIRE Non-coplanar 3-D controls, corresponding observations for each camera, intrinsic/distortion parameters, and a synchronized stereo observation.
+\ENSURE Camera matrices, reconstructed point, reprojection residuals, and acceptance status.
+\FOR{each camera $j\in\{1,2\}$}
+  \STATE Undistort control observations; reject inversion failures.
+  \STATE Compute $T_{2,j}$ and $T_3$ and assemble $A_j$.
+  \STATE Compute thin Householder QR, then Jacobi SVD of $R_{A,j}$.
+  \STATE Evaluate $\kappa_{\mathrm{nonnull}}$ and $\rho_{\mathrm{null}}$; recover and denormalize $P_j$.
+  \STATE Verify gauge admissibility and held-out reprojection error.
+\ENDFOR
+\STATE Undistort the stereo observation and assemble $M\X=\mathbf{b}$.
+\STATE Solve by Householder QR; calculate $\kappaTwo$, camera centres, and $\theta_{\mathrm{ray}}$.
+\STATE Calculate reprojection residuals in the matching image-coordinate domain.
+\IF{all numerical, ray-angle, and reprojection gates pass}
+  \RETURN $\hat{\X}$ and \textsc{Accepted}.
+\ELSE
+  \RETURN $\hat{\X}$ with diagnostic flags and \textsc{Rejected}.
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+\section{Implementation and Numerical Evaluation}
+\subsection{Implementation and Cross-Implementation Agreement}
+The numerical core is implemented in double-precision Java, with a TypeScript/V8 implementation used as a reference for selected calculations. Preallocated workspaces reuse primitive buffers for calibration and triangulation operations, reducing avoidable allocation in the numerical kernels. This design is compatible with local/offline video analysis; however, throughput and garbage-collection claims require profiling on a specified computer, video format, frame rate, and workload and are not inferred from numerical parity alone.
+
+Table~\ref{tab:parity} summarizes the maximum discrepancies reported in the supplied cross-implementation tests. Agreement between two implementations that use the same model and inputs is evidence of implementation consistency, but it does not establish independent correctness, calibration accuracy, or physical measurement accuracy. A reproducible test report should include the test fixtures, software versions, number of cases, and precise definition of each discrepancy metric.
+
+\begin{table}[t]
+\caption{Reported Cross-Implementation Numerical Differences}
+\label{tab:parity}
+\centering
+\footnotesize
+\begin{tabular}{P{0.53\columnwidth}P{0.37\columnwidth}}
+\toprule
+Quantity compared & Reported discrepancy \\
+\midrule
+Hartley-normalized coordinates & $<1.0\times10^{-13}$ \\
+Calibration reprojection RMS value & Difference $<0.08$ px \\
+Brown--Conrady round-trip coordinates & $<1.0\times10^{-11}$ \\
+Reconstructed 3-D position & $<3.8\times10^{-8}$ m \\
+Optical-centre coordinates & $\leq1.0\times10^{-12}$ m \\
+Kinematic load factor ($g$ units) & $<1.0\times10^{-10}\,g$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Preliminary Synthetic Sensitivity Benchmark}
+A preliminary synthetic benchmark supplied for this manuscript compares QR-based reconstruction with a normal-equation implementation under selected ray angles and image-coordinate noise levels. The reported 3-D RMSE values are reproduced in Table~\ref{tab:sensitivity}. Results illustrate the expected increase in sensitivity as rays become nearly parallel. At $15^\circ$ and $0.5$-pixel noise, the reported QR RMSE is $8.9$ mm compared with $14$ mm for normal equations. At $5^\circ$, the existing diagonal-ratio diagnostic exceeded its rejection limit and the QR pipeline rejected the point, whereas the normal-equation result had a reported RMSE of $0.87$ m. Because the table originates from the supplied benchmark record, its values should be treated as preliminary rather than as a universal performance guarantee.
+
+\begin{table}[t]
+\caption{Reported Synthetic Reconstruction Error Under Ray-Angle and Noise Variation; the $5^\circ$ QR case was rejected by the supplied diagonal-ratio gate.}
+\label{tab:sensitivity}
+\centering
+\footnotesize
+\begin{tabular}{C{0.20\columnwidth}C{0.15\columnwidth}C{0.20\columnwidth}C{0.25\columnwidth}}
+\toprule
+Ray angle & Noise (px) & QR RMSE (m) & Normal-eq. RMSE (m) \\
+\midrule
+$60^\circ$ & 0.0 & $3.8\times10^{-8}$ & $4.2\times10^{-7}$ \\
+$60^\circ$ & 0.5 & $1.1\times10^{-3}$ & $1.2\times10^{-3}$ \\
+$30^\circ$ & 0.5 & $3.4\times10^{-3}$ & $3.9\times10^{-3}$ \\
+$15^\circ$ & 0.5 & $8.9\times10^{-3}$ & $1.4\times10^{-2}$ \\
+$5^\circ$ & 0.5 & Rejected & $8.7\times10^{-1}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The spectral condition gate in (\ref{eq:kappam}) should be evaluated and reported separately from the legacy diagonal-ratio decision shown in Table~\ref{tab:sensitivity}. For the result to be independently reproducible, the final evaluation record should state the number of 3-D test points and trajectories, scene dimensions, camera matrices or intrinsic parameters, baseline, noise-generation seed, number of repetitions, and whether the reported RMSE is averaged over points, trials, or both. The existing summary does not specify all of these items. The numerical values are therefore useful as preliminary evidence but are insufficient by themselves to establish statistically general superiority over normal equations.
+
+\subsection{Trajectory Kinematics and Timing}
+For accepted reconstructed points $\hat{\X}(t_k)$, velocity and acceleration may be estimated by central differences when samples are uniformly spaced:
+\begin{align}
+\mathbf{V}(t_k)&=\frac{\hat{\X}(t_{k+1})-\hat{\X}(t_{k-1})}{2\Delta t},\\
+\mathbf{a}(t_k)&=\frac{\hat{\X}(t_{k+1})-2\hat{\X}(t_k)+\hat{\X}(t_{k-1})}{\Delta t^2}.
+\label{eq:kin}
+\end{align}
+Both approximations have second-order truncation error for a sufficiently smooth trajectory and uniform sampling. For irregular timestamps, the uniform-step formulas must be replaced by nonuniform finite differences or a local polynomial fit. Acceleration estimates amplify pixel and reconstruction noise; smoothing, uncertainty propagation, and the selected timebase should therefore be documented before using these values as range telemetry.
+
+With a declared world-frame origin and axes, slant range can be computed as $R_s=\|\hat{\X}\|_2$. If $Y$ is the vertical axis and $X$--$Z$ define the horizontal plane, ground range is $R_g=\sqrt{X^2+Z^2}$, azimuth is $\alpha=\operatorname{atan2}(X,Z)$, and elevation is $\beta=\operatorname{atan2}(Y,R_g)$. The acceleration magnitude expressed in standard-gravity units is $n_g=\|\mathbf{a}\|_2/g_0$, where $g_0$ is standard gravity; this is a kinematic acceleration magnitude, not necessarily the specific force measured by an accelerometer. Mach number requires an environmental speed-of-sound value: $\mathrm{Ma}=\|\mathbf{V}\|_2/a_{\mathrm{sound}}$.
+
+Temporal association must use media timestamps or an explicitly synchronized acquisition timebase. When cameras are not hardware-triggered, their offset and drift must be estimated and included in the uncertainty budget. Interpolation between frames can improve temporal sampling but cannot recover information lost to exposure blur, timing error, or an inadequate frame rate.
+
+\subsection{Proposed Physical Validation Protocol}
+The physical test-range procedure below is a proposed protocol, not a completed experiment in this manuscript:
+\begin{enumerate}
+  \item \textit{Static calibration:} survey a non-coplanar 3-D control fixture using a calibrated reference instrument; report control-point uncertainty and use separate calibration and validation points.
+  \item \textit{Dynamic reference:} track a target moving on a stage or trajectory with an independently measured position-time reference. Synchronize exposure using hardware triggers where possible and record any residual time offset.
+  \item \textit{Metric evaluation:} report component-wise bias, $\RMSE_{3D}=\sqrt{N^{-1}\sum_{i=1}^{N}\|\hat{\X}_i-\X_{\mathrm{ref},i}\|_2^2}$, percentile errors, valid/rejected-point counts, and uncertainty intervals. Do not report only accepted points without also reporting the rejection rate.
+  \item \textit{Stress testing:} vary target distance, ray angle, image-point precision, lighting, and motion speed. Preserve raw observations, camera calibration identifiers, timestamps, residuals, rejected points, and reference measurements to permit independent analysis.
+\end{enumerate}
+This protocol is needed to quantify physical accuracy and determine whether the configured thresholds remain appropriate over the intended measurement volume.
+
+\section{Discussion and Limitations}
+The numerical design addresses two distinct failure sources. Coordinate normalization improves the scale of the calibration problem, while orthogonal factorization avoids the explicit condition-number squaring associated with normal equations. These choices improve the stability of the computations but do not resolve weak camera geometry or inaccurate observations. Ray-angle gating helps detect poorly constrained depth, and reprojection checks identify some calibration or correspondence failures; neither alone is a substitute for uncertainty analysis.
+
+The evidence currently available has three limitations. First, cross-implementation differences measure agreement for the tested cases, not ground-truth accuracy. Second, the synthetic sensitivity values need a complete parameter record and repeated-trial statistics before they can support a general comparative claim. Third, the proposed physical validation protocol has not yet supplied measured results. Thus, this manuscript reports an algorithm and preliminary numerical evidence, rather than a completed field validation of range-tracking accuracy.
+
+\section{Conclusion}
+A two-view 3-D reconstruction pipeline has been presented using isotropic normalization for DLT calibration, compact QR--Jacobi SVD null-vector estimation, Brown--Conrady distortion inversion, and inhomogeneous Householder QR triangulation. Calibration diagnostics distinguish non-null subspace conditioning from null-space separation, while point acceptance uses spectral conditioning, ray-intersection angle, and reprojection error. Preliminary software comparisons show close agreement between two implementations, and supplied synthetic results illustrate the effect of reduced ray angle on reconstruction error. These findings support the numerical design but do not establish physical accuracy. The next step is a fully specified synthetic study and independent static and dynamic range validation with synchronized cameras and a surveyed reference.
+
+\begin{thebibliography}{00}
+\bibitem{abdkarara}
+Y. I. Abdel-Aziz and H. M. Karara, ``Direct linear transformation from comparator coordinates into object space coordinates in close-range photogrammetry,'' in \emph{Proc. ASP Symp. Close-Range Photogrammetry}, Urbana, IL, USA, 1971, pp. 1--18.
+
+\bibitem{hz}
+R. Hartley and A. Zisserman, \emph{Multiple View Geometry in Computer Vision}, 2nd ed. Cambridge, U.K.: Cambridge Univ. Press, 2004.
+
+\bibitem{brown}
+D. C. Brown, ``Decentering distortion of lenses,'' \emph{Photogrammetric Engineering}, vol. 32, no. 3, pp. 444--462, 1966.
+
+\bibitem{golub}
+G. H. Golub and C. F. Van Loan, \emph{Matrix Computations}, 4th ed. Baltimore, MD, USA: Johns Hopkins Univ. Press, 2013.
+\end{thebibliography}
+
+\end{document}

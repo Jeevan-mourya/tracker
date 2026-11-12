@@ -23,6 +23,9 @@ interface ClipSettingsModalProps {
   onClose: () => void;
   clip: ClipSettings;
   onSave: (clip: Partial<ClipSettings>) => void;
+  is3D?: boolean;
+  triangulation?: any;
+  onUpdateTriangulation?: (tri: any) => void;
 }
 
 export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
@@ -30,7 +33,13 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   onClose,
   clip,
   onSave,
+  is3D = false,
+  triangulation,
+  onUpdateTriangulation,
 }) => {
+  const [activeTab, setActiveTab] = useState<'cam1' | 'cam2' | 'sync'>('cam1');
+
+  // Camera 1 settings
   const [startFrame, setStartFrame] = useState(clip.startFrame.toString());
   const [endFrame, setEndFrame] = useState(clip.endFrame.toString());
   const [stepSize, setStepSize] = useState(clip.stepSize.toString());
@@ -39,6 +48,34 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   const [startTime, setStartTime] = useState((clip.startTime ?? 0).toString());
   const [selectedCamera, setSelectedCamera] = useState<string>(clip.cameraModel || 'photron-saz');
   const [timeUnit, setTimeUnit] = useState<'auto' | 's' | 'ms' | 'us' | 'ns'>(clip.timeUnit || 'auto');
+
+  // Camera 2 settings (Requirement 3: distinct f2, start, end, step, t0, duration)
+  const initialCam2Clip = triangulation?.clipCam2 || {
+    fps: triangulation?.fpsCam2 || clip.fps || 30,
+    startFrame: 0,
+    endFrame: clip.totalFrames ? clip.totalFrames - 1 : clip.endFrame || 100,
+    stepSize: 1,
+    startTime: 0,
+    playbackFps: 30,
+  };
+  const [fpsCam2, setFpsCam2] = useState((triangulation?.fpsCam2 || initialCam2Clip.fps || 30).toString());
+  const [playbackFpsCam2, setPlaybackFpsCam2] = useState((initialCam2Clip.playbackFps || 30).toString());
+  const [startFrameCam2, setStartFrameCam2] = useState(initialCam2Clip.startFrame.toString());
+  const [endFrameCam2, setEndFrameCam2] = useState(initialCam2Clip.endFrame.toString());
+  const [stepSizeCam2, setStepSizeCam2] = useState(initialCam2Clip.stepSize.toString());
+  const [startTimeCam2, setStartTimeCam2] = useState((initialCam2Clip.startTime ?? 0).toString());
+
+  // Stereo Synchronization Settings (Requirement 2 & 3: Anchor frames n and m, tolerance)
+  const initialSync = triangulation?.syncConfig || {
+    anchorCam1Frame: 0,
+    anchorCam2Frame: 0,
+    syncToleranceSeconds: 0.005,
+  };
+  const [anchorCam1, setAnchorCam1] = useState(initialSync.anchorCam1Frame.toString());
+  const [anchorCam2, setAnchorCam2] = useState(initialSync.anchorCam2Frame.toString());
+  const [syncToleranceMs, setSyncToleranceMs] = useState(
+    ((initialSync.syncToleranceSeconds || 0.005) * 1000).toString()
+  );
 
   // Defense shutter / blur calculator state
   const [calcSpeedMps, setCalcSpeedMps] = useState<string>('920'); // 5.56mm NATO default
@@ -53,20 +90,27 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   const calculatedDtUs = calculatedFrameDt * 1e6;
   const calculatedDtMs = calculatedFrameDt * 1000;
 
+  const currentStep2 = Math.max(1, parseInt(stepSizeCam2, 10) || 1);
+  const currentFps2 = Math.max(0.1, parseFloat(fpsCam2) || 30);
+  const calculatedDtMs2 = (currentStep2 / currentFps2) * 1000;
+
   const shutterEstimate = calculateRequiredShutter(
     parseFloat(calcSpeedMps) || 920,
     parseFloat(calcBlurMm) || 0.5
   );
 
-  const applyPreset = (presetFps: number) => {
+  const applyPresetCam1 = (presetFps: number) => {
     setFps(presetFps.toString());
+  };
+
+  const applyPresetCam2 = (presetFps: number) => {
+    setFpsCam2(presetFps.toString());
   };
 
   const handleSelectCamera = (cameraId: string) => {
     setSelectedCamera(cameraId);
     const cam = DEFENSE_HIGH_SPEED_CAMERAS.find((c) => c.id === cameraId);
     if (cam && cam.defaultFpsOptions.length > 0) {
-      // Pick a representative frame rate for this camera (e.g. 10000 fps or max full res)
       const targetFps = cam.defaultFpsOptions.includes(10000)
         ? 10000
         : cam.defaultFpsOptions[Math.floor(cam.defaultFpsOptions.length / 2)];
@@ -86,6 +130,7 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
 
     const matchedCam = DEFENSE_HIGH_SPEED_CAMERAS.find((c) => c.id === selectedCamera);
 
+    // Save Camera 1 to clip
     onSave({
       startFrame: s,
       endFrame: end,
@@ -98,6 +143,39 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
       cameraModel: matchedCam ? `${matchedCam.manufacturer} ${matchedCam.model}` : 'High-Speed Camera',
       timeUnit,
     });
+
+    // Save Camera 2 and Stereo Sync to triangulation if handler present
+    if (onUpdateTriangulation) {
+      const fRate2 = Math.max(0.1, parseFloat(fpsCam2) || 30);
+      const s2 = Math.max(0, parseInt(startFrameCam2, 10) || 0);
+      const end2 = Math.max(s2, parseInt(endFrameCam2, 10) || 100);
+      const step2 = Math.max(1, parseInt(stepSizeCam2, 10) || 1);
+      const pFps2 = Math.max(1, parseFloat(playbackFpsCam2) || 30);
+      const t02 = parseFloat(startTimeCam2) || 0;
+
+      const n = Math.max(0, parseInt(anchorCam1, 10) || 0);
+      const m = Math.max(0, parseInt(anchorCam2, 10) || 0);
+      const tolSec = Math.max(0.0001, (parseFloat(syncToleranceMs) || 5) / 1000);
+
+      onUpdateTriangulation({
+        fpsCam1: fRate,
+        fpsCam2: fRate2,
+        clipCam2: {
+          fps: fRate2,
+          startFrame: s2,
+          endFrame: end2,
+          stepSize: step2,
+          startTime: t02,
+          playbackFps: pFps2,
+        },
+        syncConfig: {
+          anchorCam1Frame: n,
+          anchorCam2Frame: m,
+          syncToleranceSeconds: tolSec,
+        },
+      });
+    }
+
     onClose();
   };
 
@@ -124,181 +202,414 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSave} className="mt-3 space-y-3.5 text-xs">
-          {/* Camera Model Profile Selector */}
-          <div className="bg-[#ece9d8] border border-[#808080] p-2.5 rounded-[2px]">
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-black font-bold flex items-center gap-1.5 text-[11px]">
-                <Camera className="w-3.5 h-3.5 text-[#1e3a5f]" />
-                <span>Defense Camera Profile:</span>
-              </label>
-              <span className="text-[10px] font-mono text-[#555555]">Photron / Phantom / NAC</span>
-            </div>
-            <select
-              value={selectedCamera}
-              onChange={(e) => handleSelectCamera(e.target.value)}
-              className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-semibold outline-none cursor-pointer"
-            >
-              {DEFENSE_HIGH_SPEED_CAMERAS.map((cam) => (
-                <option key={cam.id} value={cam.id}>
-                  {cam.manufacturer} {cam.model} — {cam.maxFpsFullRes.toLocaleString()} fps full res (up to {cam.maxFpsReduced.toLocaleString()} fps)
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Tab Navigation for Camera 1, Camera 2, and Stereo Synchronization */}
+        <div className="flex items-center gap-1 mt-3 border-b border-[#808080] pb-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab('cam1')}
+            className={`px-3 py-1 rounded-t-[2px] text-xs font-bold border-t border-x transition-colors ${
+              activeTab === 'cam1'
+                ? 'bg-[#1e3a5f] text-white border-[#0f1d30]'
+                : 'bg-[#e0e0e0] text-black border-[#808080] hover:bg-[#d0d0d0]'
+            }`}
+          >
+            Camera 1 (Cam 1)
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('cam2')}
+            className={`px-3 py-1 rounded-t-[2px] text-xs font-bold border-t border-x transition-colors ${
+              activeTab === 'cam2'
+                ? 'bg-emerald-700 text-white border-emerald-900'
+                : 'bg-[#e0e0e0] text-black border-[#808080] hover:bg-[#d0d0d0]'
+            }`}
+          >
+            Camera 2 (Cam 2)
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('sync')}
+            className={`px-3 py-1 rounded-t-[2px] text-xs font-bold border-t border-x transition-colors ${
+              activeTab === 'sync'
+                ? 'bg-purple-800 text-white border-purple-950'
+                : 'bg-[#e0e0e0] text-black border-[#808080] hover:bg-[#d0d0d0]'
+            }`}
+          >
+            Stereo Synchronization (Cam 1 ↔ Cam 2)
+          </button>
+        </div>
 
-          {/* Quick Defense Frame Rate Presets Bar */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="font-bold text-black flex items-center gap-1 text-[11px]">
-                <Zap className="w-3 h-3 text-[#1e3a5f]" />
-                <span>High-Speed Frame Rate Presets:</span>
-              </span>
-              <span className="text-[10px] text-[#555555]">Click to apply</span>
-            </div>
-            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-              {[
-                { label: '1,000 fps', val: 1000, desc: '1.0 ms dt' },
-                { label: '2,000 fps', val: 2000, desc: '500 µs dt' },
-                { label: '5,000 fps', val: 5000, desc: '200 µs dt' },
-                { label: '10,000 fps', val: 10000, desc: '100 µs (Photron)' },
-                { label: '20,000 fps', val: 20000, desc: '50 µs (SA-Z)' },
-                { label: '25,000 fps', val: 25000, desc: '40 µs (Phantom)' },
-                { label: '50,000 fps', val: 50000, desc: '20 µs dt' },
-                { label: '100,000 fps', val: 100000, desc: '10 µs dt' },
-                { label: '250,000 fps', val: 250000, desc: '4 µs dt' },
-                { label: '1,000,000 fps', val: 1000000, desc: '1 µs (Hypervelocity)' },
-              ].map((p) => {
-                const isActive = Math.abs(currentFps - p.val) < 0.1;
-                return (
-                  <button
-                    key={p.val}
-                    type="button"
-                    onClick={() => applyPreset(p.val)}
-                    className={`px-1.5 py-1 text-left rounded-[2px] border transition-colors ${
-                      isActive
-                        ? 'bg-[#1e3a5f] text-white border-[#0f1d30] font-bold shadow-inner'
-                        : 'bg-white hover:bg-[#efefef] text-black border-[#808080]'
-                    }`}
-                  >
-                    <div className="font-bold text-[11px] leading-tight">{p.label}</div>
-                    <div className={`text-[9px] ${isActive ? 'text-[#93c5fd]' : 'text-[#666666]'}`}>
-                      {p.desc}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Primary Timing Parameters: Sensor fps vs Container playback fps */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white border border-[#808080] p-2.5 rounded-[2px]">
-            <div>
-              <label className="block text-black mb-1 font-bold">
-                Sensor Capture Rate (fps):
-              </label>
-              <input
-                id="clip-fps"
-                type="number"
-                step="any"
-                min="0.1"
-                value={fps}
-                onChange={(e) => setFps(e.target.value)}
-                className="w-full bg-[#fdfdfd] border-2 border-[#1e3a5f] rounded-[2px] px-2.5 py-1 text-sm text-black font-mono font-bold outline-none"
-              />
-              <span className="text-[10px] text-[#555555]">
-                Physical time calculation: 1/{currentFps.toLocaleString()} s
-              </span>
-            </div>
-
-            <div>
-              <label className="block text-black mb-1 font-bold">
-                Container Playback Rate (fps):
-              </label>
-              <input
-                id="clip-playback-fps"
-                type="number"
-                step="any"
-                min="1"
-                max="240"
-                value={playbackFps}
-                onChange={(e) => setPlaybackFps(e.target.value)}
-                className="w-full bg-white border border-[#808080] rounded-[2px] px-2.5 py-1 text-sm text-black font-mono outline-none"
-              />
-              <span className="text-[10px] text-[#555555]">
-                MP4/AVI seek frame rate (typically 30 or 60 fps)
-              </span>
-            </div>
-          </div>
-
-          {/* Live Microsecond / Physics Telemetry Card */}
-          <div className="bg-[#1e3a5f] text-white p-2.5 rounded-[2px] font-mono border border-[#0f1d30]">
-            <div className="flex items-center justify-between text-[11px] pb-1 border-b border-[#3b82f6]/40 mb-1.5">
-              <span className="flex items-center gap-1 font-bold text-white">
-                <Clock className="w-3.5 h-3.5 text-[#38bdf8]" />
-                <span>Physical Sub-Frame Resolution (&Delta;t):</span>
-              </span>
-              <span className="text-[#38bdf8] font-bold">
-                {currentFps >= 100000
-                  ? `${calculatedDtUs.toFixed(3)} µs / step`
-                  : currentFps >= 1000
-                  ? `${calculatedDtMs.toFixed(3)} ms / step`
-                  : `${calculatedFrameDt.toFixed(5)} s / step`}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-2 text-[10px]">
-              <div>
-                <span className="text-gray-300 block">Seconds:</span>
-                <span className="text-white font-bold">{calculatedFrameDt.toExponential(4)} s</span>
+        <form onSubmit={handleSave} className="mt-2 space-y-3.5 text-xs">
+          {/* TAB 1: CAMERA 1 */}
+          {activeTab === 'cam1' && (
+            <div className="space-y-3">
+              {/* Camera Model Profile Selector */}
+              <div className="bg-[#ece9d8] border border-[#808080] p-2.5 rounded-[2px]">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-black font-bold flex items-center gap-1.5 text-[11px]">
+                    <Camera className="w-3.5 h-3.5 text-[#1e3a5f]" />
+                    <span>Camera 1 Profile:</span>
+                  </label>
+                  <span className="text-[10px] font-mono text-[#555555]">Photron / Phantom / High-Speed</span>
+                </div>
+                <select
+                  value={selectedCamera}
+                  onChange={(e) => handleSelectCamera(e.target.value)}
+                  className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-semibold outline-none cursor-pointer"
+                >
+                  {DEFENSE_HIGH_SPEED_CAMERAS.map((cam) => (
+                    <option key={cam.id} value={cam.id}>
+                      {cam.manufacturer} {cam.model} — {cam.maxFpsFullRes.toLocaleString()} fps full res
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div>
-                <span className="text-gray-300 block">Milliseconds:</span>
-                <span className="text-white font-bold">{calculatedDtMs.toFixed(4)} ms</span>
-              </div>
-              <div>
-                <span className="text-gray-300 block">Microseconds:</span>
-                <span className="text-white font-bold">{calculatedDtUs.toFixed(2)} µs</span>
-              </div>
-            </div>
-          </div>
 
-          {/* Frame Range & Step Size */}
-          <div className="grid grid-cols-3 gap-3">
-            <div>
-              <label className="block text-black mb-1 font-semibold">Start Frame:</label>
-              <input
-                id="clip-start-frame"
-                type="number"
-                min="0"
-                value={startFrame}
-                onChange={(e) => setStartFrame(e.target.value)}
-                className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
-              />
+              {/* Quick Defense Frame Rate Presets Bar */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-black flex items-center gap-1 text-[11px]">
+                    <Zap className="w-3 h-3 text-[#1e3a5f]" />
+                    <span>Camera 1 Frame Rate Presets:</span>
+                  </span>
+                  <span className="text-[10px] text-[#555555]">Click to apply</span>
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                  {[
+                    { label: '60 fps', val: 60, desc: '16.7 ms' },
+                    { label: '100 fps', val: 100, desc: '10.0 ms' },
+                    { label: '500 fps', val: 500, desc: '2.0 ms' },
+                    { label: '1,000 fps', val: 1000, desc: '1.0 ms' },
+                    { label: '5,000 fps', val: 5000, desc: '200 µs' },
+                    { label: '10,000 fps', val: 10000, desc: '100 µs (Photron)' },
+                    { label: '25,000 fps', val: 25000, desc: '40 µs (Phantom)' },
+                    { label: '50,000 fps', val: 50000, desc: '20 µs' },
+                    { label: '100,000 fps', val: 100000, desc: '10 µs' },
+                    { label: '1,000,000 fps', val: 1000000, desc: '1 µs' },
+                  ].map((p) => {
+                    const isActive = Math.abs(currentFps - p.val) < 0.1;
+                    return (
+                      <button
+                        key={p.val}
+                        type="button"
+                        onClick={() => applyPresetCam1(p.val)}
+                        className={`px-1.5 py-1 text-left rounded-[2px] border transition-colors ${
+                          isActive
+                            ? 'bg-[#1e3a5f] text-white border-[#0f1d30] font-bold shadow-inner'
+                            : 'bg-white hover:bg-[#efefef] text-black border-[#808080]'
+                        }`}
+                      >
+                        <div className="font-bold text-[11px] leading-tight">{p.label}</div>
+                        <div className={`text-[9px] ${isActive ? 'text-[#93c5fd]' : 'text-[#666666]'}`}>
+                          {p.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Primary Timing Parameters: Sensor fps vs Container playback fps */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white border border-[#808080] p-2.5 rounded-[2px]">
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Cam 1 Sensor Capture Rate (f₁ in fps):
+                  </label>
+                  <input
+                    id="clip-fps"
+                    type="number"
+                    step="any"
+                    min="0.1"
+                    value={fps}
+                    onChange={(e) => setFps(e.target.value)}
+                    className="w-full bg-[#fdfdfd] border-2 border-[#1e3a5f] rounded-[2px] px-2.5 py-1 text-sm text-black font-mono font-bold outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Physical time step &Delta;t₁ = 1/{currentFps.toLocaleString()} s ({calculatedDtMs.toFixed(3)} ms)
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Cam 1 Container Playback Rate (fps):
+                  </label>
+                  <input
+                    id="clip-playback-fps"
+                    type="number"
+                    step="any"
+                    min="1"
+                    max="240"
+                    value={playbackFps}
+                    onChange={(e) => setPlaybackFps(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2.5 py-1 text-sm text-black font-mono outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Browser media seek rate (default 30 fps)
+                  </span>
+                </div>
+              </div>
+
+              {/* Frame Range & Step Size for Cam 1 */}
+              <div className="grid grid-cols-4 gap-2 bg-white border border-[#808080] p-2.5 rounded-[2px]">
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Start Frame:</label>
+                  <input
+                    id="clip-start-frame"
+                    type="number"
+                    min="0"
+                    value={startFrame}
+                    onChange={(e) => setStartFrame(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">End Frame:</label>
+                  <input
+                    id="clip-end-frame"
+                    type="number"
+                    min="0"
+                    value={endFrame}
+                    onChange={(e) => setEndFrame(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Step Size:</label>
+                  <input
+                    id="clip-step-size"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={stepSize}
+                    onChange={(e) => setStepSize(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Start Time (t₀ s):</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+              </div>
             </div>
-            <div>
-              <label className="block text-black mb-1 font-semibold">End Frame:</label>
-              <input
-                id="clip-end-frame"
-                type="number"
-                min="0"
-                value={endFrame}
-                onChange={(e) => setEndFrame(e.target.value)}
-                className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
-              />
+          )}
+
+          {/* TAB 2: CAMERA 2 */}
+          {activeTab === 'cam2' && (
+            <div className="space-y-3">
+              <div className="bg-emerald-50 border border-emerald-600 p-2 rounded-[2px] text-[11px] text-emerald-950">
+                <strong>Camera 2 Independent Sensor Settings:</strong> Define capture frame rate f₂, frame limits, and playback rate independently of Camera 1.
+              </div>
+
+              {/* Quick Frame Rate Presets for Cam 2 */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-bold text-black flex items-center gap-1 text-[11px]">
+                    <Zap className="w-3 h-3 text-emerald-700" />
+                    <span>Camera 2 Frame Rate Presets:</span>
+                  </span>
+                  <span className="text-[10px] text-[#555555]">Click to apply</span>
+                </div>
+                <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                  {[
+                    { label: '30 fps', val: 30, desc: '33.3 ms' },
+                    { label: '60 fps', val: 60, desc: '16.7 ms' },
+                    { label: '100 fps', val: 100, desc: '10.0 ms' },
+                    { label: '240 fps', val: 240, desc: '4.17 ms' },
+                    { label: '500 fps', val: 500, desc: '2.0 ms' },
+                    { label: '1,000 fps', val: 1000, desc: '1.0 ms' },
+                    { label: '2,000 fps', val: 2000, desc: '500 µs' },
+                    { label: '5,000 fps', val: 5000, desc: '200 µs' },
+                    { label: '10,000 fps', val: 10000, desc: '100 µs' },
+                    { label: '25,000 fps', val: 25000, desc: '40 µs' },
+                  ].map((p) => {
+                    const isActive = Math.abs(currentFps2 - p.val) < 0.1;
+                    return (
+                      <button
+                        key={p.val}
+                        type="button"
+                        onClick={() => applyPresetCam2(p.val)}
+                        className={`px-1.5 py-1 text-left rounded-[2px] border transition-colors ${
+                          isActive
+                            ? 'bg-emerald-700 text-white border-emerald-900 font-bold shadow-inner'
+                            : 'bg-white hover:bg-[#efefef] text-black border-[#808080]'
+                        }`}
+                      >
+                        <div className="font-bold text-[11px] leading-tight">{p.label}</div>
+                        <div className={`text-[9px] ${isActive ? 'text-emerald-200' : 'text-[#666666]'}`}>
+                          {p.desc}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Primary Timing Parameters for Cam 2 */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white border border-[#808080] p-2.5 rounded-[2px]">
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Cam 2 Sensor Capture Rate (f₂ in fps):
+                  </label>
+                  <input
+                    id="clip-fps-cam2"
+                    type="number"
+                    step="any"
+                    min="0.1"
+                    value={fpsCam2}
+                    onChange={(e) => setFpsCam2(e.target.value)}
+                    className="w-full bg-[#fdfdfd] border-2 border-emerald-700 rounded-[2px] px-2.5 py-1 text-sm text-black font-mono font-bold outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Physical time step &Delta;t₂ = 1/{currentFps2.toLocaleString()} s ({calculatedDtMs2.toFixed(3)} ms)
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Cam 2 Container Playback Rate (fps):
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    min="1"
+                    max="240"
+                    value={playbackFpsCam2}
+                    onChange={(e) => setPlaybackFpsCam2(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2.5 py-1 text-sm text-black font-mono outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Browser media seek rate (default 30 fps)
+                  </span>
+                </div>
+              </div>
+
+              {/* Frame Range & Step Size for Cam 2 */}
+              <div className="grid grid-cols-4 gap-2 bg-white border border-[#808080] p-2.5 rounded-[2px]">
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Start Frame:</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={startFrameCam2}
+                    onChange={(e) => setStartFrameCam2(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">End Frame:</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={endFrameCam2}
+                    onChange={(e) => setEndFrameCam2(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Step Size:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={stepSizeCam2}
+                    onChange={(e) => setStepSizeCam2(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-black mb-1 font-semibold">Start Time (t₀ s):</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={startTimeCam2}
+                    onChange={(e) => setStartTimeCam2(e.target.value)}
+                    className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
+                  />
+                </div>
+              </div>
             </div>
-            <div>
-              <label className="block text-black mb-1 font-semibold">Step Size:</label>
-              <input
-                id="clip-step-size"
-                type="number"
-                min="1"
-                max="100"
-                value={stepSize}
-                onChange={(e) => setStepSize(e.target.value)}
-                className="w-full bg-white border border-[#808080] rounded-[2px] px-2 py-1 text-xs text-black font-mono outline-none"
-              />
+          )}
+
+          {/* TAB 3: STEREO SYNCHRONIZATION */}
+          {activeTab === 'sync' && (
+            <div className="space-y-3">
+              <div className="bg-purple-50 border border-purple-600 p-2.5 rounded-[2px] text-[11px] text-purple-950">
+                <div className="font-bold mb-1">Requirement 2: Timestamp-Based Anchor Synchronization Model</div>
+                <div className="font-mono text-[10px] space-y-0.5">
+                  <div>• &Delta;t = (i - n) / f₁</div>
+                  <div>• Target Cam 2 Time: t₂(j) = t₂(m) + &Delta;t</div>
+                  <div>• Corresponding Cam 2 Frame: j = m + round(&Delta;t &times; f₂)</div>
+                  <div>• Sync Offset &Delta;t_sync = |(j - m)/f₂ - (i - n)/f₁|</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-white border border-[#808080] p-2.5 rounded-[2px]">
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Anchor Frame Cam 1 (n):
+                  </label>
+                  <input
+                    id="sync-anchor-cam1"
+                    type="number"
+                    min="0"
+                    value={anchorCam1}
+                    onChange={(e) => setAnchorCam1(e.target.value)}
+                    className="w-full bg-[#fdfdfd] border-2 border-[#1e3a5f] rounded-[2px] px-2 py-1 text-sm text-black font-mono font-bold outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Cam 1 frame at physical event t=0
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Anchor Frame Cam 2 (m):
+                  </label>
+                  <input
+                    id="sync-anchor-cam2"
+                    type="number"
+                    min="0"
+                    value={anchorCam2}
+                    onChange={(e) => setAnchorCam2(e.target.value)}
+                    className="w-full bg-[#fdfdfd] border-2 border-emerald-700 rounded-[2px] px-2 py-1 text-sm text-black font-mono font-bold outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Cam 2 frame at exact same physical event
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-black mb-1 font-bold">
+                    Max Tolerance (ms):
+                  </label>
+                  <input
+                    id="sync-tolerance-ms"
+                    type="number"
+                    step="0.1"
+                    min="0.1"
+                    value={syncToleranceMs}
+                    onChange={(e) => setSyncToleranceMs(e.target.value)}
+                    className="w-full bg-[#fdfdfd] border border-[#808080] rounded-[2px] px-2 py-1 text-sm text-black font-mono outline-none"
+                  />
+                  <span className="text-[10px] text-[#555555]">
+                    Flag offset exceeding this limit (e.g. 5ms)
+                  </span>
+                </div>
+              </div>
+
+              <div className="bg-[#f0f9ff] border border-[#bae6fd] p-2 rounded-[2px] text-[11px] text-blue-950 font-mono">
+                <div>Current Configuration:</div>
+                <div>Anchor Pair: Cam 1 Frame {anchorCam1} &harr; Cam 2 Frame {anchorCam2}</div>
+                <div>Rates: f₁ = {currentFps} fps, f₂ = {currentFps2} fps (Ratio: {(currentFps2 / currentFps).toFixed(4)})</div>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Time Display Unit Selector */}
           <div className="flex items-center justify-between bg-[#ece9d8] border border-[#808080] p-2 rounded-[2px]">

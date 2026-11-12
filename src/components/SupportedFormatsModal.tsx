@@ -209,6 +209,107 @@ export const SupportedFormatsModal: React.FC<SupportedFormatsModalProps> = ({
           {/* TAB 1: CATALOG & DIAGNOSTICS */}
           {activeTab === 'catalog' && (
             <div className="space-y-4">
+              {/* Live 5-Format Universal Codec Verification Matrix (.MP4, .AVI, .MOV, .WMV, .FLV) */}
+              <div className="bg-white border border-[#808080] rounded-[3px] p-3 shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#e0e0e0]">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-[#1e3a5f]" />
+                    <span className="font-bold text-xs text-black">
+                      Live 3-Tier Universal Codec Verification Matrix (.MP4, .AVI, .MOV, .WMV, .FLV)
+                    </span>
+                  </div>
+                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-900 border border-emerald-400 rounded-[2px] text-[10px] font-bold">
+                    ALL 5 CORE FORMATS ACTIVE (2D / 6-DOF / 3D STEREO)
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 mt-2.5 text-[10.5px]">
+                  <div className="p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[3px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold font-mono text-xs text-[#1e3a5f]">.MP4</span>
+                        <span className="text-[9.5px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 px-1 rounded">
+                          Tier 2 GPU
+                        </span>
+                      </div>
+                      <p className="text-[#334155] mt-1 leading-snug">
+                        <code>H.264 / AVC</code>, <code>H.265 / HEVC</code>, <code>VP9</code>, <code>AV1</code>
+                      </p>
+                    </div>
+                    <span className="text-[9.5px] text-emerald-800 font-semibold mt-1.5 block">
+                      ✓ Hardware WebCodecs &amp; CFR Sync
+                    </span>
+                  </div>
+
+                  <div className="p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[3px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold font-mono text-xs text-[#1e3a5f]">.AVI</span>
+                        <span className="text-[9.5px] font-bold text-blue-700 bg-blue-50 border border-blue-300 px-1 rounded">
+                          Tier 1 + 3
+                        </span>
+                      </div>
+                      <p className="text-[#334155] mt-1 leading-snug">
+                        <code>Phantom/Photron Raw Y800/Y16</code>, <code>Uncompressed DIB/RGB</code>, <code>Motion-JPEG MJPG</code>, <code>UYVY/YUY2</code>, <code>Cinepak/Xvid/DivX/H.264</code>
+                      </p>
+                    </div>
+                    <span className="text-[9.5px] text-emerald-800 font-semibold mt-1.5 block">
+                      ✓ Zero-Copy File.slice() + Bridge
+                    </span>
+                  </div>
+
+                  <div className="p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[3px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold font-mono text-xs text-[#1e3a5f]">.MOV</span>
+                        <span className="text-[9.5px] font-bold text-blue-700 bg-blue-50 border border-blue-300 px-1 rounded">
+                          Tier 1 + 2 + 3
+                        </span>
+                      </div>
+                      <p className="text-[#334155] mt-1 leading-snug">
+                        <code>QuickTime H.264/HEVC</code>, <code>Photo-JPEG / MJPEG</code>, <code>Uncompressed</code>, <code>ProRes / Legacy QuickTime via FFmpeg Bridge</code>
+                      </p>
+                    </div>
+                    <span className="text-[9.5px] text-emerald-800 font-semibold mt-1.5 block">
+                      ✓ ISO-BMFF stbl Slice &amp; Native
+                    </span>
+                  </div>
+
+                  <div className="p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[3px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold font-mono text-xs text-[#1e3a5f]">.WMV</span>
+                        <span className="text-[9.5px] font-bold text-purple-700 bg-purple-50 border border-purple-300 px-1 rounded">
+                          Tier 3 Bridge
+                        </span>
+                      </div>
+                      <p className="text-[#334155] mt-1 leading-snug">
+                        <code>Windows Media Video WMV7 / WMV8 / WMV9 / VC-1 ASF Container</code>
+                      </p>
+                    </div>
+                    <span className="text-[9.5px] text-emerald-800 font-semibold mt-1.5 block">
+                      ✓ ASF Header + Offline FFmpeg
+                    </span>
+                  </div>
+
+                  <div className="p-2 bg-[#f8fafc] border border-[#cbd5e1] rounded-[3px] flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold font-mono text-xs text-[#1e3a5f]">.FLV</span>
+                        <span className="text-[9.5px] font-bold text-purple-700 bg-purple-50 border border-purple-300 px-1 rounded">
+                          Tier 1 + 3
+                        </span>
+                      </div>
+                      <p className="text-[#334155] mt-1 leading-snug">
+                        <code>Flash Video H.264 AVC Remux &amp; Sorenson H.263 / VP6 Bridge</code>
+                      </p>
+                    </div>
+                    <span className="text-[9.5px] text-emerald-800 font-semibold mt-1.5 block">
+                      ✓ Tag 0x09 Demux &amp; Bridge
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               {/* Quick Inspector / Diagnostic Banner */}
               <div className="bg-white border border-[#808080] rounded-[3px] p-3 shadow-sm">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2.5 border-b border-[#e0e0e0]">
@@ -216,7 +317,7 @@ export const SupportedFormatsModal: React.FC<SupportedFormatsModalProps> = ({
                     <FileCheck className="w-4 h-4 text-[#1e3a5f]" />
                     <span className="font-bold text-xs text-black">Video Format Checker & Diagnostics</span>
                     <span className="text-[10px] text-[#666666]">
-                      (Test any local video file for instant hardware compatibility)
+                      (Test any local .mp4, .avi, .wmv, .flv, or .mov file for instant compatibility)
                     </span>
                   </div>
                   <label className="flex items-center gap-1.5 px-3 py-1 bg-[#1e3a5f] hover:bg-[#152843] text-white rounded-[2px] font-semibold text-xs cursor-pointer shadow-sm transition-colors shrink-0">

@@ -1,0 +1,677 @@
+# Engineering Update: Tracker / Open Source Physics – Dual-Camera 3D Video Analysis and Tracking
+
+## 1. Role and objective
+
+Act as a senior software engineer specializing in scientific video analysis, stereo-vision systems, numerical computing, GUI architecture, and Open Source Physics (OSP) / Tracker software.
+
+You are working on my existing Tracker-derived application, extended into a dual-camera 3D analysis workstation similar in purpose to TrackEye.
+
+I do NOT want a new application, a new UI prototype, or a wholesale rewrite. I want the existing application examined, corrected, and extended so that its dual-camera 3D analysis workflow becomes reliable and suitable for serious scientific tracking work.
+
+First inspect the actual project structure, source files, state management, video-processing pipeline, calibration classes, graphing components, synchronization implementation, and project save/load mechanism. Identify the existing implementations before changing anything.
+
+Then implement the required modifications in the existing architecture.
+
+**Important architectural constraints:**
+
+- Preserve the existing application's technology stack and working components.
+- Preserve the original OSP / Tracker integration and attribution, applicable GPL v3 notices, and existing mathematical implementations.
+- Retain the existing local/offline-first design. Do not introduce cloud processing, cloud databases, or mandatory external services.
+- If the project contains an existing Java/OSP backend and a React/TypeScript interface, maintain their respective responsibilities. Do not unnecessarily replace the Java mathematical or scientific backend with duplicate JavaScript implementations.
+- Preserve the current tactical/military-style visual identity and existing colour theme. Do not redesign the entire interface.
+- Avoid unnecessary mass file modifications and unrelated refactoring.
+- Do not remove existing functionality or weaken existing tests to make new functionality appear successful.
+
+The following requirements define the work.
+
+---
+
+# 2. Required functional corrections
+
+## REQUIREMENT 1 – Independent Camera 1 and Camera 2 video controls
+
+### Current problem
+
+In the 3D dual-video interface, the playback control associated with Camera 1 displays or activates "Play Both" instead of providing an independent Camera 1 playback function.
+
+The same problem occurs with Camera 2.
+
+This makes it difficult to inspect either video independently.
+
+### Required implementation
+
+Provide three clearly distinguished playback operations:
+
+1. **Play Camera 1** – plays only the Camera 1 video.
+2. **Play Camera 2** – plays only the Camera 2 video.
+3. **Play Both** – plays both videos using the configured synchronization relationship.
+
+Each camera panel must have its own independent:
+
+- Play button.
+- Pause button.
+- Stop button, where supported by the existing interface.
+- Frame stepping controls.
+- Seek bar.
+- Current-frame display.
+- Playback state.
+
+The central synchronized playback operation must remain available as an additional operation, not as a replacement for either camera's individual playback controls.
+
+### Behaviour requirements
+
+- Clicking Play Camera 1 must not accidentally start Camera 2.
+- Clicking Play Camera 2 must not accidentally start Camera 1.
+- Clicking Play Both must use the synchronization configuration described in Requirement 2.
+- Pausing one independently playing camera must not unexpectedly pause or reset the other.
+- Playback state must not be represented by one shared Boolean variable when the cameras are operating independently.
+- When Play Both is active, both videos must follow a common media-time relationship.
+
+Clearly distinguish independent playback mode from synchronized playback mode in the interface.
+
+---
+
+## REQUIREMENT 2 – Proper synchronization of videos having different frame rates
+
+### Current problem
+
+The two video feeds may have different frame rates and different frame counts.
+
+For example:
+
+- Camera 1: 60 FPS.
+- Camera 2: 30 FPS.
+
+The synchronization system must not assume that frame number 100 in Camera 1 corresponds to frame number 100 in Camera 2.
+
+I need to explicitly select the corresponding initial synchronization frames:
+
+- Camera 1 initial synchronization frame = n.
+- Camera 2 initial synchronization frame = m.
+
+The application must treat this selected pair as the synchronization reference.
+
+### Required synchronization model
+
+Implement an explicit synchronization configuration containing:
+
+- Camera 1 synchronization frame n.
+- Camera 2 synchronization frame m.
+- Camera 1 frame rate and media timestamps.
+- Camera 2 frame rate and media timestamps.
+- Synchronization offset or anchor relationship.
+- Playback speed.
+- Synchronization tolerance.
+- Optional clip-in and clip-out limits for each camera.
+
+The selected pair (n, m) must establish the synchronization anchor.
+
+For timestamp-based synchronization, use the following relationship:
+
+Let:
+
+- t1(n) be the presentation timestamp of Camera 1 frame n.
+- t2(m) be the presentation timestamp of Camera 2 frame m.
+
+For a subsequent Camera 1 frame i, calculate the elapsed time relative to the Camera 1 anchor:
+
+Δt = t1(i) - t1(n)
+
+Then identify the Camera 2 frame j whose presentation timestamp is closest to:
+
+t2(m) + Δt
+
+In other words, synchronize using elapsed media time, not by assuming equal frame numbers.
+
+When one camera is selected as the playback master, the other camera must follow the corresponding timestamp relationship.
+
+Use actual presentation timestamps when available, particularly for variable-frame-rate video. If only nominal frame rates are available, implement a clearly documented frame-rate-based fallback.
+
+### Synchronization and marking behaviour
+
+When Play Both is activated:
+
+1. Begin from the selected Camera 1 frame n and Camera 2 frame m.
+2. Advance both videos according to their respective timestamps.
+3. Identify the appropriate corresponding frame in the other camera.
+4. Display the current frame number and timestamp independently for both cameras.
+5. Allow synchronized point marking and triangulation using the corresponding frame pair.
+6. Maintain the synchronization relationship throughout playback and frame stepping.
+
+Do not use a simple one-frame-to-one-frame correspondence when frame rates differ.
+
+When an exact timestamp match does not exist, select the nearest available frame within the configured synchronization tolerance.
+
+Display the time difference between the selected corresponding frames. If the difference exceeds the allowed tolerance, flag the frame pair as unsuitable for synchronized triangulation rather than silently using an incorrect correspondence.
+
+Do not interpolate image pixels merely to create an apparently exact camera frame. Any interpolation of tracking observations must remain a separately identified operation.
+
+The synchronization mapping must be stable and must not accumulate frame-rounding errors during prolonged playback.
+
+### Expected interface
+
+Provide a clearly visible synchronization panel showing something like:
+
+Camera 1:
+- Initial frame: n
+- Current frame: i
+- FPS: f1
+- Media time: t1
+
+Camera 2:
+- Initial frame: m
+- Current frame: j
+- FPS: f2
+- Media time: t2
+
+Synchronization:
+- Anchor pair: n ↔ m
+- Current corresponding pair: i ↔ j
+- Time difference: Δt_sync
+- Synchronization status: Synchronized / Outside tolerance
+
+Include a convenient way to set or change the initial frame pair without losing the existing tracking dataset.
+
+---
+
+## REQUIREMENT 3 – Clearly separated clip settings for both cameras
+
+### Current problem
+
+The 3D dual-video analysis interface does not clearly distinguish the configuration of Camera 1 from Camera 2.
+
+Since the cameras may have different frame rates, clip durations, starting frames, frame counts, and playback configurations, they must not share ambiguous clip settings.
+
+### Required implementation
+
+Create two visually distinct configuration sections.
+
+**Camera 1 – Clip Configuration**
+
+- Video source.
+- Frame rate.
+- Total frame count.
+- Video duration.
+- Initial synchronization frame n.
+- Current frame.
+- Clip-in frame/time.
+- Clip-out frame/time.
+- Playback speed.
+- Frame stepping.
+- Media timestamp information.
+
+**Camera 2 – Clip Configuration**
+
+- Video source.
+- Frame rate.
+- Total frame count.
+- Video duration.
+- Initial synchronization frame m.
+- Current frame.
+- Clip-in frame/time.
+- Clip-out frame/time.
+- Playback speed.
+- Frame stepping.
+- Media timestamp information.
+
+These configurations must be independent.
+
+Changing Camera 1's clip configuration must not accidentally overwrite Camera 2's configuration.
+
+Changing Camera 2's configuration must not accidentally overwrite Camera 1's configuration.
+
+The synchronization panel must coordinate these independent configurations through the selected anchor pair (n, m).
+
+The interface must make it immediately apparent which settings belong to which camera.
+
+---
+
+## REQUIREMENT 4 – Separate calibration sticks for Camera 1 and Camera 2 in 3D analysis
+
+### Current problem
+
+The application already provides a calibration stick in the 2D analysis environment.
+
+However, the 3D dual-camera analysis environment does not provide clearly separated calibration sticks for the two camera views.
+
+For accurate stereo analysis, I need to configure and inspect the calibration reference independently for each video.
+
+### Required implementation
+
+Add separate calibration-stick functionality to the 3D dual-video workspace.
+
+**Camera 1 calibration stick**
+
+- Display and position the calibration stick on Camera 1's video.
+- Allow independent placement of its two endpoints.
+- Allow the known physical length to be entered.
+- Allow selection of the measurement unit.
+- Show its calibration status.
+- Allow its calibration to be reset or edited.
+- Save and restore its parameters independently.
+
+**Camera 2 calibration stick**
+
+Provide the same independent functionality for Camera 2.
+
+### Important requirements
+
+- Camera 1 calibration must not overwrite Camera 2 calibration.
+- Camera 2 calibration must not overwrite Camera 1 calibration.
+- Each calibration overlay must remain associated with its own video.
+- Switching views must not remove or transfer the calibration stick to the wrong camera.
+- Camera replacement must not silently apply an old calibration to a new video.
+- Both calibration configurations must persist after saving and reopening the project.
+
+Keep the image-plane calibration of each camera separate from the application's actual stereo camera calibration.
+
+Do not assume that having two independent 2D calibration sticks automatically establishes a complete 3D stereo calibration. Preserve the existing DLT, camera projection, and stereo reconstruction architecture, and integrate these reference measurements correctly with the existing mathematical pipeline.
+
+---
+
+## REQUIREMENT 5 – Repair and improve graph plotting functionality
+
+### Current problem
+
+The graph plotting functionality needs improvement so the resulting analysis can be examined properly.
+
+I specifically require positive-valued graph representations, including absolute-value representations of the plotted quantities.
+
+### Required implementation
+
+Inspect the existing graphing code and determine why graph plotting is incomplete or unsuitable.
+
+Implement reliable plotting of the available tracking and 3D kinematics data.
+
+At minimum, provide:
+
+- X-coordinate versus time.
+- Y-coordinate versus time.
+- Z-coordinate versus time.
+- Velocity versus time.
+- Acceleration versus time.
+- Speed versus time.
+- Other existing kinematic quantities supported by the application.
+
+### Absolute-value graph functionality
+
+Provide an explicit graph display option:
+
+1. Signed values.
+2. Absolute values.
+3. Vector magnitude, wherever applicable.
+
+For example:
+
+- X-coordinate: x(t)
+- Absolute X-coordinate: |x(t)|
+- Y-coordinate: y(t)
+- Absolute Y-coordinate: |y(t)|
+- Z-coordinate: z(t)
+- Absolute Z-coordinate: |z(t)|
+
+The absolute-value mode must transform the plotted signal so that its displayed values are non-negative.
+
+Important mathematical distinction:
+
+- |x(t)| is the absolute value of the X-coordinate.
+- |y(t)| is the absolute value of the Y-coordinate.
+- |z(t)| is the absolute value of the Z-coordinate.
+- Position magnitude is sqrt(x² + y² + z²).
+
+Do not confuse an individual signal's absolute value with the 3D vector magnitude.
+
+### Graph interface and behaviour
+
+Provide:
+
+- Clearly labelled horizontal and vertical axes.
+- Time or frame-based horizontal axis.
+- Units.
+- Graph legend.
+- Selection of plotted quantities.
+- Signed/absolute-value/magnitude selection where applicable.
+- Appropriate scaling.
+- Data-point inspection or tooltips.
+- Consistent graph updates as tracking progresses.
+- Correct handling of missing, rejected, or interpolated tracking observations.
+
+Graph updates must not destroy, modify, or reset tracking data.
+
+Do not replace unavailable scientific data with artificial zeros merely to make a continuous graph.
+
+The graph should be linked to the underlying tracking dataset, not to temporary UI state.
+
+---
+
+## REQUIREMENT 6 – Fix the 2D-to-3D refresh problem and protect existing tracking points
+
+### Current problem
+
+When I change or refresh the video in the 2D analysis environment, the 3D analysis environment also refreshes.
+
+Unfortunately, the already tracked points can be lost in the process.
+
+This is a serious data-integrity problem.
+
+### Required implementation
+
+Separate video display refresh operations from tracking-data lifecycle operations.
+
+A video refresh, component remount, change of active view, or change of selected camera must never automatically delete existing tracking observations.
+
+Use independent state ownership for:
+
+- Camera 1 video.
+- Camera 2 video.
+- Camera 1 tracking observations.
+- Camera 2 tracking observations.
+- Stereo point correspondences.
+- Reconstructed 3D points.
+- Camera 1 calibration.
+- Camera 2 calibration.
+- Stereo calibration.
+- Synchronization configuration.
+- Graph datasets and configuration.
+
+### Tracking-data preservation rules
+
+1. A normal video refresh must preserve existing tracking points.
+2. Switching from 2D to 3D must preserve existing tracking points.
+3. Switching between Camera 1 and Camera 2 must preserve both cameras' datasets.
+4. Updating one camera must not reset the other camera's tracking dataset.
+5. Changing synchronization settings must not silently delete tracked points.
+6. Reopening a project must restore the saved points and their camera/frame/time associations.
+
+Every tracking observation should retain an explicit relationship to its camera, source media asset, frame index, timestamp, and track identity.
+
+### Video replacement behaviour
+
+If a video is genuinely replaced with a different source, do not silently attach the old video's tracking points to the new video.
+
+Instead:
+
+- Preserve the previous tracking dataset within the project.
+- Keep it associated with its original media asset.
+- Clearly indicate when tracking observations belong to a previous or unavailable video.
+- Provide an explicit user-controlled option to retain, reassign, archive, or clear the affected data.
+
+No destructive reset should occur without an explicit user action.
+
+Avoid shared mutable state or automatic component initialization that clears the tracking arrays when a video component is refreshed.
+
+---
+
+## REQUIREMENT 7 – Repair project-folder saving and reopening
+
+### Current problem
+
+After completing tracking, saving the project to a folder does not work reliably.
+
+When I attempt to open the saved project/repository again, the application raises an error.
+
+This must be treated as a critical persistence defect.
+
+### Required implementation
+
+Inspect the complete existing save/load mechanism, including:
+
+- Save-folder selection.
+- File-system access.
+- Project serialization.
+- Video references.
+- Tracking-data serialization.
+- Calibration serialization.
+- Synchronization serialization.
+- Project reopening.
+- Project-version compatibility.
+
+Identify the actual source of the save/load failure before implementing a correction.
+
+### Project information that must be saved
+
+A saved project must preserve:
+
+1. Project name and project version.
+2. Camera 1 video reference and metadata.
+3. Camera 2 video reference and metadata.
+4. Camera 1 clip configuration.
+5. Camera 2 clip configuration.
+6. Synchronization anchor (n, m).
+7. Synchronization offset and tolerance.
+8. Individual playback and clip settings.
+9. Camera 1 calibration-stick parameters.
+10. Camera 2 calibration-stick parameters.
+11. Existing stereo camera calibration and projection matrices.
+12. All existing 2D tracking points.
+13. All existing stereo point correspondences.
+14. All reconstructed 3D tracking points.
+15. Track identities and frame/time associations.
+16. Graph data selections and preferences, where applicable.
+17. Relevant 3D visualization settings.
+
+### Save/load reliability
+
+Implement a robust project serialization and deserialization process using the existing project format wherever possible.
+
+Use a documented versioned project structure if the existing format requires an extension.
+
+Important behaviour:
+
+- Save the project to the selected folder.
+- Use reliable relative media paths where practical.
+- Provide an option to copy media into the project folder if supported.
+- Do not silently assume that absolute video paths remain valid on another computer.
+- When media is missing, provide a clear relinking mechanism.
+- Preserve the original tracking dataset even when media files are temporarily unavailable.
+- Use safe, atomic saving where possible, so an interrupted save does not corrupt the last valid project.
+- Validate project contents before loading.
+- Avoid partially replacing the currently open project if the selected project is invalid.
+- Display a useful error message identifying the actual file, field, or loading operation that failed.
+- Support reopening a project after application restart.
+- Preserve backward compatibility with existing project files wherever reasonably possible.
+
+Use the application's existing native desktop or file-system integration if available. Do not simulate successful folder saving when the runtime cannot actually write to the selected folder.
+
+---
+
+# 3. Required architecture and state-management discipline
+
+Before changing the code, inspect whether the present application incorrectly shares state between the two camera views.
+
+The two cameras should have independent camera-session data, with a separate shared stereo synchronization context.
+
+A conceptual structure could be:
+
+CameraSession:
+- cameraId
+- videoAsset
+- videoMetadata
+- frameRate
+- currentFrame
+- currentMediaTime
+- clipIn
+- clipOut
+- playbackSpeed
+- playbackState
+- calibrationStick
+- trackingObservations
+
+StereoSynchronizationContext:
+- camera1AnchorFrame
+- camera2AnchorFrame
+- camera1AnchorTimestamp
+- camera2AnchorTimestamp
+- synchronizationTolerance
+- playbackMaster
+- synchronizationStatus
+
+StereoTrackingDataset:
+- trackIdentities
+- pairedCameraObservations
+- reconstructed3DObservations
+- reprojectionResiduals
+- validityStatus
+
+ProjectData:
+- projectMetadata
+- camera1Session
+- camera2Session
+- synchronizationContext
+- stereoCalibration
+- trackingDataset
+- graphConfiguration
+- visualizationConfiguration
+
+This is a conceptual model, not an instruction to duplicate the application's existing classes unnecessarily. Reuse and extend existing types wherever appropriate.
+
+Most importantly, separate persistent scientific data from transient GUI component state.
+
+---
+
+# 4. Implementation and testing requirements
+
+Do not implement only visual buttons or placeholder controls. Every new control must connect to the actual underlying application functionality.
+
+Implement in a controlled order:
+
+**Phase A – Investigation**
+
+- Identify the actual source of each reported problem.
+- Identify relevant files, classes, components, and state variables.
+- Check the existing tests and identify regression risks.
+
+**Phase B – Camera independence**
+
+- Separate camera playback states.
+- Implement independent playback controls.
+- Separate camera clip configurations.
+- Establish a stable timestamp-based synchronization model.
+
+**Phase C – Calibration and graphing**
+
+- Implement two independent calibration-stick workflows.
+- Repair the graph plotting pipeline.
+- Implement absolute-value graph transformations and vector magnitude separately.
+
+**Phase D – Data integrity and persistence**
+
+- Prevent tracking-data loss during video and view refresh.
+- Repair project-folder saving.
+- Repair project reopening and media relinking.
+
+**Phase E – Verification**
+
+Add or update tests for the following scenarios.
+
+### Test 1: Different frame rates
+
+Use Camera 1 at 60 FPS and Camera 2 at 30 FPS.
+
+Set an initial synchronization pair (n, m).
+
+Verify that subsequent frames are associated by elapsed presentation time rather than equal frame numbers.
+
+### Test 2: Independent playback
+
+Verify that:
+
+- Play Camera 1 plays only Camera 1.
+- Play Camera 2 plays only Camera 2.
+- Play Both activates synchronized playback.
+- Independent pause operations do not unexpectedly affect the other camera.
+
+### Test 3: Independent calibration
+
+Change Camera 1's calibration-stick endpoints and known length.
+
+Verify that Camera 2's calibration remains unchanged.
+
+Repeat in the opposite direction.
+
+### Test 4: Tracking preservation
+
+Create tracking points in both camera views.
+
+Switch between 2D and 3D.
+
+Refresh one video view.
+
+Change synchronization settings.
+
+Verify that the existing observations remain intact and correctly associated with their original camera and media asset.
+
+### Test 5: Video replacement
+
+Replace Camera 1's source video.
+
+Verify that the old Camera 1 tracking dataset is retained and identified as belonging to the previous media asset.
+
+Verify that Camera 2's video, tracking points, and calibration remain intact.
+
+### Test 6: Graph plotting
+
+Verify signed graphs, absolute-value graphs, and vector-magnitude graphs against known numerical input.
+
+Ensure rejected or missing observations are not incorrectly plotted as zero values.
+
+### Test 7: Save and reopen
+
+Complete a sample dual-camera tracking project.
+
+Save it to a folder.
+
+Close the project or application.
+
+Reopen the saved project.
+
+Verify restoration of both videos, their clip configurations, the synchronization anchor, both calibration sticks, tracking points, 3D reconstruction data, and graph configuration.
+
+Also test missing media, invalid project files, and interrupted or unsuccessful saves.
+
+---
+
+# 5. Acceptance criteria
+
+The work is not complete merely because the interface looks correct.
+
+The following conditions must be satisfied:
+
+- Camera 1 and Camera 2 can be played independently.
+- Both cameras can also be played synchronously.
+- Different video frame rates are handled correctly.
+- The user can select the initial synchronization pair n ↔ m.
+- Corresponding frames continue to be selected using media time.
+- Both camera clip configurations are visibly and functionally independent.
+- Camera 1 and Camera 2 have separate calibration-stick configurations in the 3D workspace.
+- Existing graph plotting works correctly.
+- Absolute-value plots are available without changing the underlying signed data.
+- 3D vector magnitude is calculated separately from absolute coordinate values.
+- Refreshing or switching between 2D and 3D does not silently destroy tracking observations.
+- Replacing one source video does not destroy the other camera's data.
+- Project saving and reopening work reliably.
+- Existing functionalities and tests remain intact.
+
+Do not claim that a requirement is complete unless the actual implementation and a corresponding test or reproducible manual verification support that claim.
+
+---
+
+# 6. Required response after implementation
+
+After investigating and modifying the project, provide a technical implementation report containing:
+
+1. **Root-cause findings:** Explain the actual causes of the reported problems.
+2. **Files modified:** List each modified or newly created file and its purpose.
+3. **Implementation details:** Explain how independent playback, timestamp synchronization, calibration, graph transformations, tracking-data preservation, and serialization work.
+4. **Synchronization verification:** Show a numerical example of how the selected pair n ↔ m maps subsequent frames when the two frame rates differ.
+5. **Testing results:** Report tests actually executed, their pass/fail results, and any untested areas.
+6. **Remaining limitations:** Clearly identify anything not completed or blocked by the current architecture.
+7. **Manual verification instructions:** Give a reproducible sequence for testing the updated application.
+
+Do not invent test results, performance measurements, or successful save/load operations.
+
+Do not stop after giving me a proposed plan. Inspect the existing code and implement the changes wherever the available project environment permits.
+
+If a requirement cannot be implemented because an underlying feature or runtime capability is absent, identify the exact blocker and explain what is needed. Do not substitute a mock implementation or a nonfunctional UI placeholder.
+
+**Final objective:** Deliver a stable, scientifically consistent, dual-camera 3D video analysis and tracking workstation in the existing Tracker / Open Source Physics-derived application, with independent camera operation, reliable synchronization, independent calibration, usable graph plotting, preservation of tracking data, and dependable project persistence.

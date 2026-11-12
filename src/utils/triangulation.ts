@@ -671,8 +671,43 @@ export function compute3DKinematics(
     const z = result[i].z ?? 0;
     const groundRange = Math.sqrt(x * x + z * z);
     result[i].slantRange = Math.sqrt(x * x + y * y + z * z);
-    result[i].azimuthDeg = (Math.atan2(z, x) * 180) / Math.PI;
-    result[i].elevationDeg = (Math.atan2(y, Math.max(0.0001, groundRange)) * 180) / Math.PI;
+
+    // Flight-path attitude angles: Pitch and Yaw (heading)
+    const vx = result[i].vx ?? 0;
+    const vy = result[i].vy ?? 0;
+    const vz = result[i].vz ?? 0;
+    const speed = result[i].v ?? Math.hypot(vx, vy, vz);
+
+    if (result[i].elevationDeg === undefined && result[i].pitch === undefined) {
+      if (speed > 0.05) {
+        result[i].elevationDeg = (Math.atan2(vy, Math.hypot(vx, vz)) * 180) / Math.PI; // Pitch (flight-path elevation)
+      } else {
+        result[i].elevationDeg = (Math.atan2(y, Math.max(0.0001, groundRange)) * 180) / Math.PI;
+      }
+    } else if (result[i].elevationDeg === undefined && result[i].pitch !== undefined) {
+      result[i].elevationDeg = result[i].pitch;
+    }
+
+    if (result[i].azimuthDeg === undefined && result[i].yaw === undefined) {
+      if (speed > 0.05) {
+        result[i].azimuthDeg = (Math.atan2(vz, vx) * 180) / Math.PI; // Yaw (flight-path heading)
+      } else {
+        result[i].azimuthDeg = (Math.atan2(z, x) * 180) / Math.PI;
+      }
+    } else if (result[i].azimuthDeg === undefined && result[i].yaw !== undefined) {
+      result[i].azimuthDeg = result[i].yaw;
+    }
+
+    // Roll angle (bank angle from lateral centrifugal acceleration vs vertical apparent gravity)
+    if (result[i].rollDeg === undefined && result[i].roll === undefined) {
+      const accZ = result[i].az ?? 0;
+      const accY = result[i].ay ?? 0;
+      const verticalLoad = Math.max(0.1, 9.80665 + accY);
+      result[i].rollDeg = (Math.atan2(accZ, verticalLoad) * 180) / Math.PI;
+    } else if (result[i].rollDeg === undefined && result[i].roll !== undefined) {
+      result[i].rollDeg = result[i].roll;
+    }
+
     if (result[i].v !== null && result[i].v !== undefined) {
       result[i].machNumber = result[i].v! / 343.0; // standard sea-level sound speed
     }

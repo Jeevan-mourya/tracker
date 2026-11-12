@@ -19,11 +19,14 @@ jobs:
       - name: Install Dependencies
         run: npm install
 
+      - name: Install Electron & Static FFmpeg for Packaging
+        run: npm install --no-save ffmpeg-static
+
       - name: Build Web Application
         run: npm run build
 
       - name: Package Windows Executables (NSIS & Portable)
-        run: npx electron-builder --win --x64 --publish never
+        run: npx electron-builder --config electron-builder.json --win --x64 --publish never
 
       - name: Validate Output Executables
         shell: pwsh

@@ -1,19 +1,18 @@
 import React from 'react';
-import { Track, Calibration, CoordinateAxes } from '../types';
+import { Track, Calibration, CoordinateAxes, GraphConfig } from '../types';
 import {
   Scissors,
   Ruler,
   Compass,
   Grid,
-  TrendingUp,
   Eye,
   FastForward,
   Settings2,
   Trash2,
   Sliders,
   Undo2,
+  Redo2,
   Crosshair,
-  Keyboard,
 } from 'lucide-react';
 
 export type ViewLayout =
@@ -31,6 +30,11 @@ interface ToolbarProps {
   onOpenTrackManager: () => void;
   onClearTrackPoints: () => void;
   onUndoLastPoint?: () => void;
+  onRedoLastPoint?: () => void;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  undoCount?: number;
+  redoCount?: number;
   requireShiftToMark?: boolean;
   onToggleRequireShiftToMark?: () => void;
   calibration: Calibration;
@@ -51,11 +55,14 @@ interface ToolbarProps {
   layout: ViewLayout;
   onLayoutChange: (layout: ViewLayout) => void;
   onOpenClipSettings: () => void;
-  analysisMode?: '2D' | '3D';
-  onChangeAnalysisMode?: (mode: '2D' | '3D') => void;
+  analysisMode?: '2D' | '3D' | '6DOF';
+  onChangeAnalysisMode?: (mode: '2D' | '3D' | '6DOF') => void;
   onOpenTriangulationModal?: () => void;
+  onOpenMonocular6DoFModal?: () => void;
   triangulationCalibrated?: boolean;
   onOpenShortcuts?: () => void;
+  graphConfig?: GraphConfig;
+  onUpdateGraphConfig?: (updates: Partial<GraphConfig>) => void;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
@@ -65,6 +72,11 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onOpenTrackManager,
   onClearTrackPoints,
   onUndoLastPoint,
+  onRedoLastPoint,
+  canUndo,
+  canRedo = false,
+  undoCount = 0,
+  redoCount = 0,
   requireShiftToMark = true,
   onToggleRequireShiftToMark,
   calibration,
@@ -88,136 +100,104 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   analysisMode = '2D',
   onChangeAnalysisMode,
   onOpenTriangulationModal,
-  onOpenShortcuts,
+  onOpenMonocular6DoFModal,
+  graphConfig,
+  onUpdateGraphConfig,
 }) => {
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
+  const refFrameMode = graphConfig?.referenceFrameMode || 'M_wrt_L';
+  const coordConv = graphConfig?.coordConvention || 'NED_Z_DOWN';
 
   return (
     <div
       id="tracker-toolbar"
-      className="bg-[#d4d0c8] border-b border-[#808080] px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs select-none z-10"
+      className="h-[34px] bg-[#F1F3F5] border-b border-[#DEE2E6] px-2.5 flex items-center justify-between gap-2 text-[11.5px] text-[#1E293B] select-none z-20 shrink-0 overflow-x-auto"
     >
-      {/* Left: Tracks, Tools & Calibration */}
-      <div className="flex items-center flex-wrap gap-2">
-        {/* Track Selector & Management */}
-        <div className="flex items-center gap-1.5 bg-[#efefef] border border-[#808080] rounded-[3px] px-2 py-1">
-          <span className="text-[#333333] font-semibold text-[11px]">Track:</span>
-          <select
-            id="active-track-select"
-            value={activeTrackId}
-            onChange={(e) => onSelectTrack(e.target.value)}
-            className="bg-transparent text-black font-bold focus:outline-none cursor-pointer pr-1 text-xs"
-          >
-            {tracks.map((t) => (
-              <option key={t.id} value={t.id} className="bg-white text-black">
-                {t.name} ({t.steps.length} pts)
-              </option>
-            ))}
-          </select>
-          <div
-            className="w-2.5 h-2.5 rounded-full border border-[#808080] ml-0.5"
-            style={{ backgroundColor: activeTrack?.color || '#1e3a5f' }}
-          />
-
-          <button
-            id="btn-track-manager"
-            type="button"
-            onClick={onOpenTrackManager}
-            className="p-1 rounded-[2px] text-black hover:bg-[#dcdcdc] transition-colors ml-1"
-            title="Track Manager (create mass point, center of mass, color, mass)"
-          >
-            <Settings2 className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            id="btn-undo-point"
-            type="button"
-            onClick={onUndoLastPoint}
-            disabled={!activeTrack || activeTrack.steps.length === 0}
-            className="p-1 rounded-[2px] text-[#444444] hover:text-black hover:bg-[#dcdcdc] disabled:opacity-30 disabled:hover:text-[#444444] disabled:hover:bg-transparent transition-colors"
-            title="Undo Last Point (Ctrl+Z)"
-          >
-            <Undo2 className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            id="btn-clear-track-points"
-            type="button"
-            onClick={onClearTrackPoints}
-            disabled={!activeTrack || activeTrack.steps.length === 0}
-            className="p-1 rounded-[2px] text-[#444444] hover:text-black hover:bg-[#dcdcdc] disabled:opacity-30 disabled:hover:text-[#444444] disabled:hover:bg-transparent transition-colors"
-            title="Clear all points on current track"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* Shift+Click Mark Mode Toggle */}
+      {/* ======================== LEFT GROUP: MODE SWITCHER ======================== */}
+      <div className="flex items-center bg-[#E2E8F0] p-0.5 rounded-[3px] border border-[#CBD5E1] shrink-0 h-[26px]">
         <button
-          id="btn-toggle-shift-mark"
+          id="btn-mode-2d"
           type="button"
-          onClick={onToggleRequireShiftToMark}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-[3px] font-semibold border transition-colors ${
-            requireShiftToMark
-              ? 'bg-[#1e3a5f] text-white border-[#0f1d30]'
-              : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
+          onClick={() => onChangeAnalysisMode?.('2D')}
+          className={`px-2.5 h-[22px] rounded-[2px] font-semibold text-[11px] transition-colors whitespace-nowrap ${
+            analysisMode === '2D'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
           }`}
-          title={
-            requireShiftToMark
-              ? 'Tracker OSP Mode: Hold Shift + Click to mark point (prevents accidental clicks). Click to switch to Single-Click mode.'
-              : 'Direct Mode: Single click marks point mass. Click to switch to Shift+Click safety mode.'
-          }
+          title="Mode 1: 2D Single-Camera Planar Kinematics"
         >
-          <Crosshair className={`w-3.5 h-3.5 ${requireShiftToMark ? 'text-white' : 'text-black'}`} />
-          <span>{requireShiftToMark ? 'Shift+Click Mark' : 'Click to Mark'}</span>
+          2D Planar
         </button>
-
-        <div className="w-[1px] h-4 bg-[#808080] hidden sm:block" />
-
-        {/* Video Cuts / Clip Settings */}
         <button
-          id="btn-video-cuts"
+          id="btn-mode-monocular-6dof"
           type="button"
-          onClick={onOpenClipSettings}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors font-semibold"
-          title="Clip Settings: Start/End Frame, Step Size, Frame Rate"
+          onClick={() => {
+            onChangeAnalysisMode?.('6DOF');
+            onOpenMonocular6DoFModal?.();
+          }}
+          className={`px-2.5 h-[22px] rounded-[2px] font-semibold text-[11px] transition-colors whitespace-nowrap ${
+            analysisMode === '6DOF'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Mode 2: Monocular 6-DOF Store Separation Photogrammetry (Leica ACS Survey + Multi-Body PnP)"
         >
-          <Scissors className="w-3.5 h-3.5 text-black" />
-          <span>Clip Cuts</span>
+          Monocular 6-DOF
         </button>
+        <button
+          id="btn-mode-3d-stereo"
+          type="button"
+          onClick={() => onChangeAnalysisMode?.('3D')}
+          className={`px-2.5 h-[22px] rounded-[2px] font-semibold text-[11px] transition-colors whitespace-nowrap ${
+            analysisMode === '3D'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Mode 3: 3D Stereo Dual-Camera Optical Triangulation (DLT & Multi-Rate Sync)"
+        >
+          3D Stereo
+        </button>
+      </div>
 
-        <div className="w-[1px] h-4 bg-[#808080] hidden sm:block" />
+      {/* ======================== CENTER GROUP: CONTEXTUAL WORKFLOW TOOLS (1. Calibrate -> 2. Track -> 3. Solve) ======================== */}
+      <div className="flex items-center gap-1.5 shrink-0">
+        {/* STEP 1: CALIBRATE */}
+        <div
+          className="flex items-center gap-1"
+          title="Step 1: Calibrate coordinate axes origin/tilt and physical scale (or 3D Stereo DLT)"
+        >
+          <span className="text-[10px] font-mono font-semibold text-[#64748B] px-1 whitespace-nowrap">
+            1. Calibrate
+          </span>
 
-        {/* Coordinate Axes */}
-        <div className="flex items-center gap-1">
           <button
             id="btn-toggle-axes"
             type="button"
             onClick={onToggleAxes}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] font-semibold border transition-colors ${
+            className={`flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-medium border transition-colors whitespace-nowrap ${
               axes.visible
-                ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
+                ? 'bg-[#2563EB] text-white border-[#1D4ED8]'
+                : 'bg-white text-[#1E293B] border-[#CBD5E1] hover:bg-[#F8FAFC]'
             }`}
-            title="Toggle Coordinate Axes (drag origin or tilt arrow)"
+            title="Step 1: Toggle Coordinate Axes Origin & Rotation Handle (Shortcut: A)"
           >
-            <Compass className={`w-3.5 h-3.5 ${axes.visible ? 'text-white' : 'text-black'}`} />
+            <Compass className="w-3.5 h-3.5" />
             <span>Axes</span>
           </button>
 
           {axes.visible && (
-            <div className="flex items-center bg-white border border-[#808080] rounded-[3px] px-2 py-0.5">
-              <span className="text-[11px] text-[#333333] font-bold mr-1">θ:</span>
+            <div className="flex items-center bg-white border border-[#CBD5E1] rounded-[3px] px-1.5 h-[26px]">
+              <span className="text-[10px] text-[#64748B] font-mono mr-0.5">θ:</span>
               <input
                 id="axes-angle-quick-input"
                 type="number"
                 value={axes.angle}
                 onChange={(e) => onAxesAngleChange(parseFloat(e.target.value) || 0)}
-                className="w-10 bg-transparent text-xs text-black font-bold focus:outline-none font-mono"
+                className="w-9 bg-transparent text-[11px] text-[#1E293B] font-semibold focus:outline-none font-mono tabular-nums"
                 step="1"
                 title="Axes Rotation Angle (degrees)"
               />
-              <span className="text-[11px] text-[#333333] font-bold">°</span>
+              <span className="text-[10px] text-[#64748B] font-mono">°</span>
             </div>
           )}
 
@@ -225,221 +205,362 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             id="btn-toggle-grid"
             type="button"
             onClick={onToggleGrid}
-            className={`p-1.5 rounded-[3px] border transition-colors ${
+            className={`px-1.5 h-[26px] rounded-[3px] border transition-colors ${
               axes.gridVisible
-                ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
+                ? 'bg-[#2563EB] text-white border-[#1D4ED8]'
+                : 'bg-white text-[#1E293B] border-[#CBD5E1] hover:bg-[#F8FAFC]'
             }`}
-            title="Toggle Cartesian Grid Lines"
+            title="Toggle Cartesian Coordinate Grid Overlay"
           >
             <Grid className="w-3.5 h-3.5" />
           </button>
+
+          <button
+            id={analysisMode === '3D' ? 'btn-toggle-3d-calibration-stick' : 'btn-toggle-calibration'}
+            type="button"
+            onClick={onToggleCalibration}
+            className={`flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-medium border transition-colors whitespace-nowrap ${
+              calibration.visible
+                ? 'bg-[#2563EB] text-white border-[#1D4ED8]'
+                : 'bg-white text-[#1E293B] border-[#CBD5E1] hover:bg-[#F8FAFC]'
+            }`}
+            title="Step 1: Toggle Calibration Stick on video canvas to set physical scale (Shortcut: C)"
+          >
+            <Ruler className="w-3.5 h-3.5" />
+            <span>
+              Calib Stick ({calibration.realLength} {calibration.unit})
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onOpenCalibrationModal}
+            className="px-1.5 h-[26px] rounded-[3px] bg-white hover:bg-[#F8FAFC] text-[#1E293B] border border-[#CBD5E1] transition-colors"
+            title="Configure Calibration Stick Length and Units"
+          >
+            <Sliders className="w-3.5 h-3.5" />
+          </button>
         </div>
 
-        <div className="w-[1px] h-4 bg-[#808080] hidden sm:block" />
+        <div className="w-[1px] h-4 bg-[#CBD5E1] mx-0.5" />
 
-        {/* Calibration Stick / 3D Triangulation */}
-        {analysisMode === '2D' ? (
-          <div className="flex items-center gap-1">
-            <button
-              id="btn-toggle-calibration"
-              type="button"
-              onClick={onToggleCalibration}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] font-semibold border transition-colors ${
-                calibration.visible
-                  ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-                  : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
-              }`}
-              title="Toggle Calibration Stick (drag blue circle ends on video)"
+        {/* STEP 2: TRACK */}
+        <div
+          className="flex items-center gap-1"
+          title="Step 2: Select point mass track and digitize target positions across frames"
+        >
+          <span className="text-[10px] font-mono font-semibold text-[#64748B] px-1 whitespace-nowrap">
+            2. Track
+          </span>
+
+          <div className="flex items-center gap-1 bg-white border border-[#CBD5E1] rounded-[3px] px-2 h-[26px]">
+            <span
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: activeTrack?.color || '#2563EB' }}
+            />
+            <select
+              id="active-track-select"
+              value={activeTrackId}
+              onChange={(e) => onSelectTrack(e.target.value)}
+              className="bg-transparent text-[#1E293B] font-semibold focus:outline-none cursor-pointer text-[11.5px] max-w-[130px] truncate"
+              title="Select Active Point Mass Track"
             >
-              <Ruler className={`w-3.5 h-3.5 ${calibration.visible ? 'text-white' : 'text-black'}`} />
-              <span>Calib: {calibration.realLength} {calibration.unit}</span>
+              {tracks.map((t) => (
+                <option key={t.id} value={t.id} className="bg-white text-[#1E293B]">
+                  {t.name} ({t.steps.length})
+                </option>
+              ))}
+            </select>
+            <button
+              id="btn-track-manager"
+              type="button"
+              onClick={onOpenTrackManager}
+              className="p-0.5 rounded-[2px] text-[#475569] hover:text-[#0F172A] hover:bg-[#F1F5F9] transition-colors"
+              title="Track Manager (create new point mass, mass value, color)"
+            >
+              <Settings2 className="w-3.5 h-3.5" />
             </button>
             <button
+              id="btn-undo-point"
               type="button"
-              onClick={onOpenCalibrationModal}
-              className="p-1.5 rounded-[3px] bg-[#efefef] hover:bg-[#dcdcdc] text-black border border-[#808080] transition-colors"
-              title="Configure Calibration Stick Length and Units"
+              onClick={onUndoLastPoint}
+              disabled={canUndo !== undefined ? !canUndo : (!activeTrack || activeTrack.steps.length === 0)}
+              className="p-0.5 rounded-[2px] text-[#475569] hover:text-[#0F172A] hover:bg-[#F1F5F9] disabled:opacity-30 transition-colors cursor-pointer disabled:cursor-not-allowed"
+              title={`Undo (Ctrl+Z)${undoCount > 0 ? ` • ${undoCount} action(s)` : ''}`}
             >
-              <Sliders className="w-3.5 h-3.5" />
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              id="btn-redo-point"
+              type="button"
+              onClick={onRedoLastPoint}
+              disabled={!canRedo}
+              className="p-0.5 rounded-[2px] text-[#475569] hover:text-[#0F172A] hover:bg-[#F1F5F9] disabled:opacity-30 transition-colors cursor-pointer disabled:cursor-not-allowed"
+              title={`Redo (Ctrl+Y / Ctrl+Shift+Z)${redoCount > 0 ? ` • ${redoCount} action(s)` : ''}`}
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              id="btn-clear-track-points"
+              type="button"
+              onClick={onClearTrackPoints}
+              disabled={!activeTrack || activeTrack.steps.length === 0}
+              className="p-0.5 rounded-[2px] text-[#475569] hover:text-[#DC2626] hover:bg-[#FEF2F2] disabled:opacity-30 transition-colors"
+              title="Clear all points on active track"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
-        ) : (
-          <button
-            id="btn-3d-triangulation"
-            type="button"
-            onClick={onOpenTriangulationModal}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] font-semibold bg-[#efefef] text-black border border-[#808080] hover:bg-[#dcdcdc] transition-colors"
-            title="Configure 3D Camera Triangulation"
-          >
-            <Sliders className="w-3.5 h-3.5 text-black" />
-            <span>3D Calibration</span>
-          </button>
-        )}
 
-        <div className="w-[1px] h-4 bg-[#808080] hidden sm:block" />
+          <button
+            id="btn-toggle-shift-mark"
+            type="button"
+            onClick={onToggleRequireShiftToMark}
+            className={`flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-medium border transition-colors whitespace-nowrap ${
+              requireShiftToMark
+                ? 'bg-[#2563EB] text-white border-[#1D4ED8]'
+                : 'bg-white text-[#1E293B] border-[#CBD5E1] hover:bg-[#F8FAFC]'
+            }`}
+            title={
+              requireShiftToMark
+                ? 'Step 2: Hold Shift + Click on video to digitize point (prevents accidental clicks). Click to switch to Direct Click.'
+                : 'Direct Click Mode: Single click marks point. Click to enable Shift+Click safety.'
+            }
+          >
+            <Crosshair className="w-3.5 h-3.5" />
+            <span>{requireShiftToMark ? 'Shift+Click Mark' : 'Click Mark'}</span>
+          </button>
 
-        {/* Overlay Toggles: Trails, Vectors, Loupe */}
-        <div className="flex items-center bg-[#efefef] rounded-[3px] p-0.5 border border-[#808080]">
           <button
-            id="btn-toggle-trails"
+            id="btn-video-cuts"
             type="button"
-            onClick={onToggleTrails}
-            className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              showTrails ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Show / Hide Trajectory Trails"
+            onClick={onOpenClipSettings}
+            className="flex items-center gap-1 px-2 h-[26px] rounded-[3px] bg-white hover:bg-[#F8FAFC] text-[#1E293B] border border-[#CBD5E1] font-medium transition-colors whitespace-nowrap"
+            title="Clip Cuts: Start/End Frame, Step Size, Frame Rate (fps)"
           >
-            Trails
-          </button>
-          <button
-            id="btn-toggle-vectors"
-            type="button"
-            onClick={onToggleVectors}
-            className={`flex items-center gap-1 px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              showVectors ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Show Velocity & Acceleration Vectors"
-          >
-            <TrendingUp className="w-3 h-3" />
-            <span>Vectors</span>
-          </button>
-          <button
-            id="btn-toggle-loupe"
-            type="button"
-            onClick={onToggleLoupe}
-            className={`flex items-center gap-1 px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              showLoupe ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Toggle Sub-pixel Magnifier Loupe"
-          >
-            <Eye className="w-3 h-3" />
-            <span>Loupe</span>
+            <Scissors className="w-3.5 h-3.5 text-[#475569]" />
+            <span className="hidden xl:inline">Clip</span>
           </button>
         </div>
 
-        {/* Auto-Advance Frame Toggle */}
-        <button
-          id="btn-toggle-auto-advance"
-          type="button"
-          onClick={onToggleAutoAdvance}
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-[3px] font-semibold border transition-colors ${
-            autoAdvance
-              ? 'bg-[#1e3a5f] text-white border-[#1e3a5f]'
-              : 'bg-[#efefef] text-black border-[#808080] hover:bg-[#dcdcdc]'
-          }`}
-          title="Automatically advance to the next frame when a point is marked"
+        <div className="w-[1px] h-4 bg-[#CBD5E1] mx-0.5" />
+
+        {/* STEP 3: SOLVE & INSPECT */}
+        <div
+          className="flex items-center gap-1"
+          title="Step 3: Solve 6-DOF / 3D Stereo Photogrammetry and inspect kinematic telemetry"
         >
-          <FastForward className={`w-3.5 h-3.5 ${autoAdvance ? 'text-white' : 'text-black'}`} />
-          <span>Auto-step</span>
-        </button>
-      </div>
+          <span className="text-[10px] font-mono font-semibold text-[#64748B] px-1 whitespace-nowrap">
+            3. Solve
+          </span>
 
-      {/* Right: Mode Switcher & View Layouts */}
-      <div className="flex items-center gap-2">
-        {/* 2D vs 3D Stereo */}
-        <div className="flex items-center bg-[#efefef] p-0.5 rounded-[3px] border border-[#808080]">
-          <button
-            type="button"
-            onClick={() => onChangeAnalysisMode?.('2D')}
-            className={`px-2.5 py-1 rounded-[2px] font-bold text-xs transition-colors ${
-              analysisMode === '2D' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-          >
-            2D
-          </button>
-          <button
-            type="button"
-            onClick={() => onChangeAnalysisMode?.('3D')}
-            className={`px-2.5 py-1 rounded-[2px] font-bold text-xs transition-colors flex items-center gap-1 ${
-              analysisMode === '3D' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-white" />
-            3D Stereo
-          </button>
-        </div>
-
-        {/* Layout Presets */}
-        <div className="flex items-center rounded-[3px] bg-[#efefef] border border-[#808080] p-0.5">
-          {analysisMode === '3D' && (
+          {analysisMode === '3D' ? (
             <>
               <button
+                id="btn-3d-triangulation"
                 type="button"
-                onClick={() => onLayoutChange('split-3d')}
-                className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-                  layout === 'split-3d' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-                }`}
-                title="Dual Video + 3D Orbit View"
+                onClick={onOpenTriangulationModal}
+                className="flex items-center gap-1 px-2.5 h-[26px] rounded-[3px] font-semibold bg-[#2563EB] hover:bg-[#1D4ED8] text-white border border-[#1E40AF] transition-colors whitespace-nowrap"
+                title="Step 3: Configure 3D Stereo DLT Triangulation & Empirical Calibration"
               >
-                Dual+3D
+                <Sliders className="w-3.5 h-3.5" />
+                <span>3D Calibration</span>
               </button>
               <button
                 type="button"
-                onClick={() => onLayoutChange('trajectory-3d')}
-                className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-                  layout === 'trajectory-3d' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-                }`}
-                title="3D Spatial Trajectory Orbit View"
+                onClick={onOpenTriangulationModal}
+                className="flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-medium bg-white hover:bg-[#F8FAFC] text-[#1E293B] border border-[#CBD5E1] transition-colors whitespace-nowrap"
+                title="Multi-Rate Camera Synchronization & Sub-Frame Spline Setup"
               >
-                3D Orbit
+                <span>Cam Sync</span>
               </button>
+              {onOpenMonocular6DoFModal && (
+                <button
+                  id="btn-open-stereo-6dof"
+                  type="button"
+                  onClick={onOpenMonocular6DoFModal}
+                  className="flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-medium bg-white hover:bg-[#F8FAFC] text-[#1E293B] border border-[#CBD5E1] transition-colors whitespace-nowrap"
+                  title="Open Rigid-Body 6-DOF Kabsch / PnP Store Separation Solver"
+                >
+                  <Compass className="w-3.5 h-3.5 text-[#2563EB]" />
+                  <span>6-DOF Solver</span>
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              {onOpenMonocular6DoFModal && (
+                <button
+                  id="btn-open-monocular-6dof"
+                  type="button"
+                  onClick={onOpenMonocular6DoFModal}
+                  className={`flex items-center gap-1.5 px-2.5 h-[26px] rounded-[3px] font-semibold border transition-colors whitespace-nowrap ${
+                    analysisMode === '6DOF'
+                      ? 'bg-[#2563EB] hover:bg-[#1D4ED8] text-white border-[#1E40AF]'
+                      : 'bg-white hover:bg-[#F8FAFC] text-[#1E293B] border-[#CBD5E1]'
+                  }`}
+                  title="Step 3: Open Monocular 6-DOF Store Separation & Leica ACS Survey PnP Solver (A1-A6, L7-L14, M15-M29)"
+                >
+                  <Compass className="w-3.5 h-3.5" />
+                  <span>6-DOF PnP Solver</span>
+                </button>
+              )}
+
+              {analysisMode === '6DOF' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextFrame =
+                      refFrameMode === 'M_wrt_L'
+                        ? 'M_wrt_A'
+                        : refFrameMode === 'M_wrt_A'
+                        ? 'L_wrt_A'
+                        : 'M_wrt_L';
+                    onUpdateGraphConfig?.({ referenceFrameMode: nextFrame });
+                  }}
+                  className="px-2 h-[26px] rounded-[3px] bg-white hover:bg-[#F8FAFC] border border-[#CBD5E1] font-mono text-[10.5px] text-[#1E293B] flex items-center gap-1 whitespace-nowrap"
+                  title="Active 6-DOF Reference Frame & Convention (Click to cycle M wrt L / M wrt A / L wrt A)"
+                >
+                  <span className="text-[#64748B]">Frame:</span>
+                  <strong className="text-[#2563EB]">{refFrameMode.replace(/_/g, ' ')}</strong>
+                  <span className="text-[#94A3B8]">·</span>
+                  <span>{coordConv === 'NED_Z_DOWN' ? 'NED' : 'ENU'}</span>
+                </button>
+              )}
             </>
           )}
-          <button
-            type="button"
-            onClick={() => onLayoutChange('split')}
-            className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              layout === 'split' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Split View (Video, Graphs, Table)"
-          >
-            Split
-          </button>
-          <button
-            type="button"
-            onClick={() => onLayoutChange('video-plot')}
-            className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              layout === 'video-plot' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Video + Stacked Graphs"
-          >
-            Graphs
-          </button>
-          <button
-            type="button"
-            onClick={() => onLayoutChange('video-table')}
-            className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              layout === 'video-table' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Video + Kinematic Data Table"
-          >
-            Table
-          </button>
-          <button
-            type="button"
-            onClick={() => onLayoutChange('video-only')}
-            className={`px-2 py-1 rounded-[2px] text-xs font-semibold transition-colors ${
-              layout === 'video-only' ? 'bg-[#1e3a5f] text-white' : 'text-black hover:bg-[#dcdcdc]'
-            }`}
-            title="Full Video Viewport"
-          >
-            Video
-          </button>
-        </div>
 
-        {/* Overview of Keyboard Shortcuts Modal Button */}
-        {onOpenShortcuts && (
-          <button
-            id="toolbar-btn-shortcuts"
-            type="button"
-            onClick={onOpenShortcuts}
-            className="p-1 rounded-[2px] text-black hover:bg-[#dcdcdc] border border-[#808080] transition-colors flex items-center justify-center cursor-pointer ml-1"
-            title="Overview of Keyboard Shortcuts (? or F1)"
-          >
-            <Keyboard className="w-3.5 h-3.5 text-[#1e3a5f]" />
-          </button>
-        )}
+          {/* Compact Overlays & Auto-Step Group */}
+          <div className="hidden 2xl:flex items-center bg-white rounded-[3px] p-0.5 border border-[#CBD5E1] h-[26px]">
+            <button
+              id="btn-toggle-trails"
+              type="button"
+              onClick={onToggleTrails}
+              className={`px-1.5 h-[20px] rounded-[2px] text-[10.5px] font-medium transition-colors ${
+                showTrails ? 'bg-[#2563EB] text-white' : 'text-[#475569] hover:bg-[#F1F5F9]'
+              }`}
+              title="Toggle Trajectory Trails (T)"
+            >
+              Trails
+            </button>
+            <button
+              id="btn-toggle-vectors"
+              type="button"
+              onClick={onToggleVectors}
+              className={`px-1.5 h-[20px] rounded-[2px] text-[10.5px] font-medium transition-colors ${
+                showVectors ? 'bg-[#2563EB] text-white' : 'text-[#475569] hover:bg-[#F1F5F9]'
+              }`}
+              title="Toggle Velocity Vectors (V)"
+            >
+              Vec
+            </button>
+            <button
+              id="btn-toggle-loupe"
+              type="button"
+              onClick={onToggleLoupe}
+              className={`px-1.5 h-[20px] rounded-[2px] text-[10.5px] font-medium transition-colors flex items-center gap-0.5 ${
+                showLoupe ? 'bg-[#2563EB] text-white' : 'text-[#475569] hover:bg-[#F1F5F9]'
+              }`}
+              title="Toggle Sub-Pixel Magnifier Loupe (M)"
+            >
+              <Eye className="w-3 h-3" />
+              <span>Loupe</span>
+            </button>
+            <button
+              id="btn-toggle-auto-advance"
+              type="button"
+              onClick={onToggleAutoAdvance}
+              className={`px-1.5 h-[20px] rounded-[2px] text-[10.5px] font-medium transition-colors flex items-center gap-0.5 ${
+                autoAdvance ? 'bg-[#2563EB] text-white' : 'text-[#475569] hover:bg-[#F1F5F9]'
+              }`}
+              title="Auto-Advance Frame on Mark"
+            >
+              <FastForward className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* ======================== RIGHT GROUP: LAYOUT FOCUS SEGMENTED BAR ======================== */}
+      <div className="flex items-center rounded-[3px] bg-[#E2E8F0] border border-[#CBD5E1] p-0.5 h-[26px] shrink-0">
+        <button
+          id="btn-preset-video-focus"
+          type="button"
+          onClick={() => onLayoutChange('video-only')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'video-only'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Video Tracking Focus (Key: 1)"
+        >
+          Video
+        </button>
+        <button
+          id="btn-preset-graph-focus"
+          type="button"
+          onClick={() => onLayoutChange('video-plot')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'video-plot'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Graph & Telemetry Focus: 24% Video Reference + 76% Expanded Dual-Panel Graph (Key: 2)"
+        >
+          Graph
+        </button>
+        <button
+          id="btn-preset-balanced-split"
+          type="button"
+          onClick={() => onLayoutChange('split')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'split'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Balanced 50/50 Split Workspace (Key: 3)"
+        >
+          Split
+        </button>
+        <button
+          id="btn-preset-quad-grid"
+          type="button"
+          onClick={() => onLayoutChange('split-3d')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'split-3d'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Quad Telemetry Grid: Video + 3D Spatial Viewport + Graph + Table (Key: 4)"
+        >
+          Quad
+        </button>
+        <button
+          id="btn-preset-3d-orbit"
+          type="button"
+          onClick={() => onLayoutChange('trajectory-3d')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'trajectory-3d'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="3D Spatial Trajectory Orbit + Telemetry Split"
+        >
+          3D
+        </button>
+        <button
+          id="btn-preset-table-focus"
+          type="button"
+          onClick={() => onLayoutChange('video-table')}
+          className={`px-2 h-[22px] rounded-[2px] text-[11px] font-semibold transition-colors whitespace-nowrap ${
+            layout === 'video-table'
+              ? 'bg-[#2563EB] text-white shadow-2xs'
+              : 'text-[#334155] hover:text-[#0F172A] hover:bg-white/60'
+          }`}
+          title="Video + Full-Height Data Table"
+        >
+          Table
+        </button>
       </div>
     </div>
   );

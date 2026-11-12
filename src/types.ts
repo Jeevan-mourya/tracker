@@ -34,8 +34,12 @@ export interface PointStep {
   // ONLY populated when independent ground truth is supplied; undefined/null otherwise
   reconstructionError3D?: number | null;
   slantRange?: number | null; // Slant range to target R = sqrt(x^2 + y^2 + z^2) in meters
-  azimuthDeg?: number | null; // Azimuth angle in degrees
-  elevationDeg?: number | null; // Elevation angle in degrees
+  azimuthDeg?: number | null; // Azimuth angle in degrees (Yaw)
+  elevationDeg?: number | null; // Elevation angle in degrees (Pitch)
+  rollDeg?: number | null; // Roll angle in degrees
+  roll?: number | null; // Optional direct alias for Roll angle in degrees
+  pitch?: number | null; // Optional direct alias for Pitch angle in degrees
+  yaw?: number | null; // Optional direct alias for Yaw angle in degrees
   machNumber?: number | null; // Speed in Mach
   gForce?: number | null; // Total acceleration in Gs (a / 9.80665)
   // High-speed stereo asynchronous tracking metadata (when Cam 1 & Cam 2 frame rates differ)
@@ -44,8 +48,82 @@ export interface PointStep {
   cam2Frame?: number;
   isInterpolatedCam1?: boolean;
   isInterpolatedCam2?: boolean;
+  isInterpolated?: boolean;
+  rejected?: boolean; // If true, observation is rejected and treated as a gap in plots
   temporalDeltaSeconds?: number;
+  // Angular velocities & accelerations (deg/s, deg/s^2)
+  omegaRoll?: number | null;
+  omegaPitch?: number | null;
+  omegaYaw?: number | null;
+  alphaRoll?: number | null;
+  alphaPitch?: number | null;
+  alphaYaw?: number | null;
+  // 1-Sigma Pose Uncertainties propagated from SE(3) Covariance Matrix Sigma_xi = s_0^2 (J^T W J)^{-1}
+  sigmaX?: number | null; // meters (1-sigma)
+  sigmaY?: number | null; // meters (1-sigma)
+  sigmaZ?: number | null; // meters (1-sigma)
+  sigmaRoll?: number | null; // degrees (1-sigma)
+  sigmaPitch?: number | null; // degrees (1-sigma)
+  sigmaYaw?: number | null; // degrees (1-sigma)
+  // Visible marker counts per rigid body group at frame t
+  markerCountA?: number;
+  markerCountL?: number;
+  markerCountM?: number;
+  // Multi-body relative reference frame telemetry for Store Separation (M wrt L, M wrt A, L wrt A, camera_world)
+  relativeFrames?: {
+    [key in RelativeReferenceFrameMode]?: {
+      x: number;
+      y: number;
+      z: number;
+      roll: number;
+      pitch: number;
+      yaw: number;
+      rmsePx?: number;
+      sigmaX?: number;
+      sigmaY?: number;
+      sigmaZ?: number;
+      sigmaRoll?: number;
+      sigmaPitch?: number;
+      sigmaYaw?: number;
+    };
+  };
+  // Virtual Critical Points transformed at frame t (e.g., Missile CG, Nose Tip, Aft Upper Fin Tip, Tail Boattail)
+  virtualPoints?: {
+    [virtualPointId: string]: {
+      name: string;
+      x: number; // in M_wrt_L (meters)
+      y: number;
+      z: number;
+      clearanceM: number; // Euclidean clearance distance ||P_virt^L - P_ref^L||_2 in meters
+      xAircraft?: number; // in M_wrt_A (meters)
+      yAircraft?: number;
+      zAircraft?: number;
+      sigmaX?: number;
+      sigmaY?: number;
+      sigmaZ?: number;
+    };
+  };
 }
+
+export interface VirtualPoint3D {
+  id: string;
+  name: string;
+  x: number; // Known Leica ACS / Missile Body X coordinate (m)
+  y: number; // Known Leica ACS / Missile Body Y coordinate (m)
+  z: number; // Known Leica ACS / Missile Body Z coordinate (m)
+}
+
+export interface ClearanceEnvelopeSummary {
+  virtualPointId: string;
+  virtualPointName: string;
+  minClearanceMeters: number;
+  minDistanceMeters: number;
+  closestApproachFrame: number;
+  closestApproachTimeSec: number;
+  closestApproachTime: number;
+}
+
+export type AnalysisMode = '2D' | '3D' | '6DOF';
 
 export type TrackFootprint = 'circle' | 'crosshair' | 'diamond' | 'square';
 
@@ -60,6 +138,11 @@ export interface Track {
   showVectors: boolean;
   showTrails: boolean;
   showLabels: boolean;
+  rigidBodyGroup?: 'A' | 'L' | 'M';
+  surveyMarkerId?: string;
+  virtualPointsCatalog?: VirtualPoint3D[];
+  clearanceEnvelope?: Record<string, ClearanceEnvelopeSummary>;
+  overallMinClearance?: ClearanceEnvelopeSummary;
 }
 
 export interface Calibration {
@@ -96,10 +179,20 @@ export interface ClipSettings {
   shutterSpeed?: string; // e.g. "1/100,000 s" or "5 µs"
 }
 
+export type SixDofChannel = 'x' | 'y' | 'z' | 'roll' | 'pitch' | 'yaw';
+
 export type PlotVariable =
+  | 't'
   | 'x'
   | 'y'
   | 'z'
+  | 'distX'
+  | 'distY'
+  | 'distZ'
+  | 'pitch'
+  | 'yaw'
+  | 'roll'
+  | 'pathLength'
   | 'vx'
   | 'vy'
   | 'vz'
@@ -108,12 +201,158 @@ export type PlotVariable =
   | 'ay'
   | 'az'
   | 'a'
+  | 'omegaRoll'
+  | 'omegaPitch'
+  | 'omegaYaw'
+  | 'alphaRoll'
+  | 'alphaPitch'
+  | 'alphaYaw'
   | 'kineticEnergy'
   | 'potentialEnergy'
   | 'totalEnergy'
   | 'mach'
   | 'gForce'
   | 'slantRange';
+
+export type GraphAxisVariable = 't' | PlotVariable;
+
+export type GraphTransformMode = 'signed' | 'abs' | 'magnitude' | 'path_length';
+
+export type GraphViewLayout = 'dual-sync' | 'overlay' | 'single' | 'multi-stack' | 'telemetry-6dof';
+
+export type AngleWrapMode = 'unwrapped' | 'shortest';
+
+export type AngleUnit = 'deg' | 'rad';
+
+export type AerospaceCoordConvention = 'ENU_Z_UP' | 'NED_Z_DOWN';
+
+export type RelativeReferenceFrameMode = 'M_wrt_L' | 'M_wrt_A' | 'L_wrt_A' | 'camera_world';
+
+export type SignalFilterType = 'raw' | 'savgol' | 'butterworth';
+
+export interface SignalFilterConfig {
+  type: SignalFilterType;
+  windowSize: number; // e.g. 5, 7, 9, 11, 15, 21 for Savitzky-Golay
+  polyOrder: 2 | 3; // 2 or 3 for Savitzky-Golay
+  cutoffHz: number; // Cutoff frequency in Hz for 4th-order zero-phase Butterworth
+}
+
+export type PublicationPlotTheme = 'publication-light' | 'tactical-dark';
+
+export type ChannelSignMode = 'standard' | 'inverted' | 'abs_positive';
+
+export interface ChannelSignRule {
+  channel: SixDofChannel;
+  directionLabel: string; // e.g. 'Towards Nose (Forward)', 'Towards Right (Starboard)', 'Downwards (Nadir)'
+  mode: ChannelSignMode;
+  multiplier: 1 | -1;
+  rectify: 'signed' | 'abs_positive';
+}
+
+export type SixDofSignMatrixConfig = Record<SixDofChannel, ChannelSignRule>;
+
+export interface GraphConfig {
+  varY: PlotVariable;
+  varX: GraphAxisVariable;
+  selectedChannels?: SixDofChannel[];
+  transformMode: GraphTransformMode;
+  transformModeX?: 'signed' | 'abs';
+  invertVarX?: boolean;
+  panel2TransformMode?: 'abs' | 'magnitude' | 'path_length';
+  viewMode: GraphViewLayout;
+  referenceFrameT0?: number | null;
+  relativeToOrigin?: boolean;
+  useRelativeTime?: boolean;
+  angleWrapMode?: AngleWrapMode;
+  angleUnit?: AngleUnit;
+  coordConvention?: AerospaceCoordConvention;
+  channelSignConfig?: SixDofSignMatrixConfig;
+  referenceFrameMode?: RelativeReferenceFrameMode;
+  activeVirtualPointId?: string;
+  showUncertaintyBand?: boolean;
+  publicationTheme?: PublicationPlotTheme;
+  dualGraphSplitPct?: number; // Top/Bottom ratio in Dual-Sync mode (0 = Bottom Only, 50 = Dual 50/50, 100 = Top Only)
+  showSettingsDrawer?: boolean;
+  invertChannels?: Partial<Record<SixDofChannel, boolean>>;
+  filterConfig?: SignalFilterConfig;
+  showOverlayDistance?: boolean;
+  showLegend?: boolean;
+  fitType?: FitType;
+  zoomDomainX?: [number, number] | null;
+  zoomDomainY?: [number, number] | null;
+}
+
+export interface StereoSyncConfig {
+  anchorFrameCam1: number; // n
+  anchorFrameCam2: number; // m
+  fpsCam1: number; // f1
+  fpsCam2: number; // f2
+  toleranceSec: number; // tolerance, e.g. 0.005 s (5ms)
+  playbackMaster: 'cam1' | 'cam2' | 'both';
+  clipInCam1?: number;
+  clipOutCam1?: number;
+  clipInCam2?: number;
+  clipOutCam2?: number;
+}
+
+export interface StereoSyncStatus {
+  frameCam1: number;
+  frameCam2: number;
+  timeCam1: number;
+  timeCam2: number;
+  deltaTimeSyncSec: number;
+  deltaTimeSyncMs: number;
+  isSynchronized: boolean;
+  status: 'synchronized' | 'within_tolerance' | 'outside_tolerance';
+  message: string;
+}
+
+export interface CameraClipConfig {
+  sourceName: string;
+  sourceUrl?: string;
+  fps: number;
+  totalFrames: number;
+  durationSec: number;
+  syncAnchorFrame: number;
+  currentFrame: number;
+  clipInFrame: number;
+  clipOutFrame: number;
+  playbackSpeed: number;
+  stepSize: number;
+  startTimeSec: number;
+  timeUnit?: 'auto' | 's' | 'ms' | 'us' | 'ns';
+}
+
+export type WorkspaceAnalysisMode = '2D' | '3D' | '6DOF';
+
+export interface SavedProjectData {
+  version: string; // '2.1.0'
+  analysisMode: WorkspaceAnalysisMode;
+  timestamp: string;
+  experimentTitle: string;
+  currentExpId?: string;
+  camera1: {
+    videoName?: string;
+    videoUrl?: string;
+    clip: ClipSettings;
+    calibration: Calibration;
+    origin: { x: number; y: number };
+  };
+  camera2?: {
+    videoName?: string;
+    videoUrl?: string;
+    clip: ClipSettings;
+    calibration: Calibration;
+    origin: { x: number; y: number };
+  };
+  synchronization?: StereoSyncConfig;
+  triangulation?: TriangulationConfig;
+  calibration?: Calibration; // backward-compatibility
+  clip?: ClipSettings; // backward-compatibility
+  axes: CoordinateAxes;
+  tracks: Track[];
+  graphConfig?: GraphConfig;
+}
 
 export type FitType = 'none' | 'linear' | 'parabolic' | 'cubic';
 
@@ -271,6 +510,9 @@ export interface TriangulationConfig {
   timeOffsetCam2Sec?: number; // Time sync offset between Cam 2 and Cam 1 in seconds (t_cam2 = t_cam1 - offset)
   temporalInterpolation?: TemporalInterpMethod; // Method for sub-frame spatial interpolation
   allowAsymmetricFrameRates?: boolean;
+  syncConfig?: StereoSyncConfig; // Explicit (n, m) anchor synchronization model
+  calibrationCam1?: Calibration; // Independent Camera 1 calibration stick
+  calibrationCam2?: Calibration; // Independent Camera 2 calibration stick
 }
 
 export interface CameraFeedConfig {
@@ -290,8 +532,10 @@ export interface SampleExperiment {
   is3D?: boolean;
   videoUrlCam2?: string;
   calibration: Calibration;
+  calibrationCam2?: Calibration;
   axes: CoordinateAxes;
   clip: ClipSettings;
+  clipCam2?: ClipSettings;
   triangulation?: TriangulationConfig;
   syntheticType?: string;
   samplePoints?: {

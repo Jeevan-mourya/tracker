@@ -78,7 +78,15 @@ const SHORTCUTS_DATA: ShortcutItem[] = [
     description: 'Immediately jumps to the final clip frame (end frame).',
   },
 
-  // Point Tracking
+  // Point Tracking & Project
+  {
+    id: 'project-save',
+    category: 'tracking',
+    title: 'Save Project (.trk)',
+    keys: ['Ctrl', 'S'],
+    description: 'Instantly saves the complete project file (.trk) with all points, 3D DLT matrices, calibration sticks, and kinematics (or ⌘+S on Mac).',
+    badge: 'Save',
+  },
   {
     id: 'track-mark-point',
     category: 'tracking',

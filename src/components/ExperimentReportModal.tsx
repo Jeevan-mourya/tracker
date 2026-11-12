@@ -54,7 +54,7 @@ interface ExperimentReportModalProps {
   axes: CoordinateAxes;
   videoSnapshotUrl: string | null;
   videoUrl?: string;
-  analysisMode?: '2D' | '3D';
+  analysisMode?: '2D' | '3D' | '6DOF';
   triangulation?: TriangulationConfig;
   onUpdateTriangulation?: (tri: TriangulationConfig) => void;
   currentFrame?: number;
