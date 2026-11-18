@@ -13,6 +13,7 @@ import {
   Undo2,
   Redo2,
   Crosshair,
+  ShieldCheck,
 } from 'lucide-react';
 
 export type ViewLayout =
@@ -63,6 +64,7 @@ interface ToolbarProps {
   onOpenShortcuts?: () => void;
   graphConfig?: GraphConfig;
   onUpdateGraphConfig?: (updates: Partial<GraphConfig>) => void;
+  onOpenMetrologyAudit?: () => void;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({
@@ -103,6 +105,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
   onOpenMonocular6DoFModal,
   graphConfig,
   onUpdateGraphConfig,
+  onOpenMetrologyAudit,
 }) => {
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const refFrameMode = graphConfig?.referenceFrameMode || 'M_wrt_L';
@@ -428,6 +431,19 @@ export const Toolbar: React.FC<ToolbarProps> = ({
                 </button>
               )}
             </>
+          )}
+
+          {onOpenMetrologyAudit && (
+            <button
+              id="btn-toolbar-metrology-audit"
+              type="button"
+              onClick={onOpenMetrologyAudit}
+              className="flex items-center gap-1 px-2 h-[26px] rounded-[3px] font-semibold bg-white hover:bg-[#EFF6FF] text-[#1E293B] hover:text-[#1D4ED8] border border-[#CBD5E1] transition-colors whitespace-nowrap"
+              title="Open Range-Safety Metrological Error Percentage & Accuracy Certification Audit (Alt+M)"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-[#2563EB]" />
+              <span>Metrology Audit</span>
+            </button>
           )}
 
           {/* Compact Overlays & Auto-Step Group */}

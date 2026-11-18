@@ -14,8 +14,11 @@ import {
   FitResult,
   ChannelSignMode,
   SixDofSignMatrixConfig,
+  AnalysisErrorReport,
 } from '../types';
 import { fitLinear, fitParabolic, fitCubic } from '../utils/physics';
+import { formatCompactAbsoluteError } from '../utils/metrologyErrorEngine';
+import { MetrologyAuditModal } from './MetrologyAuditModal';
 import {
   SIX_DOF_CHANNELS,
   TRANSLATIONAL_CHANNELS,
@@ -70,6 +73,7 @@ import {
   Sliders,
   X,
   GripHorizontal,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface PlotViewProps {
@@ -79,6 +83,9 @@ interface PlotViewProps {
   onSelectFrame: (frame: number) => void;
   graphConfig?: GraphConfig;
   onUpdateGraphConfig?: (updates: Partial<GraphConfig>) => void;
+  analysisMode?: '2d' | '3d_stereo' | '6dof';
+  fps?: number;
+  onOpenMetrologyAudit?: (panel: 'panel1' | 'panel2') => void;
 }
 
 const CHANNEL_DISPLAY_NAMES: Record<SixDofChannel, { short: string; full: string; axis: string }> = {
@@ -108,18 +115,23 @@ export function renderPublicationPlotSVG(
   activeTrack: Track | undefined,
   config: GraphConfig,
   derivedPoints?: DerivedGraphPoint[],
-  themeOverride?: PublicationPlotTheme
+  themeOverride?: PublicationPlotTheme,
+  errorReportOverride?: AnalysisErrorReport,
+  panel2ErrorReportOverride?: AnalysisErrorReport
 ): string {
   const effectiveConfig: GraphConfig = { ...DEFAULT_GRAPH_CONFIG, ...config };
   const theme: PublicationPlotTheme =
     themeOverride || effectiveConfig.publicationTheme || 'publication-light';
   const isLight = theme === 'publication-light';
 
-  const pts =
-    derivedPoints ||
-    (activeTrack?.steps && activeTrack.steps.length > 0
-      ? deriveSixChannelSeries(activeTrack.steps, effectiveConfig, effectiveConfig.varX === 't').points
-      : []);
+  const derivedBundle =
+    activeTrack?.steps && activeTrack.steps.length > 0
+      ? deriveSixChannelSeries(activeTrack.steps, effectiveConfig, effectiveConfig.varX === 't')
+      : null;
+
+  const pts = derivedPoints || (derivedBundle ? derivedBundle.points : []);
+  const primaryErrorReport = errorReportOverride || derivedBundle?.panel1ErrorReport;
+  const secondaryErrorReport = panel2ErrorReportOverride || derivedBundle?.panel2ErrorReport;
 
   const width = 1200;
   const height = 820;
@@ -196,7 +208,8 @@ export function renderPublicationPlotSVG(
     getUpper: (p: DerivedGraphPoint) => number | null,
     getLower: (p: DerivedGraphPoint) => number | null,
     strokeColor: string,
-    forceNonNegative: boolean
+    forceNonNegative: boolean,
+    panelReport?: AnalysisErrorReport
   ) => {
     const padL = 92;
     const padR = 40;
@@ -300,9 +313,10 @@ export function renderPublicationPlotSVG(
       }
     }
 
-    // Curve polyline and markers
+    // Curve polyline, parametric crosshairs, and markers
     const polyPts: string[] = [];
     const circles: string[] = [];
+    const crosshairs: string[] = [];
     pts.forEach((p) => {
       const xv = p.xVal;
       const yv = getVal(p);
@@ -310,10 +324,36 @@ export function renderPublicationPlotSVG(
       const cx = mapX(xv);
       const cy = mapY(yv);
       polyPts.push(`${cx.toFixed(1)},${cy.toFixed(1)}`);
+
+      if (effectiveConfig.showUncertaintyBand && varX !== 't') {
+        const xSig = p.xSigma ?? 0;
+        const ySig = p.ySigma ?? 0;
+        if (xSig > 0) {
+          const x1 = Math.max(plotX, mapX(xv - xSig));
+          const x2 = Math.min(plotX + plotW, mapX(xv + xSig));
+          crosshairs.push(
+            `<line x1="${x1.toFixed(1)}" y1="${cy.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${cy.toFixed(
+              1
+            )}" stroke="${strokeColor}" stroke-opacity="0.45" stroke-width="1" />`
+          );
+        }
+        if (ySig > 0) {
+          const y1 = Math.max(plotY, mapY(yv + ySig));
+          const y2 = Math.min(plotY + plotH, mapY(yv - ySig));
+          crosshairs.push(
+            `<line x1="${cx.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y2.toFixed(
+              1
+            )}" stroke="${strokeColor}" stroke-opacity="0.45" stroke-width="1" />`
+          );
+        }
+      }
+
       circles.push(
         `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(
           1
-        )}" r="3" fill="${strokeColor}" stroke="${bg}" stroke-width="1" />`
+        )}" r="${p.isOutlier2Sigma ? '3.8' : '3'}" fill="${
+          p.isOutlier2Sigma ? '#dc2626' : strokeColor
+        }" stroke="${bg}" stroke-width="1" />`
       );
     });
 
@@ -324,6 +364,14 @@ export function renderPublicationPlotSVG(
           )}" />`
         : '';
 
+    const certBadgeText = panelReport
+      ? `Accuracy: ${panelReport.overallAccuracyPct.toFixed(2)}% | NRMSE: ${panelReport.nrmsePct.toFixed(
+          2
+        )}% (${formatCompactAbsoluteError(panelReport.absoluteRMSE, panelReport.unit)}) | 2σ: ±${panelReport.p95ErrorPct.toFixed(
+          2
+        )}% | Grade ${panelReport.metrologyGrade}`
+      : '';
+
     return `
       <g>
         <rect x="${plotX}" y="${plotY}" width="${plotW}" height="${plotH}" fill="${panelBg}" stroke="${borderStroke}" stroke-width="1.2" />
@@ -332,9 +380,19 @@ export function renderPublicationPlotSVG(
     }" fill="${fg}" font-family="sans-serif" font-size="13" font-weight="bold">${escapeXml(
       title
     )}</text>
+        ${
+          certBadgeText
+            ? `<text x="${plotX + plotW}" y="${
+                topY + 22
+              }" fill="${subFg}" font-family="monospace" font-size="11" font-weight="bold" text-anchor="end">${escapeXml(
+                certBadgeText
+              )}</text>`
+            : ''
+        }
         ${gridLines.join('\n')}
         ${zeroLine}
         ${covPolygon}
+        ${crosshairs.join('\n')}
         ${polyline}
         ${circles.join('\n')}
         <text x="${plotX + plotW / 2}" y="${
@@ -362,7 +420,8 @@ export function renderPublicationPlotSVG(
         (p) => p.ySignedUpper,
         (p) => p.ySignedLower,
         signedStroke,
-        false
+        false,
+        primaryErrorReport
       ) +
       renderPanel(
         378,
@@ -373,7 +432,8 @@ export function renderPublicationPlotSVG(
         (p) => p.yDistUpper,
         (p) => p.yDistLower,
         distStroke,
-        true
+        true,
+        secondaryErrorReport
       )
     : renderPanel(
         64,
@@ -386,10 +446,11 @@ export function renderPublicationPlotSVG(
         )}`,
         getChannelLabel(varY, effectiveConfig.transformMode, true, angleUnit),
         (p) => p.yActive,
-        (p) => p.ySignedUpper,
-        (p) => p.ySignedLower,
+        (p) => p.yActiveUpper ?? null,
+        (p) => p.yActiveLower ?? null,
         signedStroke,
-        effectiveConfig.transformMode !== 'signed'
+        effectiveConfig.transformMode !== 'signed',
+        primaryErrorReport
       );
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -429,7 +490,15 @@ export function renderPublicationPlotSVG(
   }
     </text>
     <text x="16" y="86" fill="${fg}" font-family="monospace" font-size="11" font-weight="bold">
-      Min Store-to-Pylon Clearance Envelope: ${escapeXml(minClearanceText)}
+      Min Store-to-Pylon Clearance Envelope: ${escapeXml(minClearanceText)}${
+        primaryErrorReport
+          ? ` | Metrology Certification: Accuracy ${primaryErrorReport.overallAccuracyPct.toFixed(
+              2
+            )}% (NRMSE ${primaryErrorReport.nrmsePct.toFixed(2)}%, Grade ${
+              primaryErrorReport.metrologyGrade
+            })`
+          : ''
+      }
     </text>
   </g>
 </svg>`;
@@ -442,7 +511,11 @@ export const PlotView: React.FC<PlotViewProps> = ({
   onSelectFrame,
   graphConfig: externalConfig,
   onUpdateGraphConfig,
+  analysisMode = '2d',
+  fps = 60,
+  onOpenMetrologyAudit,
 }) => {
+  const [localAuditModalPanel, setLocalAuditModalPanel] = useState<'panel1' | 'panel2' | null>(null);
   // Load initial config from external prop or localStorage fallback
   const [internalConfig, setInternalConfig] = useState<GraphConfig>(() => {
     if (externalConfig) {
@@ -589,13 +662,41 @@ export const PlotView: React.FC<PlotViewProps> = ({
 
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
 
-  // Derive complete 6-channel series with reference frame t0 and gap preservation
-  const { points: derivedPoints, referenceStep } = useMemo(() => {
+  // Derive complete 6-channel series with reference frame t0, gap preservation, and Metrological Error Reports
+  const {
+    points: derivedPoints,
+    referenceStep,
+    panel1ErrorReport,
+    panel2ErrorReport,
+  } = useMemo(() => {
     if (!activeTrack || !activeTrack.steps || activeTrack.steps.length === 0) {
-      return { points: [] as DerivedGraphPoint[], referenceStep: null };
+      const emptyDerived = deriveSixChannelSeries([], internalConfig, varX === 't', {
+        analysisMode,
+        fps,
+      });
+      return {
+        points: [] as DerivedGraphPoint[],
+        referenceStep: null,
+        panel1ErrorReport: emptyDerived.panel1ErrorReport,
+        panel2ErrorReport: emptyDerived.panel2ErrorReport,
+      };
     }
-    return deriveSixChannelSeries(activeTrack.steps, internalConfig, varX === 't');
-  }, [activeTrack, internalConfig, varX]);
+    return deriveSixChannelSeries(activeTrack.steps, internalConfig, varX === 't', {
+      analysisMode,
+      fps,
+    });
+  }, [activeTrack, internalConfig, varX, analysisMode, fps]);
+
+  const handleTriggerAuditModal = useCallback(
+    (panel: 'panel1' | 'panel2') => {
+      if (onOpenMetrologyAudit) {
+        onOpenMetrologyAudit(panel);
+      } else {
+        setLocalAuditModalPanel(panel);
+      }
+    },
+    [onOpenMetrologyAudit]
+  );
 
   // Valid finite points for curve fitting & domain calculation
   const validPlotPoints = useMemo(() => {
@@ -743,7 +844,7 @@ export const PlotView: React.FC<PlotViewProps> = ({
     ROTATIONAL_CHANNELS.includes(c)
   );
 
-  // Custom dot renderer distinguishing Observed (solid circle), Interpolated (hollow diamond), and Reference t0 (target ring)
+  // Custom dot renderer distinguishing Observed (solid circle), Interpolated (hollow diamond), Reference t0 (target ring), 2-Sigma outliers, and Parametric error crosshairs
   const renderCustomDot = (color: string) => (props: any): React.ReactElement<SVGElement> => {
     const { cx, cy, payload, index } = props;
     const dotKey = props?.key ?? `dot-${color}-${index ?? 'idx'}-${payload?.frame ?? 'na'}`;
@@ -758,9 +859,36 @@ export const PlotView: React.FC<PlotViewProps> = ({
       return <g key={dotKey} />;
     }
 
+    const showParametricCrosshair = showUncertaintyBand && varX !== 't';
+    const chHalfPx = showParametricCrosshair
+      ? Math.min(12, Math.max(4, Math.round((payload.errorPct || 0.5) * 4)))
+      : 0;
+
     if (payload.isReferenceT0) {
       return (
         <g key={dotKey}>
+          {showParametricCrosshair && (
+            <>
+              <line
+                x1={cx - chHalfPx}
+                y1={cy}
+                x2={cx + chHalfPx}
+                y2={cy}
+                stroke={color}
+                strokeOpacity={0.55}
+                strokeWidth={1}
+              />
+              <line
+                x1={cx}
+                y1={cy - chHalfPx}
+                x2={cx}
+                y2={cy + chHalfPx}
+                stroke={color}
+                strokeOpacity={0.55}
+                strokeWidth={1}
+              />
+            </>
+          )}
           <circle
             cx={cx}
             cy={cy}
@@ -788,15 +916,126 @@ export const PlotView: React.FC<PlotViewProps> = ({
     }
 
     return (
-      <circle
-        key={dotKey}
-        cx={cx}
-        cy={cy}
-        r={3}
-        fill={color}
-        stroke="#0f172a"
-        strokeWidth={0.8}
-      />
+      <g key={dotKey}>
+        {showParametricCrosshair && (
+          <>
+            <line
+              x1={cx - chHalfPx}
+              y1={cy}
+              x2={cx + chHalfPx}
+              y2={cy}
+              stroke={color}
+              strokeOpacity={0.5}
+              strokeWidth={1}
+            />
+            <line
+              x1={cx}
+              y1={cy - chHalfPx}
+              x2={cx}
+              y2={cy + chHalfPx}
+              stroke={color}
+              strokeOpacity={0.5}
+              strokeWidth={1}
+            />
+          </>
+        )}
+        <circle
+          cx={cx}
+          cy={cy}
+          r={payload.isOutlier2Sigma ? 3.8 : 3}
+          fill={payload.isOutlier2Sigma ? '#dc2626' : color}
+          stroke={payload.isOutlier2Sigma ? '#fef2f2' : '#0f172a'}
+          strokeWidth={payload.isOutlier2Sigma ? 1.2 : 0.8}
+        />
+      </g>
+    );
+  };
+
+  // Dedicated Live Metrology Accuracy HUD Strip (24px) rendered per graph panel
+  const renderMetrologyHudStrip = (
+    report: AnalysisErrorReport,
+    panelKey: 'panel1' | 'panel2'
+  ) => {
+    const gradeStyle =
+      report.metrologyGrade === 'A'
+        ? 'bg-[#DCFCE7] text-[#15803D] border-[#86EFAC]'
+        : report.metrologyGrade === 'B'
+        ? 'bg-[#FEF3C7] text-[#B45309] border-[#FCD34D]'
+        : 'bg-[#FEE2E2] text-[#B91C1C] border-[#FCA5A5]';
+
+    const absRmseText =
+      report.isParametric && report.xAbsoluteRMSE !== undefined && report.xUnit
+        ? `${formatCompactAbsoluteError(report.xAbsoluteRMSE, report.xUnit)} X, ${formatCompactAbsoluteError(
+            report.absoluteRMSE,
+            report.unit
+          )} Y`
+        : formatCompactAbsoluteError(report.absoluteRMSE, report.unit);
+
+    return (
+      <div
+        id={`metrology-hud-strip-${panelKey}`}
+        className="min-h-[24px] bg-[#F8FAFC] border-b border-[#CBD5E1] px-2 py-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-[10px] font-mono tabular-nums text-[#1E293B] shrink-0"
+      >
+        <div className="flex flex-wrap items-center">
+          <span className="pr-2 border-r border-[#CBD5E1] flex items-center gap-1">
+            <ShieldCheck className="w-3 h-3 text-[#2563EB] shrink-0" />
+            <span className="text-[#475569] font-semibold">ACCURACY:</span>
+            <strong
+              id={`hud-accuracy-pct-${panelKey}`}
+              className="text-[#0F172A] font-extrabold"
+            >
+              {report.overallAccuracyPct.toFixed(2)}%
+            </strong>
+          </span>
+
+          <span className="px-2 border-r border-[#CBD5E1] flex items-center gap-1">
+            <span className="text-[#475569] font-semibold">RMS ERROR:</span>
+            <strong id={`hud-nrmse-pct-${panelKey}`} className="text-[#0F172A]">
+              {report.nrmsePct.toFixed(2)}%
+            </strong>
+            <span className="text-[#64748B]">({absRmseText})</span>
+          </span>
+
+          <span className="px-2 border-r border-[#CBD5E1] flex items-center gap-1">
+            <span className="text-[#475569] font-semibold">95% CONF (2σ):</span>
+            <strong id={`hud-p95-pct-${panelKey}`} className="text-[#0F172A]">
+              ±{report.p95ErrorPct.toFixed(2)}%
+            </strong>
+          </span>
+
+          <button
+            id={`hud-max-error-btn-${panelKey}`}
+            type="button"
+            onClick={() => onSelectFrame(report.worstFrameIndex)}
+            className="px-2 border-r border-[#CBD5E1] flex items-center gap-1 hover:bg-[#EFF6FF] hover:text-[#1D4ED8] transition-colors cursor-pointer"
+            title={`Click to scrub playhead to Peak Error Frame #${report.worstFrameIndex}`}
+          >
+            <span className="text-[#475569] font-semibold">MAX:</span>
+            <strong className="text-[#DC2626]">{report.maxErrorPct.toFixed(2)}%</strong>
+            <span className="text-[#2563EB] underline font-semibold">
+              @ Fr {report.worstFrameIndex}
+            </span>
+          </button>
+
+          <span
+            id={`hud-grade-badge-${panelKey}`}
+            className={`ml-2 px-1.5 py-0.2 border font-extrabold text-[9.5px] uppercase ${gradeStyle}`}
+            title={report.gradeDescription}
+          >
+            GRADE {report.metrologyGrade}
+          </span>
+        </div>
+
+        <button
+          id={`hud-audit-btn-${panelKey}`}
+          type="button"
+          onClick={() => handleTriggerAuditModal(panelKey)}
+          className="px-2 py-0.5 bg-[#181B20] hover:bg-[#2563EB] text-white font-mono font-bold text-[9.5px] uppercase tracking-wider transition-colors shrink-0"
+          title="Open Full RCC 253 / ITTC Metrological Error Budget & Accuracy Audit (Alt+M)"
+        >
+          [AUDIT]
+        </button>
+      </div>
     );
   };
 
@@ -817,7 +1056,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
       activeTrack,
       internalConfig,
       derivedPoints,
-      themeOverride || publicationTheme
+      themeOverride || publicationTheme,
+      panel1ErrorReport,
+      panel2ErrorReport
     );
     const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -840,7 +1081,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
       activeTrack,
       internalConfig,
       derivedPoints,
-      chosenTheme
+      chosenTheme,
+      panel1ErrorReport,
+      panel2ErrorReport
     );
     const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(svgBlob);
@@ -1031,6 +1274,11 @@ export const PlotView: React.FC<PlotViewProps> = ({
                   <option value="potentialEnergy">Potential Energy U (J)</option>
                   <option value="totalEnergy">Total Energy E (J)</option>
                 </optgroup>
+                <optgroup label="Metrology & Error Diagnostics">
+                  <option value="errorPct">Instantaneous Error (%)</option>
+                  <option value="reprojResidualPx">Reprojection Residual (px)</option>
+                  <option value="triangulationSkewMm">3D Triangulation Skew (mm)</option>
+                </optgroup>
               </select>
 
               <button
@@ -1137,6 +1385,11 @@ export const PlotView: React.FC<PlotViewProps> = ({
                   <option value="kineticEnergy">Kinetic Energy K (J)</option>
                   <option value="potentialEnergy">Potential Energy U (J)</option>
                   <option value="totalEnergy">Total Energy E (J)</option>
+                </optgroup>
+                <optgroup label="Metrology & Error Diagnostics">
+                  <option value="errorPct">Instantaneous Error (%)</option>
+                  <option value="reprojResidualPx">Reprojection Residual (px)</option>
+                  <option value="triangulationSkewMm">3D Triangulation Skew (mm)</option>
                 </optgroup>
               </select>
 
@@ -1465,12 +1718,13 @@ export const PlotView: React.FC<PlotViewProps> = ({
           </button>
           <span className="text-[#CBD5E1]">|</span>
           <button
+            id="btn-toggle-error-envelope"
             type="button"
             onClick={() => updateConfig({ showUncertaintyBand: !showUncertaintyBand })}
             className="hover:text-[#2563EB] transition-colors cursor-pointer"
-            title="Toggle ±1σ SE(3) Adjoint Pose Covariance Uncertainty Band"
+            title="Show Error % Envelope (±1σ / %) & Parametric Uncertainty Crosshairs"
           >
-            ±1σ Band: <strong className="text-[#0F172A]">{showUncertaintyBand ? 'ON' : 'OFF'}</strong>
+            Error Envelope (±1σ): <strong className="text-[#0F172A]">{showUncertaintyBand ? 'ON' : 'OFF'}</strong>
           </button>
 
           {activeTrack?.overallMinClearance && (
@@ -1951,7 +2205,7 @@ export const PlotView: React.FC<PlotViewProps> = ({
                     : 'bg-white text-[#1E293B] border-[#CBD5E1] hover:bg-[#F1F5F9]'
                 }`}
               >
-                ±1σ Cov Band {showUncertaintyBand ? '[ON]' : '[OFF]'}
+                Show Error % Envelope (±1σ / %) {showUncertaintyBand ? '[ON]' : '[OFF]'}
               </button>
             </div>
 
@@ -2153,6 +2407,7 @@ export const PlotView: React.FC<PlotViewProps> = ({
                     )}
                   </div>
                 </div>
+                {renderMetrologyHudStrip(panel1ErrorReport, 'panel1')}
 
                 <div className="flex-1 min-h-0">
                   <ResponsiveContainer width="100%" height="100%">
@@ -2216,8 +2471,18 @@ export const PlotView: React.FC<PlotViewProps> = ({
                                 <div className="text-[#2563EB] font-bold">
                                   Signed {varY.toUpperCase()}: {d.ySigned ?? 'GAP'} {yUnit}
                                 </div>
+                                {varX !== 't' && d.xErrorPct != null ? (
+                                  <div className="text-[#0F172A] font-semibold">
+                                    X_err: ±{d.xErrorPct.toFixed(2)}% | Y_err: ±{(d.errorPct ?? 0).toFixed(2)}% | Combined: ±{(d.errorPct ?? 0).toFixed(2)}%
+                                  </div>
+                                ) : (
+                                  <div className="text-[#0F172A] font-semibold">
+                                    Error: ±{(d.errorPct ?? 0).toFixed(2)}% ({formatCompactAbsoluteError(d.ySigma ?? 0, yUnit)}) | Accuracy: {(d.accuracyPct ?? 100).toFixed(2)}%
+                                  </div>
+                                )}
                                 <div className="text-[#64748B]">
                                   Status: {d.observationStatus}
+                                  {d.isOutlier2Sigma ? ' • >2σ Outlier' : ''}
                                   {d.isReferenceT0 ? ' • Reference Origin t₀' : ''}
                                 </div>
                               </div>
@@ -2403,6 +2668,7 @@ export const PlotView: React.FC<PlotViewProps> = ({
                     )}
                   </div>
                 </div>
+                {renderMetrologyHudStrip(panel2ErrorReport, 'panel2')}
 
                 <div className="flex-1 min-h-0">
                 <ResponsiveContainer width="100%" height="100%">
@@ -2471,6 +2737,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
                                 </div>
                                 <div className="text-[#047857] font-bold">
                                   {yDistanceLabel}: {d.yPanel2Distance ?? 'GAP'} {yUnit}
+                                </div>
+                                <div className="text-[#0F172A] font-semibold">
+                                  Error: ±{(d.panel2ErrorPct ?? 0).toFixed(2)}% ({formatCompactAbsoluteError(d.ySigma ?? 0, yUnit)}) | Accuracy: {(d.panel2AccuracyPct ?? 100).toFixed(2)}%
                                 </div>
                                 {!isRotationalChannel(varY) && (
                                   <div className="text-slate-600">
@@ -2571,6 +2840,7 @@ export const PlotView: React.FC<PlotViewProps> = ({
                 </label>
               </div>
             </div>
+            {renderMetrologyHudStrip(panel1ErrorReport, 'panel1')}
 
             <div className="flex-1 min-h-0">
               <ResponsiveContainer width="100%" height="100%">
@@ -2644,6 +2914,9 @@ export const PlotView: React.FC<PlotViewProps> = ({
                                 Distance: {d.yPanel2Distance ?? 'GAP'} {yUnit}
                               </div>
                             )}
+                            <div className="text-[#0F172A] font-semibold">
+                              Error: ±{(d.errorPct ?? 0).toFixed(2)}% ({formatCompactAbsoluteError(d.ySigma ?? 0, yUnit)}) | Accuracy: {(d.accuracyPct ?? 100).toFixed(2)}%
+                            </div>
                           </div>
                         );
                       }
@@ -2651,6 +2924,32 @@ export const PlotView: React.FC<PlotViewProps> = ({
                     }}
                   />
                   <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />
+                  {showUncertaintyBand && (
+                    <>
+                      <Line
+                        type="linear"
+                        dataKey="ySignedUpper"
+                        name="+1σ Bound"
+                        stroke="#94a3b8"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        type="linear"
+                        dataKey="ySignedLower"
+                        name="-1σ Bound"
+                        stroke="#94a3b8"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                    </>
+                  )}
                   <Line
                     type="linear"
                     dataKey="ySigned"
@@ -3019,139 +3318,193 @@ export const PlotView: React.FC<PlotViewProps> = ({
           </div>
         ) : (
           /* ======================== SINGLE HIGH-RESOLUTION CONFIGURABLE PLOT ======================== */
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={chartData}
-              margin={{ top: 12, right: 20, left: 0, bottom: 20 }}
-              onMouseMove={(e: any) => {
-                if (e?.activePayload?.[0]?.payload?.frame !== undefined) {
-                  setHoveredFrame(e.activePayload[0].payload.frame);
-                }
-              }}
-              onMouseLeave={() => setHoveredFrame(null)}
-              onClick={(e: any) => {
-                if (e?.activePayload?.[0]?.payload?.frame !== undefined) {
-                  onSelectFrame(e.activePayload[0].payload.frame);
-                }
-              }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#cccccc" />
-              <XAxis
-                type="number"
-                dataKey="xVal"
-                domain={zoomDomainX || (varX !== 't' ? ['auto', 'auto'] : ['dataMin', 'dataMax'])}
-                allowDataOverflow={Boolean(zoomDomainX)}
-                allowDuplicatedCategory={false}
-                stroke="#000000"
-                fontSize={10}
-                tickFormatter={(val) => Number(val).toFixed(2)}
-                label={{
-                  value: xLabel,
-                  position: 'insideBottom',
-                  offset: -12,
-                  fill: '#000000',
-                  fontSize: 11,
-                }}
-              />
-              <YAxis
-                type="number"
-                dataKey="yActive"
-                stroke="#000000"
-                fontSize={10}
-                tickFormatter={(val) => Number(val).toFixed(2)}
-                domain={
-                  zoomDomainY ||
-                  (transformMode !== 'signed' &&
-                  !(isRotationalChannel(varY) && transformMode !== 'abs')
-                    ? [0, 'auto']
-                    : ['auto', 'auto'])
-                }
-                allowDataOverflow={Boolean(zoomDomainY)}
-                label={{
-                  value: yActiveLabel,
-                  angle: -90,
-                  position: 'insideLeft',
-                  offset: 12,
-                  fill: '#000000',
-                  fontSize: 11,
-                }}
-              />
-              <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 2" />
-              <Tooltip
-                content={({ active, payload }) => {
-                  if (active && payload && payload.length) {
-                    const data = payload[0].payload as DerivedGraphPoint;
-                    return (
-                      <div className="bg-white border border-[#808080] rounded-[2px] p-2 text-xs font-mono tabular-nums text-black shadow-xs">
-                        <div className="text-[#333333] mb-1 font-semibold">
-                          Frame #{data.frame} (Δt: {data.relTime?.toFixed(3)}s)
-                        </div>
-                        <div className="text-black font-bold">
-                          {xLabel}: <strong>{data.xVal}</strong>
-                        </div>
-                        <div className="text-[#1e3a5f] font-bold">
-                          {yActiveLabel}: <strong>{data.yActive}</strong>
-                        </div>
-                        {data.fitY !== null && data.fitY !== undefined && (
-                          <div className="text-[#b45309] text-[10px] font-medium">
-                            Fit: {data.fitY}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-              {showLegend && <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />}
-              {fitType !== 'none' && (
-                <Line
-                  type="monotone"
-                  dataKey="fitY"
-                  stroke="#b45309"
-                  strokeWidth={2}
-                  dot={false}
-                  name="Fitted Curve"
-                  isAnimationActive={false}
-                />
-              )}
-              <Line
-                type="linear"
-                dataKey="yActive"
-                stroke={CHANNEL_COLORS[varY] || activeTrack?.color || '#1e3a5f'}
-                strokeWidth={2}
-                connectNulls={false}
-                dot={renderCustomDot(CHANNEL_COLORS[varY] || activeTrack?.color || '#1e3a5f')}
-                activeDot={{ r: 5.5, stroke: '#1e3a5f', strokeWidth: 2 }}
-                name={yActiveLabel}
-                isAnimationActive={false}
-              />
-              {referenceT0Point &&
-                referenceT0Point.xVal !== null &&
-                referenceT0Point.yActive !== null && (
-                  <ReferenceDot
-                    x={referenceT0Point.xVal}
-                    y={referenceT0Point.yActive}
-                    r={6.5}
-                    fill="#ffffff"
-                    stroke="#dc2626"
-                    strokeWidth={2}
+          <div id="single-panel-container" className="h-full flex flex-col border border-[#CBD5E1] rounded-[3px] bg-white overflow-hidden">
+            {renderMetrologyHudStrip(panel1ErrorReport, 'panel1')}
+            <div className="flex-1 min-h-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart
+                  data={chartData}
+                  margin={{ top: 12, right: 20, left: 0, bottom: 20 }}
+                  onMouseMove={(e: any) => {
+                    if (e?.activePayload?.[0]?.payload?.frame !== undefined) {
+                      setHoveredFrame(e.activePayload[0].payload.frame);
+                    }
+                  }}
+                  onMouseLeave={() => setHoveredFrame(null)}
+                  onClick={(e: any) => {
+                    if (e?.activePayload?.[0]?.payload?.frame !== undefined) {
+                      onSelectFrame(e.activePayload[0].payload.frame);
+                    }
+                  }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#cccccc" />
+                  <XAxis
+                    type="number"
+                    dataKey="xVal"
+                    domain={zoomDomainX || (varX !== 't' ? ['auto', 'auto'] : ['dataMin', 'dataMax'])}
+                    allowDataOverflow={Boolean(zoomDomainX)}
+                    allowDuplicatedCategory={false}
+                    stroke="#000000"
+                    fontSize={10}
+                    tickFormatter={(val) => Number(val).toFixed(2)}
+                    label={{
+                      value: xLabel,
+                      position: 'insideBottom',
+                      offset: -12,
+                      fill: '#000000',
+                      fontSize: 11,
+                    }}
                   />
-                )}
-              {activePoint && activePoint.xVal !== null && activePoint.yActive !== null && (
-                <ReferenceDot
-                  x={activePoint.xVal}
-                  y={activePoint.yActive}
-                  r={6}
-                  fill="#b91c1c"
-                  stroke="#ffffff"
-                  strokeWidth={1.5}
-                />
-              )}
-            </LineChart>
-          </ResponsiveContainer>
+                  <YAxis
+                    type="number"
+                    dataKey="yActive"
+                    stroke="#000000"
+                    fontSize={10}
+                    tickFormatter={(val) => Number(val).toFixed(2)}
+                    domain={
+                      zoomDomainY ||
+                      (transformMode !== 'signed' &&
+                      !(isRotationalChannel(varY) && transformMode !== 'abs')
+                        ? [0, 'auto']
+                        : ['auto', 'auto'])
+                    }
+                    allowDataOverflow={Boolean(zoomDomainY)}
+                    label={{
+                      value: yActiveLabel,
+                      angle: -90,
+                      position: 'insideLeft',
+                      offset: 12,
+                      fill: '#000000',
+                      fontSize: 11,
+                    }}
+                  />
+                  <ReferenceLine y={0} stroke="#64748b" strokeDasharray="4 2" />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const data = payload[0].payload as DerivedGraphPoint;
+                        return (
+                          <div className="bg-white border border-[#808080] rounded-[2px] p-2 text-xs font-mono tabular-nums text-black shadow-xs">
+                            <div className="text-[#333333] mb-1 font-semibold">
+                              Frame #{data.frame} (Δt: {data.relTime?.toFixed(3)}s)
+                            </div>
+                            <div className="text-black font-bold">
+                              {xLabel}: <strong>{data.xVal}</strong>
+                            </div>
+                            <div className="text-[#1e3a5f] font-bold">
+                              {yActiveLabel}: <strong>{data.yActive}</strong>
+                            </div>
+                            {varX !== 't' && data.xErrorPct != null ? (
+                              <div className="text-[#0F172A] text-[10.5px] font-semibold mt-0.5">
+                                (X_err: ±{data.xErrorPct.toFixed(2)}%, Y_err: ±{(data.errorPct ?? 0).toFixed(2)}%, Combined: ±{(data.errorPct ?? 0).toFixed(2)}%)
+                              </div>
+                            ) : (
+                              <div className="text-[#0F172A] text-[10.5px] font-semibold mt-0.5">
+                                Error: ±{(data.errorPct ?? 0).toFixed(2)}% ({formatCompactAbsoluteError(data.ySigma ?? 0, yUnit)}) | Accuracy: {(data.accuracyPct ?? 100).toFixed(2)}%
+                              </div>
+                            )}
+                            {data.fitY !== null && data.fitY !== undefined && (
+                              <div className="text-[#b45309] text-[10px] font-medium">
+                                Fit: {data.fitY}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  {showLegend && <Legend verticalAlign="top" height={24} wrapperStyle={{ fontSize: '11px' }} />}
+                  {showUncertaintyBand && (
+                    <>
+                      <Line
+                        type="linear"
+                        dataKey="yActiveUpper"
+                        name="+1σ Bound"
+                        stroke="#94a3b8"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                      <Line
+                        type="linear"
+                        dataKey="yActiveLower"
+                        name="-1σ Bound"
+                        stroke="#94a3b8"
+                        strokeWidth={1}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        connectNulls={false}
+                        isAnimationActive={false}
+                      />
+                    </>
+                  )}
+                  {fitType !== 'none' && (
+                    <Line
+                      type="monotone"
+                      dataKey="fitY"
+                      stroke="#b45309"
+                      strokeWidth={2}
+                      dot={false}
+                      name="Fitted Curve"
+                      isAnimationActive={false}
+                    />
+                  )}
+                  <Line
+                    type="linear"
+                    dataKey="yActive"
+                    stroke={CHANNEL_COLORS[varY] || activeTrack?.color || '#1e3a5f'}
+                    strokeWidth={2}
+                    connectNulls={false}
+                    dot={renderCustomDot(CHANNEL_COLORS[varY] || activeTrack?.color || '#1e3a5f')}
+                    activeDot={{ r: 5.5, stroke: '#1e3a5f', strokeWidth: 2 }}
+                    name={yActiveLabel}
+                    isAnimationActive={false}
+                  />
+                  {referenceT0Point &&
+                    referenceT0Point.xVal !== null &&
+                    referenceT0Point.yActive !== null && (
+                      <ReferenceDot
+                        x={referenceT0Point.xVal}
+                        y={referenceT0Point.yActive}
+                        r={6.5}
+                        fill="#ffffff"
+                        stroke="#dc2626"
+                        strokeWidth={2}
+                      />
+                    )}
+                  {activePoint && activePoint.xVal !== null && activePoint.yActive !== null && (
+                    <ReferenceDot
+                      x={activePoint.xVal}
+                      y={activePoint.yActive}
+                      r={6}
+                      fill="#b91c1c"
+                      stroke="#ffffff"
+                      strokeWidth={1.5}
+                    />
+                  )}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         )}
       </div>
+
+      {/* Standalone Metrology Audit Modal fallback when triggered inside PlotView */}
+      {localAuditModalPanel !== null && (
+        <MetrologyAuditModal
+          isOpen={true}
+          onClose={() => setLocalAuditModalPanel(null)}
+          panel1Report={panel1ErrorReport}
+          panel2Report={panel2ErrorReport}
+          initialPanel={localAuditModalPanel}
+          onSelectFrame={onSelectFrame}
+          trackName={activeTrack?.name}
+          fps={fps}
+        />
+      )}
     </div>
   );
 };

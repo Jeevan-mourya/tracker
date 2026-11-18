@@ -17,6 +17,7 @@ import { DownloadExeModal } from './components/DownloadExeModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { ExperimentReportModal } from './components/ExperimentReportModal';
 import { Monocular6DoFModal } from './components/Monocular6DoFModal';
+import { MetrologyAuditModal } from './components/MetrologyAuditModal';
 import { AviHighSpeedLoader } from './video/aviHighSpeedLoader';
 import { loadUniversalVideoFile } from './video/universalVideoDecoder';
 import { SAMPLE_EXPERIMENTS } from './data/samples';
@@ -30,7 +31,7 @@ import {
   TriangulationConfig,
   GraphConfig,
 } from './types';
-import { DEFAULT_GRAPH_CONFIG } from './utils/sixChannelGraphing';
+import { DEFAULT_GRAPH_CONFIG, deriveSixChannelSeries } from './utils/sixChannelGraphing';
 import { computeKinematics, pixelToWorld } from './utils/physics';
 import {
   computeKinematics3D,
@@ -44,8 +45,17 @@ import {
 } from './utils/videoFormats';
 import {
   serializeProject,
+  serializeProjectToTrk,
   validateAndParseProject,
+  ingestWorkstationFile,
   saveProjectToFolderOrBundle,
+  saveSessionToLocalStorage,
+  loadSynchronousSessionSnapshot,
+  saveWorkspaceToIndexedDB,
+  loadWorkspaceFromIndexedDB,
+  saveWorkspaceMediaToIndexedDB,
+  findCachedVideoForProject,
+  clearSavedWorkspaceSession,
 } from './utils/projectPersistence';
 import { mediaDiagnostics } from './utils/mediaDiagnostics';
 import {
@@ -66,49 +76,125 @@ import {
 } from 'lucide-react';
 
 export const App: React.FC = () => {
+  // Strict hydration lock: prevents any auto-save useEffect from overwriting user work
+  // before synchronous LocalStorage + asynchronous IndexedDB restoration finishes.
+  const isHydratedRef = useRef<boolean>(false);
+  const [isRestoringSession, setIsRestoringSession] = useState<boolean>(true);
+  const [pendingRelinkVideoName, setPendingRelinkVideoName] = useState<string | null>(null);
+  const relinkInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Synchronously load any auto-saved session from localStorage so refreshing or reopening
+  // never wipes user work or overwrites it with SAMPLE_EXPERIMENTS[0].
+  const initialRestoredSessionRef = useRef<ReturnType<typeof loadSynchronousSessionSnapshot> | undefined>(undefined);
+  if (initialRestoredSessionRef.current === undefined) {
+    initialRestoredSessionRef.current = loadSynchronousSessionSnapshot();
+  }
+  const initialSession = initialRestoredSessionRef.current;
+
+  const resolveInitialExperiment = (): SampleExperiment => {
+    if (initialSession) {
+      const matchedSample = SAMPLE_EXPERIMENTS.find(
+        (s) => s.id === initialSession.currentExpId
+      );
+      if (matchedSample) {
+        return {
+          ...matchedSample,
+          title: initialSession.experimentTitle || matchedSample.title,
+          calibration: initialSession.calibration || matchedSample.calibration,
+          axes: initialSession.axes || matchedSample.axes,
+          clip: initialSession.clip || matchedSample.clip,
+          triangulation: initialSession.triangulation || matchedSample.triangulation,
+        };
+      }
+      return {
+        ...SAMPLE_EXPERIMENTS[0],
+        id: initialSession.currentExpId || 'restored-session',
+        title: initialSession.experimentTitle || 'Restored Project',
+        description: `Restored workspace (${initialSession.experimentTitle || 'Session'})`,
+        category: 'custom',
+        videoUrl: initialSession.camera1?.videoUrl || '',
+        videoUrlCam2: initialSession.camera2?.videoUrl || '',
+        syntheticType: initialSession.syntheticType ?? (initialSession.camera1?.videoUrl ? undefined : SAMPLE_EXPERIMENTS[0].syntheticType),
+        is3D: initialSession.analysisMode === '3D',
+        calibration: initialSession.calibration || SAMPLE_EXPERIMENTS[0].calibration,
+        axes: initialSession.axes || SAMPLE_EXPERIMENTS[0].axes,
+        clip: initialSession.clip || SAMPLE_EXPERIMENTS[0].clip,
+        triangulation: initialSession.triangulation || SAMPLE_EXPERIMENTS[0].triangulation,
+      };
+    }
+    return SAMPLE_EXPERIMENTS[0];
+  };
+
+  const initialExpObj = resolveInitialExperiment();
+
   // Current experiment
-  const [currentExp, setCurrentExp] = useState<SampleExperiment>(SAMPLE_EXPERIMENTS[0]);
-  const [videoUrl, setVideoUrl] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrl);
-  const [videoUrlCam2, setVideoUrlCam2] = useState<string>(SAMPLE_EXPERIMENTS[0].videoUrlCam2 || '');
-  const [isSynthetic, setIsSynthetic] = useState<boolean>(Boolean(SAMPLE_EXPERIMENTS[0].syntheticType));
+  const [currentExp, setCurrentExp] = useState<SampleExperiment>(initialExpObj);
+  const [videoUrl, setVideoUrl] = useState<string>(
+    initialSession?.camera1?.videoUrl ?? initialExpObj.videoUrl
+  );
+  const [videoUrlCam2, setVideoUrlCam2] = useState<string>(
+    initialSession?.camera2?.videoUrl ?? (initialExpObj.videoUrlCam2 || '')
+  );
+  const [isSynthetic, setIsSynthetic] = useState<boolean>(
+    initialSession?.isSynthetic !== undefined
+      ? initialSession.isSynthetic
+      : Boolean(initialExpObj.syntheticType)
+  );
+
+  // Active uploaded local video File references (persisted in IndexedDB & bundled into .zip exports)
+  const activeVideoFileCam1Ref = useRef<File | null>(null);
+  const activeVideoFileCam2Ref = useRef<File | null>(null);
 
   // Analysis mode: 2D Single Video, 3D Stereo Video, or Monocular 6-DOF Store Separation
   const [analysisMode, setAnalysisMode] = useState<'2D' | '3D' | '6DOF'>(
-    SAMPLE_EXPERIMENTS[0].is3D ? '3D' : '2D'
+    initialSession?.analysisMode ?? (SAMPLE_EXPERIMENTS[0].is3D ? '3D' : '2D')
   );
   const [aviLoader, setAviLoader] = useState<AviHighSpeedLoader | null>(null);
   const [aviLoaderCam2, setAviLoaderCam2] = useState<AviHighSpeedLoader | null>(null);
   const [transcodeProgress, setTranscodeProgress] = useState<{ percent: number; text: string } | null>(null);
 
   // Calibration
-  const [calibration, setCalibration] = useState<Calibration>(SAMPLE_EXPERIMENTS[0].calibration);
+  const [calibration, setCalibration] = useState<Calibration>(
+    initialSession?.calibration || SAMPLE_EXPERIMENTS[0].calibration
+  );
 
   // Coordinate Axes
-  const [axes, setAxes] = useState<CoordinateAxes>(SAMPLE_EXPERIMENTS[0].axes);
+  const [axes, setAxes] = useState<CoordinateAxes>(
+    initialSession?.axes || SAMPLE_EXPERIMENTS[0].axes
+  );
 
   // 3D Triangulation Config
   const [triangulation, setTriangulation] = useState<TriangulationConfig>(
-    SAMPLE_EXPERIMENTS[0].triangulation || {
-      method: 'orthogonal-front-side',
-      pixelsPerMeterCam1: 240,
-      pixelsPerMeterCam2: 240,
-      originCam1: { x: 120, y: 380 },
-      originCam2: { x: 120, y: 380 },
-      baselineMeters: 1.2,
-      convergenceAngleDeg: 90,
-      calibrated: true,
-      meanResidualMeters: 0.002,
-    }
+    initialSession?.triangulation ||
+      SAMPLE_EXPERIMENTS[0].triangulation || {
+        method: 'orthogonal-front-side',
+        pixelsPerMeterCam1: 240,
+        pixelsPerMeterCam2: 240,
+        originCam1: { x: 120, y: 380 },
+        originCam2: { x: 120, y: 380 },
+        baselineMeters: 1.2,
+        convergenceAngleDeg: 90,
+        calibrated: true,
+        meanResidualMeters: 0.002,
+      }
   );
 
   // Clip settings
-  const [clip, setClip] = useState<ClipSettings>(SAMPLE_EXPERIMENTS[0].clip);
+  const [clip, setClip] = useState<ClipSettings>(
+    initialSession?.clip || SAMPLE_EXPERIMENTS[0].clip
+  );
 
   // Playback / scrubber frame
-  const [currentFrame, setCurrentFrame] = useState<number>(0);
+  const [currentFrame, setCurrentFrame] = useState<number>(
+    initialSession?.currentFrame ?? initialSession?.clip?.startFrame ?? 0
+  );
 
   // Tracks / Point Masses
   const [tracks, setTracks] = useState<Track[]>(() => {
+    if (initialSession && Array.isArray(initialSession.tracks) && initialSession.tracks.length > 0) {
+      return initialSession.tracks;
+    }
+
     const defaultExp = SAMPLE_EXPERIMENTS[0];
     const initialSteps: PointStep[] = (defaultExp.samplePoints || []).map((pt) => {
       const world = pixelToWorld(pt.px, pt.py, defaultExp.axes, defaultExp.calibration);
@@ -158,10 +244,15 @@ export const App: React.FC = () => {
     ];
   });
 
-  const [activeTrackId, setActiveTrackId] = useState<string>('track-1');
+  const [activeTrackId, setActiveTrackId] = useState<string>(
+    initialSession?.activeTrackId || initialSession?.tracks?.[0]?.id || 'track-1'
+  );
 
   // Six-Channel Graphing Configuration State (Requirement 9: Full Persistence)
   const [graphConfig, setGraphConfig] = useState<GraphConfig>(() => {
+    if (initialSession?.graphConfig) {
+      return { ...DEFAULT_GRAPH_CONFIG, ...initialSession.graphConfig };
+    }
     try {
       const saved = localStorage.getItem('tracker_graph_config_v2');
       if (saved) {
@@ -192,9 +283,10 @@ export const App: React.FC = () => {
   const [autoAdvance, setAutoAdvance] = useState<boolean>(true);
 
   // Layout switcher: default to split-3d when 3D is active
-  const [layout, setLayout] = useState<ViewLayout>(
-    SAMPLE_EXPERIMENTS[0].is3D ? 'split-3d' : 'split'
-  );
+  const [layout, setLayout] = useState<ViewLayout>(() => {
+    const mode = initialSession?.analysisMode ?? (SAMPLE_EXPERIMENTS[0].is3D ? '3D' : '2D');
+    return mode === '3D' ? 'split-3d' : 'split';
+  });
 
   // Interactive Draggable Split-Pane State (persisted to localStorage)
   const [leftPaneWidthPct, setLeftPaneWidthPct] = useState<number>(() => {
@@ -380,6 +472,8 @@ export const App: React.FC = () => {
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState(false);
   const [isReportModalOpen, setIsReportModalOpen] = useState(false);
   const [isMonocular6DoFOpen, setIsMonocular6DoFOpen] = useState(false);
+  const [isMetrologyAuditOpen, setIsMetrologyAuditOpen] = useState(false);
+  const [metrologyAuditPanel, setMetrologyAuditPanel] = useState<'panel1' | 'panel2'>('panel1');
   const [videoSnapshotUrl, setVideoSnapshotUrl] = useState<string | null>(null);
   const snapshotGetterRef = useRef<(() => string | null) | null>(null);
 
@@ -508,6 +602,7 @@ export const App: React.FC = () => {
     }
     registerBlobUrl('', 'cam1');
     registerBlobUrl('', 'cam2');
+    setPendingRelinkVideoName(null);
     setCurrentExp(exp);
     setVideoUrl(exp.videoUrl);
     setVideoUrlCam2(exp.videoUrlCam2 || '');
@@ -594,8 +689,34 @@ export const App: React.FC = () => {
   };
 
   // Handle Custom Video Upload with 3-Tier Universal Video Demuxer & Codec Engine (.MP4, .AVI, .WMV, .FLV, .MOV)
-  const handleUploadVideo = async (rawFile: File) => {
+  // Also transparently routes .trk, .json, and project .zip bundles via Universal Magic-Byte Router!
+  const handleUploadVideo = async (rawFile: File, preserveExistingTracks = false) => {
+    if (!preserveExistingTracks) {
+      const routed = await ingestWorkstationFile(rawFile);
+      if (routed.kind === 'project') {
+        if (routed.valid && routed.data) {
+          await applyRestoredProjectData(
+            routed.data,
+            routed.videoFileCam1,
+            routed.videoFileCam2,
+            rawFile.name
+          );
+        } else {
+          showToast(
+            'Invalid Project File',
+            routed.error ||
+              routed.errors?.join('; ') ||
+              'Could not parse .trk / .zip project file'
+          );
+        }
+        return;
+      }
+    }
+
     const file = await resolveUploadedFile(rawFile);
+    activeVideoFileCam1Ref.current = file;
+    void saveWorkspaceMediaToIndexedDB('cam1', file, file.name);
+    setPendingRelinkVideoName(null);
 
     if (aviLoader) {
       aviLoader.dispose();
@@ -613,14 +734,14 @@ export const App: React.FC = () => {
         const fpsVal = Math.max(1, Math.round(result.fps || 30));
         const totalFramesVal = Math.max(1, result.totalFrames || 60);
         const universalClip: ClipSettings = {
-          startFrame: 0,
-          endFrame: totalFramesVal - 1,
-          stepSize: 1,
-          fps: fpsVal,
-          startTime: 0.0,
-          frameDt: 1 / fpsVal,
-          dt: 1 / fpsVal,
-          totalFrames: totalFramesVal,
+          startFrame: preserveExistingTracks ? clip.startFrame : 0,
+          endFrame: preserveExistingTracks ? Math.max(clip.endFrame, totalFramesVal - 1) : totalFramesVal - 1,
+          stepSize: preserveExistingTracks ? clip.stepSize : 1,
+          fps: preserveExistingTracks ? clip.fps : fpsVal,
+          startTime: preserveExistingTracks ? clip.startTime : 0.0,
+          frameDt: preserveExistingTracks ? clip.frameDt : 1 / fpsVal,
+          dt: preserveExistingTracks ? clip.dt : 1 / fpsVal,
+          totalFrames: preserveExistingTracks ? Math.max(clip.totalFrames, totalFramesVal) : totalFramesVal,
         };
 
         setAviLoader(result.frameLoader);
@@ -628,7 +749,9 @@ export const App: React.FC = () => {
         registerBlobUrl(result.videoUrl, 'cam1');
         setVideoUrl(result.videoUrl);
         setIsSynthetic(false);
-        setCurrentFrame(0);
+        if (!preserveExistingTracks) {
+          setCurrentFrame(0);
+        }
         setClip(universalClip);
 
         if (analysisMode !== '3D' && analysisMode !== '6DOF') {
@@ -638,20 +761,29 @@ export const App: React.FC = () => {
           }
         }
 
-        const uploadSessionId = `custom-${result.container.toLowerCase()}-${Date.now()}`;
-        mediaDiagnostics.setSession(uploadSessionId, file.name);
-        setCurrentExp({
-          id: uploadSessionId,
-          title: file.name,
-          description: `${result.tierDescription} • ${result.diagnosticsSummary}`,
-          category: 'custom',
-          videoUrl: result.videoUrl,
-          syntheticType: undefined,
-          is3D: analysisMode === '3D',
-          calibration: { ...calibration },
-          axes: { ...axes },
-          clip: universalClip,
-        });
+        if (!preserveExistingTracks) {
+          const uploadSessionId = `custom-${result.container.toLowerCase()}-${Date.now()}`;
+          mediaDiagnostics.setSession(uploadSessionId, file.name);
+          setCurrentExp({
+            id: uploadSessionId,
+            title: file.name,
+            description: `${result.tierDescription} • ${result.diagnosticsSummary}`,
+            category: 'custom',
+            videoUrl: result.videoUrl,
+            syntheticType: undefined,
+            is3D: analysisMode === '3D',
+            calibration: { ...calibration },
+            axes: { ...axes },
+            clip: universalClip,
+          });
+        } else {
+          setCurrentExp((prev) => ({
+            ...prev,
+            videoUrl: result.videoUrl,
+            syntheticType: undefined,
+            clip: universalClip,
+          }));
+        }
 
         setTracks((prev) => {
           if (prev.some((t) => t.steps && t.steps.length > 0)) {
@@ -674,7 +806,9 @@ export const App: React.FC = () => {
         });
 
         showToast(
-          `${result.container} Loaded (${totalFramesVal} frames @ ${fpsVal} fps)`,
+          preserveExistingTracks
+            ? `Video Relinked: ${file.name} (${totalFramesVal} frames @ ${fpsVal} fps)`
+            : `${result.container} Loaded (${totalFramesVal} frames @ ${fpsVal} fps)`,
           `${result.tierDescription} • ${result.width}×${result.height}`
         );
         return;
@@ -828,7 +962,16 @@ export const App: React.FC = () => {
   };
 
   const handleUploadCam1 = async (rawFile: File) => {
+    const routed = await ingestWorkstationFile(rawFile);
+    if (routed.kind === 'project') {
+      await handleOpenProjectFile(rawFile);
+      return;
+    }
+
     const file = await resolveUploadedFile(rawFile);
+    activeVideoFileCam1Ref.current = file;
+    void saveWorkspaceMediaToIndexedDB('cam1', file, file.name);
+    setPendingRelinkVideoName(null);
 
     if (aviLoader) {
       aviLoader.dispose();
@@ -892,7 +1035,15 @@ export const App: React.FC = () => {
   };
 
   const handleUploadCam2 = async (rawFile: File) => {
+    const routed = await ingestWorkstationFile(rawFile);
+    if (routed.kind === 'project') {
+      await handleOpenProjectFile(rawFile);
+      return;
+    }
+
     const file = await resolveUploadedFile(rawFile);
+    activeVideoFileCam2Ref.current = file;
+    void saveWorkspaceMediaToIndexedDB('cam2', file, file.name);
 
     if (aviLoaderCam2) {
       aviLoaderCam2.dispose();
@@ -1240,14 +1391,22 @@ export const App: React.FC = () => {
     });
   }, [cloneHistorySnapshot]);
 
-  // Requirement 7 & 9: Export & Save Project (.trk JSON & LocalStorage) with schema validation & graphConfig
-  const handleExportJSON = useCallback(() => {
-    const projectData = serializeProject({
+  // Helper to build current canonical SavedProjectData snapshot
+  const buildCurrentProjectSnapshot = useCallback(() => {
+    return serializeProject({
       analysisMode,
       experimentTitle: currentExp.title,
       currentExpId: currentExp.id,
+      activeTrackId,
+      currentFrame,
+      isSynthetic,
+      syntheticType: currentExp.syntheticType,
       videoUrl,
       videoUrlCam2,
+      videoNameCam1: activeVideoFileCam1Ref.current?.name || currentExp.title,
+      videoNameCam2: activeVideoFileCam2Ref.current?.name,
+      videoFileCam1: activeVideoFileCam1Ref.current,
+      videoFileCam2: activeVideoFileCam2Ref.current,
       triangulation,
       calibration,
       axes,
@@ -1255,17 +1414,54 @@ export const App: React.FC = () => {
       tracks,
       graphConfig,
     });
+  }, [
+    analysisMode,
+    currentExp,
+    activeTrackId,
+    currentFrame,
+    isSynthetic,
+    videoUrl,
+    videoUrlCam2,
+    triangulation,
+    calibration,
+    axes,
+    clip,
+    tracks,
+    graphConfig,
+  ]);
 
-    try {
-      localStorage.setItem('tracker_autosave_session', JSON.stringify(projectData));
-    } catch {
-      // ignore quota exceeded if any
-    }
+  // Requirement 7 & 9: Export & Save Project (.trk JSON & LocalStorage + IndexedDB)
+  const handleExportJSON = useCallback(() => {
+    const projectData = buildCurrentProjectSnapshot();
 
-    const safeTitle = (currentExp.id || currentExp.title || 'tracker_project')
+    saveSessionToLocalStorage(projectData, true);
+    void saveWorkspaceToIndexedDB(projectData, true);
+
+    const safeTitle = (currentExp.title || currentExp.id || 'tracker_project')
       .replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `${safeTitle}.trk`;
-    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+    const filename = safeTitle.toLowerCase().endsWith('.trk') ? safeTitle : `${safeTitle}.trk`;
+    const trkString = serializeProjectToTrk({
+      analysisMode,
+      experimentTitle: currentExp.title,
+      currentExpId: currentExp.id,
+      activeTrackId,
+      currentFrame,
+      isSynthetic,
+      syntheticType: currentExp.syntheticType,
+      videoUrl,
+      videoUrlCam2,
+      videoNameCam1: activeVideoFileCam1Ref.current?.name || currentExp.title,
+      videoNameCam2: activeVideoFileCam2Ref.current?.name,
+      videoFileCam1: activeVideoFileCam1Ref.current,
+      videoFileCam2: activeVideoFileCam2Ref.current,
+      triangulation,
+      calibration,
+      axes,
+      clip,
+      tracks,
+      graphConfig,
+    });
+    const blob = new Blob([trkString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -1276,19 +1472,43 @@ export const App: React.FC = () => {
     const totalPts = tracks.reduce((acc, t) => acc + t.steps.length, 0);
     showToast(
       'Project Saved Successfully (Ctrl+S)',
-      `${totalPts} points recorded • ${filename} saved & preserved in browser session`
+      `${totalPts} points recorded • ${filename} saved & preserved in workstation storage`
     );
-  }, [analysisMode, currentExp, videoUrl, videoUrlCam2, triangulation, calibration, axes, clip, tracks, graphConfig, showToast]);
+  }, [
+    analysisMode,
+    axes,
+    buildCurrentProjectSnapshot,
+    calibration,
+    clip,
+    currentExp,
+    currentFrame,
+    graphConfig,
+    isSynthetic,
+    showToast,
+    activeTrackId,
+    tracks,
+    triangulation,
+    videoUrl,
+    videoUrlCam2,
+  ]);
 
-  // Requirement 7 & 9: Save Project to Local Folder or ZIP Bundle
+  // Requirement 7 & 9: Save Project to Local Folder or Self-Contained ZIP Bundle (including video)
   const handleSaveToFolder = useCallback(async () => {
     try {
       const result = await saveProjectToFolderOrBundle({
         analysisMode,
         experimentTitle: currentExp.title,
         currentExpId: currentExp.id,
+        activeTrackId,
+        currentFrame,
+        isSynthetic,
+        syntheticType: currentExp.syntheticType,
         videoUrl,
         videoUrlCam2,
+        videoNameCam1: activeVideoFileCam1Ref.current?.name || currentExp.title,
+        videoNameCam2: activeVideoFileCam2Ref.current?.name,
+        videoFileCam1: activeVideoFileCam1Ref.current,
+        videoFileCam2: activeVideoFileCam2Ref.current,
         triangulation,
         calibration,
         axes,
@@ -1306,86 +1526,370 @@ export const App: React.FC = () => {
       if (err?.name === 'AbortError') return;
       showToast('Save Folder Notice', err?.message || 'Could not complete folder save.');
     }
-  }, [analysisMode, currentExp, videoUrl, videoUrlCam2, triangulation, calibration, axes, clip, tracks, graphConfig, showToast]);
+  }, [
+    analysisMode,
+    currentExp,
+    activeTrackId,
+    currentFrame,
+    isSynthetic,
+    videoUrl,
+    videoUrlCam2,
+    triangulation,
+    calibration,
+    axes,
+    clip,
+    tracks,
+    graphConfig,
+    showToast,
+  ]);
 
-  // Requirement 7 & 9: Open & Restore Saved Project (.trk / .json) with Schema Validation & GraphConfig
-  const handleOpenProjectFile = useCallback((file: File) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
+  // Restore decoded video File into Camera 1 or Camera 2 without wiping restored project tracks/clip
+  const restoreVideoFileToSlot = useCallback(
+    async (file: File, slot: 'cam1' | 'cam2', restoredClip?: ClipSettings) => {
       try {
-        const text = e.target?.result as string;
-        const parseResult = validateAndParseProject(text);
-        if (!parseResult.valid || !parseResult.data) {
-          showToast('Invalid Project File', parseResult.error || parseResult.errors?.join('; ') || 'Invalid file format');
-          return;
-        }
-
-        const data = parseResult.data;
-        if (data.analysisMode === '3D' || data.analysisMode === '2D') {
-          setAnalysisMode(data.analysisMode);
-          if (data.analysisMode === '3D') {
-            setLayout('split-3d');
+        const result = await loadUniversalVideoFile(file);
+        if (slot === 'cam1') {
+          activeVideoFileCam1Ref.current = file;
+          setAviLoader((prev) => {
+            if (prev) prev.dispose();
+            return result.frameLoader;
+          });
+          registerBlobUrl(result.videoUrl, 'cam1');
+          setVideoUrl(result.videoUrl);
+          setIsSynthetic(false);
+          if (!restoredClip) {
+            const fpsVal = Math.max(1, Math.round(result.fps || 30));
+            const totalFramesVal = Math.max(1, result.totalFrames || 60);
+            setClip((prev) => ({
+              ...prev,
+              fps: fpsVal,
+              totalFrames: totalFramesVal,
+              endFrame: Math.max(prev.endFrame, totalFramesVal - 1),
+            }));
           }
+        } else {
+          activeVideoFileCam2Ref.current = file;
+          setAviLoaderCam2((prev) => {
+            if (prev) prev.dispose();
+            return result.frameLoader;
+          });
+          registerBlobUrl(result.videoUrl, 'cam2');
+          setVideoUrlCam2(result.videoUrl);
+          setIsSynthetic(false);
         }
-        if (data.tracks) setTracks(data.tracks);
-        if (data.triangulation) setTriangulation(data.triangulation);
-        if (data.calibration) setCalibration(data.calibration);
-        if (data.axes) setAxes(data.axes);
-        if (data.clip) setClip(data.clip);
-        if (data.graphConfig) {
-          const restoredGraph = { ...DEFAULT_GRAPH_CONFIG, ...data.graphConfig };
-          setGraphConfig(restoredGraph);
-          try {
-            localStorage.setItem('tracker_graph_config_v2', JSON.stringify(restoredGraph));
-          } catch {
-            // ignore
-          }
-        }
-        if (data.experimentTitle) {
-          setCurrentExp((prev) => ({
-            ...prev,
-            title: data.experimentTitle,
-          }));
-        }
-
-        const ptCount = (data.tracks || []).reduce((acc: number, t: any) => acc + (t.steps?.length || 0), 0);
-        showToast(
-          'Project Restored Successfully',
-          `${(data.tracks || []).length} track(s) • ${ptCount} points loaded from ${file.name}`
-        );
       } catch {
-        showToast('Error Reading Project File', 'Could not parse project file format.');
+        const fallbackUrl = URL.createObjectURL(file);
+        registerBlobUrl(fallbackUrl, slot);
+        if (slot === 'cam1') {
+          activeVideoFileCam1Ref.current = file;
+          setVideoUrl(fallbackUrl);
+          setIsSynthetic(false);
+        } else {
+          activeVideoFileCam2Ref.current = file;
+          setVideoUrlCam2(fallbackUrl);
+          setIsSynthetic(false);
+        }
       }
-    };
-    reader.readAsText(file);
-  }, [showToast]);
+    },
+    [registerBlobUrl]
+  );
 
-  // Auto-save session debounced to localStorage so work is preserved across reloads
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      if (tracks.some((t) => t.steps.length > 0)) {
+  // Unified Project State Restoration (used by Open Project .trk/.zip/.json and IndexedDB session recovery)
+  const applyRestoredProjectData = useCallback(
+    async (
+      data: NonNullable<ReturnType<typeof validateAndParseProject>['data']>,
+      bundledVideoCam1?: File,
+      bundledVideoCam2?: File,
+      sourceLabel = 'Project'
+    ) => {
+      // 1. Restore Analysis Mode ('2D', '3D', or '6DOF') & Layout
+      if (
+        data.analysisMode === '2D' ||
+        data.analysisMode === '3D' ||
+        data.analysisMode === '6DOF'
+      ) {
+        setAnalysisMode(data.analysisMode);
+        if (data.analysisMode === '3D') {
+          setLayout('split-3d');
+        } else if (layout === 'split-3d' || layout === 'trajectory-3d') {
+          setLayout('split');
+        }
+      }
+
+      // 2. Restore Tracks & Active Track ID
+      if (Array.isArray(data.tracks) && data.tracks.length > 0) {
+        setTracks(data.tracks);
+        const targetTrackId =
+          data.activeTrackId && data.tracks.some((t) => t.id === data.activeTrackId)
+            ? data.activeTrackId
+            : data.tracks[0].id;
+        setActiveTrackId(targetTrackId);
+      }
+
+      // 3. Restore Calibration, Axes, Triangulation, Clip, and Current Frame
+      if (data.triangulation) setTriangulation(data.triangulation);
+      if (data.calibration) setCalibration(data.calibration);
+      if (data.axes) setAxes(data.axes);
+      if (data.clip) {
+        setClip(data.clip);
+        const targetFrame =
+          data.currentFrame !== undefined
+            ? Math.max(data.clip.startFrame, Math.min(data.clip.endFrame, data.currentFrame))
+            : data.clip.startFrame;
+        setCurrentFrame(targetFrame);
+      }
+
+      // 4. Restore Graph Configuration
+      if (data.graphConfig) {
+        const restoredGraph = { ...DEFAULT_GRAPH_CONFIG, ...data.graphConfig };
+        setGraphConfig(restoredGraph);
         try {
-          const snapshot = {
-            version: '2.1.0',
-            analysisMode,
-            timestamp: new Date().toISOString(),
-            experimentTitle: currentExp.title,
-            currentExpId: currentExp.id,
-            triangulation,
-            calibration,
-            axes,
-            clip,
-            tracks,
-            graphConfig,
-          };
-          localStorage.setItem('tracker_autosave_session', JSON.stringify(snapshot));
+          localStorage.setItem('tracker_graph_config_v2', JSON.stringify(restoredGraph));
         } catch {
           // ignore
         }
       }
-    }, 1500);
+
+      // 5. Restore Experiment Metadata & Video Streams (Sample / Bundled / IndexedDB Cache)
+      const matchedSample = SAMPLE_EXPERIMENTS.find((s) => s.id === data.currentExpId);
+      if (bundledVideoCam1) {
+        setPendingRelinkVideoName(null);
+        void saveWorkspaceMediaToIndexedDB('cam1', bundledVideoCam1, data.currentExpId);
+        await restoreVideoFileToSlot(bundledVideoCam1, 'cam1', data.clip);
+      } else if (matchedSample) {
+        setPendingRelinkVideoName(null);
+        if (aviLoader) {
+          aviLoader.dispose();
+          setAviLoader(null);
+        }
+        setVideoUrl(matchedSample.videoUrl);
+        setVideoUrlCam2(matchedSample.videoUrlCam2 || '');
+        setIsSynthetic(Boolean(matchedSample.syntheticType));
+      } else if (data.camera1?.videoUrl && !data.camera1.videoUrl.startsWith('blob:')) {
+        setPendingRelinkVideoName(null);
+        setVideoUrl(data.camera1.videoUrl);
+        setIsSynthetic(Boolean(data.isSynthetic));
+      } else {
+        // Attempt to relink cached local video from IndexedDB via metadata or slot fallback
+        const cachedCam1File = await findCachedVideoForProject(
+          data.videoMetadata,
+          data.camera1?.videoName,
+          'cam1'
+        );
+        if (cachedCam1File) {
+          setPendingRelinkVideoName(null);
+          await restoreVideoFileToSlot(cachedCam1File, 'cam1', data.clip);
+        } else {
+          // Keep synthetic telemetry canvas active so trajectories, vectors & graphs render cleanly
+          setIsSynthetic(true);
+          const relinkName =
+            data.videoMetadata?.fileName ||
+            data.camera1?.videoName ||
+            (data.isSynthetic ? null : data.experimentTitle || 'source_video.mp4');
+          setPendingRelinkVideoName(data.isSynthetic ? null : relinkName);
+        }
+      }
+
+      if (bundledVideoCam2) {
+        void saveWorkspaceMediaToIndexedDB('cam2', bundledVideoCam2, data.currentExpId);
+        await restoreVideoFileToSlot(bundledVideoCam2, 'cam2', data.camera2?.clip);
+      } else if (data.analysisMode === '3D' && !matchedSample) {
+        const cachedCam2File = await findCachedVideoForProject(
+          undefined,
+          data.camera2?.videoName,
+          'cam2'
+        );
+        if (cachedCam2File) {
+          await restoreVideoFileToSlot(cachedCam2File, 'cam2', data.camera2?.clip);
+        }
+      }
+
+      setCurrentExp((prev) => ({
+        ...prev,
+        id: data.currentExpId || prev.id,
+        title: data.experimentTitle || prev.title,
+        syntheticType:
+          matchedSample?.syntheticType ??
+          data.syntheticType ??
+          prev.syntheticType ??
+          'projectile',
+        is3D: data.analysisMode === '3D',
+        calibration: data.calibration || prev.calibration,
+        axes: data.axes || prev.axes,
+        clip: data.clip || prev.clip,
+        triangulation: data.triangulation || prev.triangulation,
+      }));
+
+      // Persist restored project into LocalStorage & IndexedDB
+      saveSessionToLocalStorage(data, true);
+      void saveWorkspaceToIndexedDB(data, true);
+
+      const modeDisplay = data.analysisMode === '6DOF' ? '6-DOF' : data.analysisMode || '2D';
+      const trackCount = (data.tracks || []).length;
+      const ptCount = (data.tracks || []).reduce(
+        (acc: number, t: any) => acc + (t.steps?.length || 0),
+        0
+      );
+      const frameCount = data.clip?.totalFrames || Math.max(ptCount, 1);
+      showToast(
+        `Restored Project: ${data.experimentTitle || sourceLabel} | Mode: ${modeDisplay} | ${trackCount} Tracks | ${frameCount} Frames`,
+        `${ptCount} telemetry steps restored • Active Track: ${data.activeTrackId || data.tracks?.[0]?.id || 'track-1'}`
+      );
+    },
+    [aviLoader, layout, restoreVideoFileToSlot, showToast]
+  );
+
+  // Requirement 7 & 9: Open & Restore Saved Project (.trk / .json / .zip / .trz) via Magic-Byte Router
+  const handleOpenProjectFile = useCallback(
+    async (file: File) => {
+      try {
+        const routed = await ingestWorkstationFile(file);
+        if (routed.kind === 'video') {
+          await handleUploadVideo(file, false);
+          return;
+        }
+        if (!routed.valid || !routed.data) {
+          showToast(
+            'Invalid Project File',
+            routed.error ||
+              routed.errors?.join('; ') ||
+              'Could not parse .trk / .zip project file'
+          );
+          return;
+        }
+        await applyRestoredProjectData(
+          routed.data,
+          routed.videoFileCam1,
+          routed.videoFileCam2,
+          file.name
+        );
+      } catch (err: any) {
+        showToast(
+          'Error Reading Project File',
+          err?.message || 'Could not parse project file format.'
+        );
+      }
+    },
+    [applyRestoredProjectData, showToast]
+  );
+
+  // Reset / Clear Saved Session back to default benchmark experiment
+  const handleResetWorkspace = useCallback(async () => {
+    await clearSavedWorkspaceSession();
+    activeVideoFileCam1Ref.current = null;
+    activeVideoFileCam2Ref.current = null;
+    setPendingRelinkVideoName(null);
+    handleSelectExperiment(SAMPLE_EXPERIMENTS[0]);
+    showToast(
+      'Workspace Reset to Default',
+      'Cleared auto-saved session and restored benchmark scenario'
+    );
+  }, [showToast]);
+
+  // On initial mount: restore any cached custom video or newer IndexedDB project state,
+  // then unlock isHydratedRef so auto-save never overwrites saved work during startup.
+  const hasRestoredMountRef = useRef(false);
+  useEffect(() => {
+    if (hasRestoredMountRef.current) return;
+    hasRestoredMountRef.current = true;
+
+    void (async () => {
+      try {
+        const idbSession = await loadWorkspaceFromIndexedDB();
+        const activeSession = idbSession || initialSession;
+        if (activeSession) {
+          // If IndexedDB had a newer session than LocalStorage (e.g. large track), apply its tracks/state
+          if (
+            idbSession &&
+            (!initialSession ||
+              new Date(idbSession.timestamp).getTime() >
+                new Date(initialSession.timestamp).getTime())
+          ) {
+            await applyRestoredProjectData(idbSession, undefined, undefined, 'Auto-Saved Session');
+            return;
+          }
+
+          // If the restored session was using a custom uploaded video, reload the video binary from IndexedDB
+          const isBuiltInSample = SAMPLE_EXPERIMENTS.some(
+            (s) => s.id === activeSession.currentExpId
+          );
+          if (!isBuiltInSample) {
+            const cachedCam1File = await findCachedVideoForProject(
+              activeSession.videoMetadata,
+              activeSession.camera1?.videoName,
+              'cam1'
+            );
+            if (cachedCam1File) {
+              setPendingRelinkVideoName(null);
+              await restoreVideoFileToSlot(cachedCam1File, 'cam1', activeSession.clip);
+            } else if (!activeSession.isSynthetic) {
+              setIsSynthetic(true);
+              setPendingRelinkVideoName(
+                activeSession.videoMetadata?.fileName ||
+                  activeSession.camera1?.videoName ||
+                  activeSession.experimentTitle ||
+                  null
+              );
+            }
+            if (activeSession.analysisMode === '3D') {
+              const cachedCam2File = await findCachedVideoForProject(
+                undefined,
+                activeSession.camera2?.videoName,
+                'cam2'
+              );
+              if (cachedCam2File) {
+                await restoreVideoFileToSlot(
+                  cachedCam2File,
+                  'cam2',
+                  activeSession.camera2?.clip
+                );
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Session restoration notice:', err);
+      } finally {
+        isHydratedRef.current = true;
+        setIsRestoringSession(false);
+      }
+    })();
+  }, [applyRestoredProjectData, initialSession, restoreVideoFileToSlot]);
+
+  // Auto-save session debounced (400ms) — strictly guarded by isHydratedRef & isRestoringSession
+  useEffect(() => {
+    if (!isHydratedRef.current || isRestoringSession) return;
+    const timer = setTimeout(() => {
+      if (!isHydratedRef.current) return;
+      const snapshot = buildCurrentProjectSnapshot();
+      saveSessionToLocalStorage(snapshot, isHydratedRef.current);
+      void saveWorkspaceToIndexedDB(snapshot, isHydratedRef.current);
+    }, 400);
     return () => clearTimeout(timer);
-  }, [tracks, triangulation, calibration, axes, clip, analysisMode, currentExp, graphConfig]);
+  }, [buildCurrentProjectSnapshot, isRestoringSession]);
+
+  // Immediate synchronous flush on beforeunload, pagehide, and visibilitychange (hidden)
+  useEffect(() => {
+    const flushSessionOnUnload = () => {
+      if (!isHydratedRef.current) return;
+      const snapshot = buildCurrentProjectSnapshot();
+      saveSessionToLocalStorage(snapshot, isHydratedRef.current);
+      void saveWorkspaceToIndexedDB(snapshot, isHydratedRef.current);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushSessionOnUnload();
+      }
+    };
+    window.addEventListener('beforeunload', flushSessionOnUnload);
+    window.addEventListener('pagehide', flushSessionOnUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', flushSessionOnUnload);
+      window.removeEventListener('pagehide', flushSessionOnUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [buildCurrentProjectSnapshot]);
 
   // Keyboard shortcut listener for Tracker-style efficiency (Frame nav, Undo, Delete, Tool toggles, Save)
   useEffect(() => {
@@ -1485,6 +1989,13 @@ export const App: React.FC = () => {
       if (e.key === '?' || (e.shiftKey && e.key === '/') || e.key === 'F1') {
         e.preventDefault();
         setIsShortcutsModalOpen((prev) => !prev);
+        return;
+      }
+
+      // 4b. Metrology Error & Accuracy Audit Modal toggle (Alt+M)
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        setIsMetrologyAuditOpen((prev) => !prev);
         return;
       }
 
@@ -1698,6 +2209,20 @@ export const App: React.FC = () => {
   const canUndo = undoStack.length > 0 || (activeTrackObj?.steps.length ?? 0) > 0;
   const canRedo = redoStack.length > 0;
 
+  const normMetrologyMode: '2d' | '3d_stereo' | '6dof' =
+    analysisMode === '3D' ? '3d_stereo' : analysisMode === '6DOF' ? '6dof' : '2d';
+
+  const activeAuditReports = React.useMemo(() => {
+    const raw = activeTrackObj?.steps || [];
+    const { panel1ErrorReport, panel2ErrorReport } = deriveSixChannelSeries(
+      raw,
+      graphConfig,
+      (graphConfig.varX || 't') === 't',
+      { analysisMode: normMetrologyMode, fps: clip.fps }
+    );
+    return { panel1ErrorReport, panel2ErrorReport };
+  }, [activeTrackObj, graphConfig, normMetrologyMode, clip.fps]);
+
   // Reusable 24px Panel Header Bar with Maximize / Restore, Collapse, and Quick Swap
   const renderPanelHeader = (
     panelId: 'video' | '3d' | 'graph' | 'table',
@@ -1758,80 +2283,125 @@ export const App: React.FC = () => {
   };
 
   // Render Video Feed Content (Single Camera 2D/6DOF or Dual Camera 3D Stereo)
-  const renderVideoFeedContent = () =>
-    analysisMode === '3D' ? (
-      <DualVideoPlayerView
-        tracks={tracks}
-        activeTrackId={activeTrackId}
-        onAddPoint3D={handleAddPoint3D}
-        onDeletePoint={handleDeletePoint}
-        clip={clip}
-        onUpdateClip={(updates) => setClip((prev) => ({ ...prev, ...updates }))}
-        triangulation={triangulation}
-        onUpdateTriangulation={(updates) => handleSaveTriangulation({ ...triangulation, ...updates })}
-        currentFrame={currentFrame}
-        onFrameChange={setCurrentFrame}
-        videoUrlCam1={videoUrl}
-        videoUrlCam2={videoUrlCam2}
-        aviLoaderCam1={aviLoader}
-        aviLoaderCam2={aviLoaderCam2}
-        onUploadCam1={handleUploadCam1}
-        onUploadCam2={handleUploadCam2}
-        showTrails={showTrails}
-        showVectors={showVectors}
-        showLoupe={showLoupe}
-        autoAdvance={autoAdvance}
-        requireShiftToMark={requireShiftToMark}
-        onUndoLastPoint={handleUndoLastPoint}
-        onRedoLastPoint={handleRedoLastPoint}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onBeginHistoryAction={pushHistorySnapshot}
-        onOpenFormatsModal={handleOpenFormatsModal}
-        onOpenTriangulationModal={() => setIsTriModalOpen(true)}
-        calibration={calibration}
-        onRegisterSnapshotGetter={(getter) => {
-          snapshotGetterRef.current = getter;
-        }}
-      />
-    ) : (
-      <VideoPlayerView
-        videoUrl={videoUrl}
-        aviLoader={aviLoader}
-        isSynthetic={isSynthetic}
-        syntheticType={currentExp.syntheticType || currentExp.id}
-        fileName={currentExp.title}
-        onUploadVideo={handleUploadVideo}
-        onOpenFormatsModal={handleOpenFormatsModal}
-        tracks={tracks}
-        activeTrackId={activeTrackId}
-        onAddPoint={handleAddPoint}
-        onUpdatePoint={handleUpdatePoint}
-        onDeleteCurrentPoint={handleDeletePoint}
-        calibration={calibration}
-        onUpdateCalibration={handleUpdateCalibration}
-        axes={axes}
-        onUpdateAxes={handleUpdateAxes}
-        clip={clip}
-        onUpdateClip={(updates) => setClip((prev) => ({ ...prev, ...updates }))}
-        currentFrame={currentFrame}
-        onFrameChange={setCurrentFrame}
-        showTrails={showTrails}
-        showVectors={showVectors}
-        showLoupe={showLoupe}
-        autoAdvance={autoAdvance}
-        requireShiftToMark={requireShiftToMark}
-        onUndoLastPoint={handleUndoLastPoint}
-        onRedoLastPoint={handleRedoLastPoint}
-        canUndo={canUndo}
-        canRedo={canRedo}
-        onBeginHistoryAction={pushHistorySnapshot}
-        onNudgeCurrentPoint={(dpx, dpy) => handleNudgeCurrentPoint(dpx, dpy, 1)}
-        onRegisterSnapshotGetter={(getter) => {
-          snapshotGetterRef.current = getter;
-        }}
-      />
-    );
+  const renderVideoFeedContent = () => (
+    <div className="flex flex-col h-full w-full overflow-hidden">
+      {pendingRelinkVideoName && (
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1 bg-[#1E293B] text-[#F8FAFC] border-b border-[#334155] text-[11px] font-mono shrink-0">
+          <div className="flex items-center gap-2 truncate">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
+            <span className="truncate">
+              Project telemetry restored ({pendingRelinkVideoName}).
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <input
+              ref={relinkInputRef}
+              type="file"
+              accept=".mp4,.avi,.wmv,.flv,.mov,.mkv,.webm,.mpg,.mpeg,.m4v,video/mp4,video/x-msvideo,video/x-ms-wmv,video/x-flv,video/quicktime,video/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  void handleUploadVideo(file, true);
+                  e.target.value = '';
+                }
+              }}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => relinkInputRef.current?.click()}
+              className="px-2 py-0.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold rounded-[2px] border border-[#1E40AF] text-[10px] cursor-pointer"
+            >
+              [Relink Video File]
+            </button>
+            <button
+              type="button"
+              onClick={() => setPendingRelinkVideoName(null)}
+              className="px-1.5 py-0.5 bg-[#334155] hover:bg-[#475569] text-slate-200 rounded-[2px] text-[10px] cursor-pointer"
+              title="Dismiss relink banner and continue on synthetic telemetry canvas"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {analysisMode === '3D' ? (
+          <DualVideoPlayerView
+            tracks={tracks}
+            activeTrackId={activeTrackId}
+            onAddPoint3D={handleAddPoint3D}
+            onDeletePoint={handleDeletePoint}
+            clip={clip}
+            onUpdateClip={(updates) => setClip((prev) => ({ ...prev, ...updates }))}
+            triangulation={triangulation}
+            onUpdateTriangulation={(updates) => handleSaveTriangulation({ ...triangulation, ...updates })}
+            currentFrame={currentFrame}
+            onFrameChange={setCurrentFrame}
+            videoUrlCam1={videoUrl}
+            videoUrlCam2={videoUrlCam2}
+            aviLoaderCam1={aviLoader}
+            aviLoaderCam2={aviLoaderCam2}
+            onUploadCam1={handleUploadCam1}
+            onUploadCam2={handleUploadCam2}
+            showTrails={showTrails}
+            showVectors={showVectors}
+            showLoupe={showLoupe}
+            autoAdvance={autoAdvance}
+            requireShiftToMark={requireShiftToMark}
+            onUndoLastPoint={handleUndoLastPoint}
+            onRedoLastPoint={handleRedoLastPoint}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onBeginHistoryAction={pushHistorySnapshot}
+            onOpenFormatsModal={handleOpenFormatsModal}
+            onOpenTriangulationModal={() => setIsTriModalOpen(true)}
+            calibration={calibration}
+            onRegisterSnapshotGetter={(getter) => {
+              snapshotGetterRef.current = getter;
+            }}
+          />
+        ) : (
+          <VideoPlayerView
+            videoUrl={videoUrl}
+            aviLoader={aviLoader}
+            isSynthetic={isSynthetic}
+            syntheticType={currentExp.syntheticType || currentExp.id}
+            fileName={currentExp.title}
+            onUploadVideo={handleUploadVideo}
+            onOpenFormatsModal={handleOpenFormatsModal}
+            tracks={tracks}
+            activeTrackId={activeTrackId}
+            onAddPoint={handleAddPoint}
+            onUpdatePoint={handleUpdatePoint}
+            onDeleteCurrentPoint={handleDeletePoint}
+            calibration={calibration}
+            onUpdateCalibration={handleUpdateCalibration}
+            axes={axes}
+            onUpdateAxes={handleUpdateAxes}
+            clip={clip}
+            onUpdateClip={(updates) => setClip((prev) => ({ ...prev, ...updates }))}
+            currentFrame={currentFrame}
+            onFrameChange={setCurrentFrame}
+            showTrails={showTrails}
+            showVectors={showVectors}
+            showLoupe={showLoupe}
+            autoAdvance={autoAdvance}
+            requireShiftToMark={requireShiftToMark}
+            onUndoLastPoint={handleUndoLastPoint}
+            onRedoLastPoint={handleRedoLastPoint}
+            canUndo={canUndo}
+            canRedo={canRedo}
+            onBeginHistoryAction={pushHistorySnapshot}
+            onNudgeCurrentPoint={(dpx, dpy) => handleNudgeCurrentPoint(dpx, dpy, 1)}
+            onRegisterSnapshotGetter={(getter) => {
+              snapshotGetterRef.current = getter;
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
 
   const showRightTelemetryPane = layout !== 'video-only' && !isRightPaneCollapsed;
   const effectiveLeftWidthPct =
@@ -1898,6 +2468,11 @@ export const App: React.FC = () => {
           updateLeftTopHeight(50);
         }}
         onSwapPanes={() => setIsPanesSwapped((prev) => !prev)}
+        onOpenMetrologyAudit={() => {
+          setMetrologyAuditPanel('panel1');
+          setIsMetrologyAuditOpen(true);
+        }}
+        onResetWorkspace={handleResetWorkspace}
       />
 
       {/* Save / Project Notification Floating Toast */}
@@ -1968,6 +2543,10 @@ export const App: React.FC = () => {
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
         graphConfig={graphConfig}
         onUpdateGraphConfig={handleUpdateGraphConfig}
+        onOpenMetrologyAudit={() => {
+          setMetrologyAuditPanel('panel1');
+          setIsMetrologyAuditOpen(true);
+        }}
       />
 
       {/* ======================== INTERACTIVE DRAGGABLE SPLIT-PANE WORKSPACE STAGE ======================== */}
@@ -2030,6 +2609,12 @@ export const App: React.FC = () => {
                     onSelectFrame={setCurrentFrame}
                     graphConfig={graphConfig}
                     onUpdateGraphConfig={handleUpdateGraphConfig}
+                    analysisMode={normMetrologyMode}
+                    fps={clip.fps}
+                    onOpenMetrologyAudit={(panel) => {
+                      setMetrologyAuditPanel(panel);
+                      setIsMetrologyAuditOpen(true);
+                    }}
                   />
                 </div>
               </>
@@ -2251,6 +2836,12 @@ export const App: React.FC = () => {
                           onSelectFrame={setCurrentFrame}
                           graphConfig={graphConfig}
                           onUpdateGraphConfig={handleUpdateGraphConfig}
+                          analysisMode={normMetrologyMode}
+                          fps={clip.fps}
+                          onOpenMetrologyAudit={(panel) => {
+                            setMetrologyAuditPanel(panel);
+                            setIsMetrologyAuditOpen(true);
+                          }}
                         />
                       </div>
                     </div>
@@ -2465,6 +3056,17 @@ export const App: React.FC = () => {
             'Telemetry loaded into tracks (M wrt L, M wrt A, L wrt A) with Aerospace NED convention'
           );
         }}
+      />
+
+      <MetrologyAuditModal
+        isOpen={isMetrologyAuditOpen}
+        onClose={() => setIsMetrologyAuditOpen(false)}
+        panel1Report={activeAuditReports.panel1ErrorReport}
+        panel2Report={activeAuditReports.panel2ErrorReport}
+        initialPanel={metrologyAuditPanel}
+        onSelectFrame={setCurrentFrame}
+        trackName={activeTrackObj?.name}
+        fps={clip.fps}
       />
 
       {/* Client-side Video Format Warning Toast */}

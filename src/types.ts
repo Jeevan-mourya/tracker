@@ -65,6 +65,10 @@ export interface PointStep {
   sigmaRoll?: number | null; // degrees (1-sigma)
   sigmaPitch?: number | null; // degrees (1-sigma)
   sigmaYaw?: number | null; // degrees (1-sigma)
+  reprojectionRMSE?: number | null; // pixels
+  errorPct?: number | null; // %
+  accuracyPct?: number | null; // %
+  residualAbs?: number | null; // native physical units
   // Visible marker counts per rigid body group at frame t
   markerCountA?: number;
   markerCountL?: number;
@@ -149,9 +153,13 @@ export interface Calibration {
   active: boolean;
   pointA: { x: number; y: number }; // video pixel coordinates
   pointB: { x: number; y: number };
+  p1?: { x: number; y: number };
+  p2?: { x: number; y: number };
   realLength: number; // known length in user's unit
+  length?: number;
   unit: 'm' | 'cm' | 'mm' | 'ft';
   scale: number; // pixels per meter
+  pixelsPerMeter?: number;
   locked: boolean;
   visible: boolean;
 }
@@ -212,7 +220,10 @@ export type PlotVariable =
   | 'totalEnergy'
   | 'mach'
   | 'gForce'
-  | 'slantRange';
+  | 'slantRange'
+  | 'errorPct'
+  | 'reprojResidualPx'
+  | 'triangulationSkewMm';
 
 export type GraphAxisVariable = 't' | PlotVariable;
 
@@ -251,6 +262,80 @@ export interface ChannelSignRule {
 
 export type SixDofSignMatrixConfig = Record<SixDofChannel, ChannelSignRule>;
 
+export type MetrologyGrade = 'A' | 'B' | 'C';
+
+export interface FrameErrorMetrics {
+  frame: number;
+  value: number | null;
+  xValue?: number | null;
+  sigmaAbs: number;
+  xSigmaAbs?: number;
+  errorPct: number;
+  xErrorPct?: number;
+  yErrorPct?: number;
+  accuracyPct: number;
+  residualAbs: number;
+  absoluteUncertainty: number;
+  reprojResidualPx: number;
+  triangulationSkewMm: number;
+  isOutlier2Sigma: boolean;
+}
+
+export interface MetrologyBudgetSource {
+  id: string;
+  sourceLabel: string;
+  name: string;
+  category: 'calibration' | 'centroid' | 'reprojection' | 'temporal_sync' | 'lever_arm' | 'kinematic_filter';
+  contributionPct: number;
+  errorPct: number;
+  shareOfTotalPct: number;
+  sharePct: number;
+  absoluteValueStr: string;
+  physicalResidualLabel: string;
+  standardRef: string;
+  description: string;
+}
+
+export interface AnalysisErrorReport {
+  mode: '2D' | '3D' | '6DOF' | '2d' | '3d_stereo' | '6dof';
+  channelName: string;
+  channelLabel: string;
+  varX: GraphAxisVariable;
+  varY: PlotVariable;
+  isParametric: boolean;
+  sampleCount: number;
+  spanY: number;
+  refFloorY: number;
+  effectiveDenominatorY: number;
+  characteristicScale: number;
+  spanX?: number;
+  refFloorX?: number;
+  effectiveDenominatorX?: number;
+  meanErrorPct: number;
+  rmsErrorPct: number; // NRMSE %
+  nrmsePct: number; // Alias for rmsErrorPct
+  maxErrorPct: number;
+  worstFrameIndex: number;
+  p95ErrorPct: number; // 2-sigma (95th percentile) error %
+  overallAccuracyPct: number; // Math.max(0, 100 - rmsErrorPct)
+  absoluteRMSE: number; // In channel's native physical units (m, mm, deg, m/s, m/s^2)
+  unit: string;
+  xAbsoluteRMSE?: number; // For parametric plots (varX !== 't')
+  xUnit?: string;
+  meanReprojResidualPx: number;
+  meanReprojectionErrorPx: number;
+  meanTriangulationSkewMm: number;
+  filterAttenuationFactor: number; // eta_filt = min(1, sqrt(2 * fc * dt))
+  metrologyGrade: MetrologyGrade;
+  certificationGrade?: MetrologyGrade;
+  metrologyGradeLabel: string;
+  gradeDescription: string;
+  budgetBreakdown: MetrologyBudgetSource[];
+  frameMetrics: FrameErrorMetrics[];
+  perFrame: FrameErrorMetrics[];
+}
+
+
 export interface GraphConfig {
   varY: PlotVariable;
   varX: GraphAxisVariable;
@@ -267,6 +352,7 @@ export interface GraphConfig {
   angleUnit?: AngleUnit;
   coordConvention?: AerospaceCoordConvention;
   channelSignConfig?: SixDofSignMatrixConfig;
+  signConventionMatrix?: Record<string, any>;
   referenceFrameMode?: RelativeReferenceFrameMode;
   activeVirtualPointId?: string;
   showUncertaintyBand?: boolean;
@@ -325,18 +411,48 @@ export interface CameraClipConfig {
 
 export type WorkspaceAnalysisMode = '2D' | '3D' | '6DOF';
 
+export interface VideoTelemetryMetadata {
+  fileName: string;
+  fileSize?: number;
+  duration?: number;
+  width: number;
+  height: number;
+  sensorFps: number;
+  totalFrames: number;
+}
+
 export interface SavedProjectData {
   version: string; // '2.1.0'
   analysisMode: WorkspaceAnalysisMode;
   timestamp: string;
   experimentTitle: string;
   currentExpId?: string;
+  activeTrackId?: string;
+  currentFrame?: number;
+  isSynthetic?: boolean;
+  syntheticType?: string;
+  videoMetadata?: VideoTelemetryMetadata;
+  videoMetadataCam2?: VideoTelemetryMetadata;
+  sixDofState?: {
+    referenceFrameMode?: RelativeReferenceFrameMode;
+    activeVirtualPointId?: string;
+    coordConvention?: AerospaceCoordConvention;
+    channelSignConfig?: SixDofSignMatrixConfig;
+    filterConfig?: SignalFilterConfig;
+    fiducialCount?: number;
+    poseCount?: number;
+    activeModelId?: string;
+    mWrtLConfig?: any;
+    virtualPoints?: any[];
+    [key: string]: any;
+  };
   camera1: {
     videoName?: string;
     videoUrl?: string;
     clip: ClipSettings;
     calibration: Calibration;
     origin: { x: number; y: number };
+    videoMetadata?: VideoTelemetryMetadata;
   };
   camera2?: {
     videoName?: string;
@@ -344,6 +460,7 @@ export interface SavedProjectData {
     clip: ClipSettings;
     calibration: Calibration;
     origin: { x: number; y: number };
+    videoMetadata?: VideoTelemetryMetadata;
   };
   synchronization?: StereoSyncConfig;
   triangulation?: TriangulationConfig;

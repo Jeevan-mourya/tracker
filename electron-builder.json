@@ -10,6 +10,9 @@
     "electron/**/*",
     "public/**/*"
   ],
+  "asarUnpack": [
+    "**/node_modules/ffmpeg-static/**"
+  ],
   "extraResources": [
     {
       "from": "node_modules/ffmpeg-static/ffmpeg.exe",

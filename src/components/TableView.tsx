@@ -7,7 +7,10 @@ import {
   getChannelPolaritySign,
   isChannelRectifiedPositive,
   formatSignMatrixSummary,
+  deriveSixChannelSeries,
+  DEFAULT_GRAPH_CONFIG,
 } from '../utils/sixChannelGraphing';
+import { formatCompactAbsoluteError } from '../utils/metrologyErrorEngine';
 
 interface TableViewProps {
   tracks: Track[];
@@ -87,6 +90,29 @@ export function buildCertifiedDefenseTelemetryCSV(
       : norm;
   };
 
+  const normMode: '2d' | '3d_stereo' | '6dof' =
+    analysisMode === '3D'
+      ? '3d_stereo'
+      : analysisMode === '6DOF'
+      ? '6dof'
+      : '2d';
+
+  const effectiveGraphCfg: GraphConfig = {
+    ...DEFAULT_GRAPH_CONFIG,
+    ...graphConfig,
+  };
+
+  const { panel1ErrorReport } = deriveSixChannelSeries(
+    rawSteps,
+    effectiveGraphCfg,
+    true,
+    { analysisMode: normMode, fps: clip?.fps || 500 }
+  );
+
+  const frameErrorLookup = new Map(
+    panel1ErrorReport.perFrame.map((f) => [f.frame, f])
+  );
+
   const metadataHeaderLines = [
     `# ==============================================================================`,
     `# CERTIFIED DEFENSE TELEMETRY & RANGE SAFETY METROLOGY EXPORT`,
@@ -100,6 +126,14 @@ export function buildCertifiedDefenseTelemetryCSV(
     `# Active Virtual Critical Point: ${activeVirtPtId || 'vp-cg (Missile CG)'}`,
     `# Minimum Store-to-Pylon Clearance: ${minClearanceLine}`,
     `# Sample Rate: ${clip?.fps || 500} fps`,
+    `# ==============================================================================`,
+    `# METROLOGICAL ACCURACY SUMMARY`,
+    `# Overall Analysis Accuracy: ${panel1ErrorReport.overallAccuracyPct.toFixed(2)}%`,
+    `# Span-Normalized RMS Error (NRMSE): ${panel1ErrorReport.nrmsePct.toFixed(2)}% (±${panel1ErrorReport.absoluteRMSE.toFixed(4)} ${panel1ErrorReport.unit})`,
+    `# 95% Confidence Bound (2-Sigma): ${panel1ErrorReport.p95ErrorPct.toFixed(2)}%`,
+    `# Peak Instantaneous Error: ${panel1ErrorReport.maxErrorPct.toFixed(2)}% @ Frame #${panel1ErrorReport.worstFrameIndex}`,
+    `# Mean Optical Reprojection Residual: ${panel1ErrorReport.meanReprojectionErrorPx.toFixed(2)} px`,
+    `# Range Safety Metrology Grade: GRADE ${panel1ErrorReport.metrologyGrade} (${panel1ErrorReport.gradeDescription})`,
     `# ==============================================================================`,
   ];
 
@@ -148,6 +182,9 @@ export function buildCertifiedDefenseTelemetryCSV(
       'sigma_Roll_deg',
       'sigma_Pitch_deg',
       'sigma_Yaw_deg',
+      'Error_Pct',
+      'Accuracy_Pct',
+      'Residual_Abs',
     ];
 
     const rows = sorted.map((s) => {
@@ -213,6 +250,9 @@ export function buildCertifiedDefenseTelemetryCSV(
         (s.sigmaRoll ?? 0).toFixed(4),
         (s.sigmaPitch ?? 0).toFixed(4),
         (s.sigmaYaw ?? 0).toFixed(4),
+        (frameErrorLookup.get(s.frame)?.errorPct ?? 0).toFixed(4),
+        (frameErrorLookup.get(s.frame)?.accuracyPct ?? 100).toFixed(4),
+        (frameErrorLookup.get(s.frame)?.absoluteUncertainty ?? 0).toFixed(5),
       ];
     });
 
@@ -245,6 +285,9 @@ export function buildCertifiedDefenseTelemetryCSV(
         'a_mps2',
         'KE_J',
         'PE_J',
+        'Error_Pct',
+        'Accuracy_Pct',
+        'Residual_Abs',
       ]
     : [
         'Frame',
@@ -260,9 +303,13 @@ export function buildCertifiedDefenseTelemetryCSV(
         'a_mps2',
         'KE_J',
         'PE_J',
+        'Error_Pct',
+        'Accuracy_Pct',
+        'Residual_Abs',
       ];
 
   const rows = sorted.map((s) => {
+    const fmErr = frameErrorLookup.get(s.frame);
     const base = [
       s.frame.toString(),
       formatStepTime(s.time),
@@ -296,7 +343,10 @@ export function buildCertifiedDefenseTelemetryCSV(
     base.push(
       s.a?.toFixed(5) ?? '',
       s.kineticEnergy?.toFixed(5) ?? '',
-      s.potentialEnergy?.toFixed(5) ?? ''
+      s.potentialEnergy?.toFixed(5) ?? '',
+      (fmErr?.errorPct ?? 0).toFixed(4),
+      (fmErr?.accuracyPct ?? 100).toFixed(4),
+      (fmErr?.absoluteUncertainty ?? 0).toFixed(5)
     );
     return base;
   });
@@ -332,6 +382,28 @@ export const TableView: React.FC<TableViewProps> = ({
     );
   }, [activeTrack, graphConfig?.filterConfig, graphConfig?.referenceFrameMode, graphConfig?.activeVirtualPointId]);
   const fps = clip?.fps || 30;
+
+  const errorReport = React.useMemo(() => {
+    const raw = activeTrack ? activeTrack.steps : [];
+    const normMode: '2d' | '3d_stereo' | '6dof' =
+      analysisMode === '3D'
+        ? '3d_stereo'
+        : analysisMode === '6DOF'
+        ? '6dof'
+        : '2d';
+    const effectiveGraphCfg: GraphConfig = {
+      ...DEFAULT_GRAPH_CONFIG,
+      ...graphConfig,
+    };
+    return deriveSixChannelSeries(raw, effectiveGraphCfg, true, {
+      analysisMode: normMode,
+      fps,
+    }).panel1ErrorReport;
+  }, [activeTrack, graphConfig, analysisMode, fps]);
+
+  const frameErrorMap = React.useMemo(() => {
+    return new Map(errorReport.perFrame.map((f) => [f.frame, f]));
+  }, [errorReport]);
 
   // Determine active display unit
   const effectiveUnit =
@@ -458,6 +530,34 @@ export const TableView: React.FC<TableViewProps> = ({
             ({steps.length} {steps.length === 1 ? 'row' : 'rows'})
           </span>
 
+          {steps.length > 0 && (
+            <span
+              id="table-metrology-summary-badge"
+              className="px-2 py-0.5 bg-white border border-[#CBD5E1] text-[10px] font-mono font-semibold text-[#0F172A] flex items-center gap-1.5"
+              title={errorReport.gradeDescription}
+            >
+              <span>
+                Acc: <strong>{errorReport.overallAccuracyPct.toFixed(2)}%</strong>
+              </span>
+              <span className="text-[#CBD5E1]">|</span>
+              <span>
+                NRMSE: <strong>{errorReport.nrmsePct.toFixed(2)}%</strong>
+              </span>
+              <span className="text-[#CBD5E1]">|</span>
+              <span
+                className={
+                  errorReport.metrologyGrade === 'A'
+                    ? 'text-[#15803D] font-bold'
+                    : errorReport.metrologyGrade === 'B'
+                    ? 'text-[#B45309] font-bold'
+                    : 'text-[#B91C1C] font-bold'
+                }
+              >
+                GRADE {errorReport.metrologyGrade}
+              </span>
+            </span>
+          )}
+
           {clip && clip.fps >= 1000 && (
             <span className="bg-[#2563EB] text-white px-1.5 py-0.5 rounded-[2px] text-[10px] font-mono font-semibold">
               {clip.cameraModel || 'HIGH-SPEED'}: {clip.fps.toLocaleString()} fps
@@ -523,6 +623,24 @@ export const TableView: React.FC<TableViewProps> = ({
                     G-Force (g)
                   </th>
                   <th className="py-1.5 px-2 border-r border-[#CBD5E1]">a (m/s²)</th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#FEF2F2] text-[#991B1B]"
+                    title="Zero-Safe Span-Normalized Error Percentage (%)"
+                  >
+                    Error_Pct (%)
+                  </th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#F0FDF4] text-[#166534]"
+                    title="Instantaneous Metrological Accuracy Percentage (100% - Error_Pct)"
+                  >
+                    Accuracy_Pct (%)
+                  </th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#F8FAFC] text-[#334155]"
+                    title="Absolute Metrological Residual (±1σ physical uncertainty)"
+                  >
+                    Residual_Abs ({errorReport.unit})
+                  </th>
                   <th className="py-1.5 px-2 text-center w-8">Del</th>
                 </tr>
               ) : (
@@ -549,6 +667,24 @@ export const TableView: React.FC<TableViewProps> = ({
                   <th className="py-1.5 px-2 border-r border-[#CBD5E1]">ax</th>
                   <th className="py-1.5 px-2 border-r border-[#CBD5E1]">ay</th>
                   <th className="py-1.5 px-2 border-r border-[#CBD5E1]">a (m/s²)</th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#FEF2F2] text-[#991B1B]"
+                    title="Zero-Safe Span-Normalized Error Percentage (%)"
+                  >
+                    Error_Pct (%)
+                  </th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#F0FDF4] text-[#166534]"
+                    title="Instantaneous Metrological Accuracy Percentage (100% - Error_Pct)"
+                  >
+                    Accuracy_Pct (%)
+                  </th>
+                  <th
+                    className="py-1.5 px-2 border-r border-[#CBD5E1] bg-[#F8FAFC] text-[#334155]"
+                    title="Absolute Metrological Residual (±1σ physical uncertainty)"
+                  >
+                    Residual_Abs ({errorReport.unit})
+                  </th>
                   <th className="py-1.5 px-2 text-center w-8">Del</th>
                 </tr>
               )}
@@ -707,6 +843,57 @@ export const TableView: React.FC<TableViewProps> = ({
                         </td>
                       </>
                     )}
+                    {(() => {
+                      const fmErr = frameErrorMap.get(s.frame);
+                      const errPct = fmErr?.errorPct ?? 0;
+                      const accPct = fmErr?.accuracyPct ?? 100;
+                      const resAbs = fmErr?.absoluteUncertainty ?? 0;
+                      const isOutlier = Boolean(fmErr?.isOutlier2Sigma);
+                      return (
+                        <>
+                          <td
+                            className="py-1 px-2 border-r border-[#cccccc]"
+                            title={
+                              isOutlier
+                                ? `Exceeds 95% (2-Sigma = ±${errorReport.p95ErrorPct.toFixed(
+                                    2
+                                  )}%) Error Threshold — Click row to scrub video playhead`
+                                : `Within 95% confidence envelope`
+                            }
+                          >
+                            {isOutlier ? (
+                              <span
+                                className={`inline-flex items-center px-1.5 py-0.2 text-[10px] font-bold border ${
+                                  isActive
+                                    ? 'bg-red-700 text-white border-red-300'
+                                    : 'bg-[#FEF2F2] text-[#DC2626] border-[#FECACA]'
+                                }`}
+                              >
+                                ±{errPct.toFixed(2)}% [2σ]
+                              </span>
+                            ) : (
+                              <span className={isActive ? 'text-white' : 'text-[#0F172A]'}>
+                                ±{errPct.toFixed(2)}%
+                              </span>
+                            )}
+                          </td>
+                          <td
+                            className={`py-1 px-2 border-r border-[#cccccc] font-bold ${
+                              isActive ? 'text-white' : 'text-[#15803D]'
+                            }`}
+                          >
+                            {accPct.toFixed(2)}%
+                          </td>
+                          <td
+                            className={`py-1 px-2 border-r border-[#cccccc] ${
+                              isActive ? 'text-white' : 'text-[#334155]'
+                            }`}
+                          >
+                            {formatCompactAbsoluteError(resAbs, errorReport.unit)}
+                          </td>
+                        </>
+                      );
+                    })()}
                     <td className="py-1 px-2 text-center">
                       <button
                         type="button"

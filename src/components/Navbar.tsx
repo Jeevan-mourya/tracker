@@ -89,6 +89,8 @@ interface NavbarProps {
   onLayoutChange?: (layout: ViewLayout) => void;
   onResetSplitters?: () => void;
   onSwapPanes?: () => void;
+  onOpenMetrologyAudit?: () => void;
+  onResetWorkspace?: () => void;
 }
 
 type MenuKey = 'file' | 'track' | 'calibrate' | '6dof' | 'view' | 'export' | 'help' | null;
@@ -145,6 +147,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLayoutChange,
   onResetSplitters,
   onSwapPanes,
+  onOpenMetrologyAudit,
+  onResetWorkspace,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectFileInputRef = useRef<HTMLInputElement>(null);
@@ -291,7 +295,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <FolderOpen className="w-3.5 h-3.5" />
                 <span>Open Project (.trk / .zip)...</span>
               </span>
-              <span className="text-[10px] font-mono text-[#94A3B8]">.trk</span>
+              <kbd className="text-[10px] font-mono text-[#94A3B8]">Ctrl+O</kbd>
             </button>
 
             <div className="my-1 border-t border-[#2A2E37]" />
@@ -345,6 +349,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <span className="flex items-center gap-2">
                   <HardDrive className="w-3.5 h-3.5" />
                   <span>Save Workspace Bundle (.zip)</span>
+                </span>
+              </button>
+            )}
+
+            {onResetWorkspace && (
+              <button
+                id="btn-reset-workspace"
+                type="button"
+                onClick={() => closeAndRun(onResetWorkspace)}
+                className="w-full px-3 py-1.5 text-left hover:bg-[#DC2626] hover:text-white text-[#FCA5A5] flex items-center justify-between transition-colors"
+              >
+                <span className="flex items-center gap-2">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Reset / Clear Saved Session</span>
                 </span>
               </button>
             )}
@@ -651,6 +669,21 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <span>Multi-Rate Camera Sync Setup...</span>
             </button>
+
+            <div className="my-1 border-t border-[#2A2E37]" />
+
+            <button
+              id="menu-calibrate-metrology-audit"
+              type="button"
+              onClick={() => closeAndRun(onOpenMetrologyAudit)}
+              className="w-full px-3 py-1.5 text-left hover:bg-[#2563EB] hover:text-white flex items-center justify-between text-[#93C5FD] font-semibold transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Shield className="w-3.5 h-3.5 text-[#38BDF8]" />
+                <span>Metrology Error &amp; Accuracy Audit...</span>
+              </span>
+              <kbd className="text-[10px] font-mono text-[#94A3B8]">Alt+M</kbd>
+            </button>
           </div>
         </div>
 
@@ -685,6 +718,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <Compass className="w-3.5 h-3.5 text-[#60A5FA]" />
                 <span>Monocular 6-DOF PnP Store Separation Solver...</span>
               </span>
+            </button>
+
+            <button
+              id="menu-6dof-metrology-audit"
+              type="button"
+              onClick={() => closeAndRun(onOpenMetrologyAudit)}
+              className="w-full px-3 py-1.5 text-left hover:bg-[#2563EB] hover:text-white flex items-center justify-between text-[#93C5FD] font-semibold transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <Shield className="w-3.5 h-3.5 text-[#38BDF8]" />
+                <span>Metrology Error &amp; Accuracy Audit...</span>
+              </span>
+              <kbd className="text-[10px] font-mono text-[#94A3B8]">Alt+M</kbd>
             </button>
 
             <div className="my-1 border-t border-[#2A2E37]" />
@@ -834,6 +880,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                     viewMode: 'single' as const,
                     transformMode: 'signed' as const,
                     transformModeX: 'signed' as const,
+                  },
+                },
+                {
+                  id: 'error-pct-vs-time',
+                  label: 'Error % vs Time (Metrological Audit)',
+                  updates: {
+                    varY: 'errorPct' as const,
+                    varX: 't' as const,
+                    viewMode: 'single' as const,
+                    transformMode: 'abs' as const,
+                    showUncertaintyBand: true,
                   },
                 },
               ]
@@ -1076,7 +1133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       <input
         ref={projectFileInputRef}
         type="file"
-        accept=".trk,.json"
+        accept=".trk,.json,.zip,.trz,application/json,application/zip"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];

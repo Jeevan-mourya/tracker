@@ -2,6 +2,7 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { Track, Calibration, CoordinateAxes, ClipSettings, TriangulationConfig } from '../types';
 import { formatHighSpeedTime } from './highSpeedCameras';
 import { wrapPageWithWinAnsiSafety } from './downloadPdf';
+import { deriveSixChannelSeries, DEFAULT_GRAPH_CONFIG } from './sixChannelGraphing';
 
 export type ReportTheme = 'defense-navy' | 'stealth-dark' | 'lab-classic' | 'monochrome';
 export type ReportGraphType = 'trajectory-yx' | 'velocity-time' | 'vy-time' | 'vx-time' | 'accel-time' | 'trajectory-3d';
@@ -1041,6 +1042,14 @@ export async function generateExperimentPdfReport(params: {
   const summary = computeTrackSummary(track, clip.fps, is3D);
   const theme = customOptions?.theme || 'defense-navy';
 
+  const { panel1ErrorReport: metrologyReport } = deriveSixChannelSeries(
+    track.steps || [],
+    { ...DEFAULT_GRAPH_CONFIG, varY: is3D ? 'z' : 'x' },
+    true,
+    { analysisMode: is3D ? '3d_stereo' : '2d', fps: clip.fps }
+  );
+  const pdfFrameErrorMap = new Map(metrologyReport.perFrame.map((f) => [f.frame, f]));
+
   // 1. Initialize PDF Document (A4 portrait: 595.28 x 841.89 points)
   const pdfDoc = await PDFDocument.create();
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -1601,7 +1610,54 @@ export async function generateExperimentPdfReport(params: {
     color: cDark,
   });
 
-  curY = curY - figH - 32;
+  curY = curY - figH - 26;
+
+  // METROLOGICAL ERROR & RANGE SAFETY CERTIFICATION (WinAnsi-safe ASCII)
+  page1.drawText('METROLOGICAL ERROR & RANGE SAFETY CERTIFICATION (RCC 253 / ITTC)', {
+    x: 36,
+    y: curY,
+    size: 9.5,
+    font: fontBold,
+    color: cHeader,
+  });
+
+  curY -= 5;
+  const certBoxH = 42;
+  const certBoxY = curY - certBoxH;
+
+  page1.drawRectangle({
+    x: 36,
+    y: certBoxY,
+    width: width - 72,
+    height: certBoxH,
+    color: rgb(0.95, 0.98, 0.96),
+    borderColor: cHeader,
+    borderWidth: 1,
+  });
+
+  page1.drawText(
+    `Overall Analysis Accuracy: ${metrologyReport.overallAccuracyPct.toFixed(2)}%   |   Span NRMSE (1-Sigma): +/-${metrologyReport.nrmsePct.toFixed(2)}% (+/-${metrologyReport.absoluteRMSE.toFixed(4)} ${metrologyReport.unit})   |   95% Conf (2-Sigma): +/-${metrologyReport.p95ErrorPct.toFixed(2)}%`,
+    {
+      x: 44,
+      y: curY - 14,
+      size: 7.8,
+      font: fontBold,
+      color: cDark,
+    }
+  );
+
+  page1.drawText(
+    `Peak Error: ${metrologyReport.maxErrorPct.toFixed(2)}% @ Frame #${metrologyReport.worstFrameIndex}   |   Mean Optical Residual: ${metrologyReport.meanReprojectionErrorPx.toFixed(2)} px   |   Certification: GRADE ${metrologyReport.metrologyGrade} (${metrologyReport.gradeDescription})`,
+    {
+      x: 44,
+      y: curY - 28,
+      size: 7.5,
+      font: fontRegular,
+      color: cEmerald,
+    }
+  );
+
+  curY = certBoxY - 14;
 
   // Observations & Notes
   page1.drawText('FIELD RANGE OBSERVATIONS & CLEARANCE NOTES', {
@@ -1612,8 +1668,8 @@ export async function generateExperimentPdfReport(params: {
     color: cHeader,
   });
 
-  curY -= 6;
-  const notesBoxH = 46;
+  curY -= 5;
+  const notesBoxH = 36;
   const notesBoxY = curY - notesBoxH;
 
   page1.drawRectangle({
@@ -1628,18 +1684,18 @@ export async function generateExperimentPdfReport(params: {
 
   const notesText =
     metadata?.notes ||
-    `Trajectory verified via sub-pixel optical tracking. Kinematic regression computed with ${(calibration.scale || 1).toFixed(1)} px/m physical reference. Target exhibited stable flight path. Zero anomalous coordinate deviations recorded.`;
+    `Trajectory verified via sub-pixel optical tracking. Kinematic regression computed with ${(calibration.scale || 1).toFixed(1)} px/m physical reference. Overall Metrological Accuracy certified at ${metrologyReport.overallAccuracyPct.toFixed(2)}% (Grade ${metrologyReport.metrologyGrade}).`;
 
   page1.drawText(notesText.slice(0, 260), {
     x: 44,
-    y: curY - 14,
-    size: 8,
+    y: curY - 13,
+    size: 7.8,
     font: fontRegular,
     color: cDark,
-    lineHeight: 11,
+    lineHeight: 10.5,
   });
 
-  curY = notesBoxY - 20;
+  curY = notesBoxY - 16;
 
   // Verification & Sign-off Block
   page1.drawText('VERIFICATION & RANGE APPROVAL SIGN-OFF', {
@@ -1877,30 +1933,32 @@ export async function generateExperimentPdfReport(params: {
   const tableW = width - 72;
   const rowHeight = 15;
 
-  // Columns definition based on 2D vs 3D
+  // Columns definition based on 2D vs 3D (with ERR (%) column)
   const cols = is3D
     ? [
-        { label: 'FRAME', x: tableX + 4, w: 38 },
-        { label: 'TIME (s)', x: tableX + 44, w: 56 },
-        { label: 'X (m)', x: tableX + 102, w: 48 },
-        { label: 'Y (m)', x: tableX + 152, w: 48 },
-        { label: 'Z (m)', x: tableX + 202, w: 48 },
-        { label: 'Vx (m/s)', x: tableX + 252, w: 50 },
-        { label: 'Vy (m/s)', x: tableX + 304, w: 50 },
-        { label: 'Vz (m/s)', x: tableX + 356, w: 50 },
-        { label: 'v (m/s)', x: tableX + 408, w: 54 },
-        { label: 'G-FORCE', x: tableX + 464, w: 52 },
+        { label: 'FRAME', x: tableX + 4, w: 34 },
+        { label: 'TIME (s)', x: tableX + 40, w: 50 },
+        { label: 'X (m)', x: tableX + 92, w: 44 },
+        { label: 'Y (m)', x: tableX + 138, w: 44 },
+        { label: 'Z (m)', x: tableX + 184, w: 44 },
+        { label: 'Vx', x: tableX + 230, w: 44 },
+        { label: 'Vy', x: tableX + 276, w: 44 },
+        { label: 'Vz', x: tableX + 322, w: 44 },
+        { label: 'v (m/s)', x: tableX + 368, w: 46 },
+        { label: 'G-FORCE', x: tableX + 416, w: 46 },
+        { label: 'ERR (%)', x: tableX + 464, w: 54 },
       ]
     : [
-        { label: 'FRAME', x: tableX + 4, w: 42 },
-        { label: 'TIME (s)', x: tableX + 48, w: 60 },
-        { label: 'X (m)', x: tableX + 110, w: 55 },
-        { label: 'Y (m)', x: tableX + 167, w: 55 },
-        { label: 'Vx (m/s)', x: tableX + 224, w: 58 },
-        { label: 'Vy (m/s)', x: tableX + 284, w: 58 },
-        { label: 'SPEED v', x: tableX + 344, w: 60 },
-        { label: 'Ax (m/s²)', x: tableX + 406, w: 56 },
-        { label: 'Ay (m/s²)', x: tableX + 464, w: 56 },
+        { label: 'FRAME', x: tableX + 4, w: 38 },
+        { label: 'TIME (s)', x: tableX + 44, w: 54 },
+        { label: 'X (m)', x: tableX + 100, w: 50 },
+        { label: 'Y (m)', x: tableX + 152, w: 50 },
+        { label: 'Vx (m/s)', x: tableX + 204, w: 52 },
+        { label: 'Vy (m/s)', x: tableX + 258, w: 52 },
+        { label: 'SPEED v', x: tableX + 312, w: 52 },
+        { label: 'Ax (m/s2)', x: tableX + 366, w: 48 },
+        { label: 'Ay (m/s2)', x: tableX + 416, w: 48 },
+        { label: 'ERR (%)', x: tableX + 466, w: 54 },
       ];
 
   // Draw Table Header
@@ -1928,11 +1986,12 @@ export async function generateExperimentPdfReport(params: {
   const stepsToPrint = track.steps.slice(0, 42);
 
   const fmtNum = (v: number | null | undefined, digits = 2) =>
-    v !== undefined && v !== null && !isNaN(v) ? v.toFixed(digits) : '—';
+    v !== undefined && v !== null && !isNaN(v) ? v.toFixed(digits) : '-';
 
   stepsToPrint.forEach((step, idx) => {
     const rowY = p2Y - idx * rowHeight;
     const isEven = idx % 2 === 0;
+    const stepErr = pdfFrameErrorMap.get(step.frame)?.errorPct ?? 0;
 
     page2.drawRectangle({
       x: tableX,
@@ -1954,6 +2013,7 @@ export async function generateExperimentPdfReport(params: {
       page2.drawText(fmtNum(step.v, 1), { x: cols[8].x, y: rowY - 6, size: 7.2, font: fontMono, color: cEmerald });
       const gF = (step.a || 0) / 9.80665;
       page2.drawText(`${gF.toFixed(1)}G`, { x: cols[9].x, y: rowY - 6, size: 7.2, font: fontMono, color: cDark });
+      page2.drawText(`+/-${stepErr.toFixed(2)}%`, { x: cols[10].x, y: rowY - 6, size: 7.2, font: fontMono, color: cHeader });
     } else {
       page2.drawText(step.frame.toString(), { x: cols[0].x, y: rowY - 6, size: 7.2, font: fontMono, color: cDark });
       page2.drawText(step.time.toFixed(4), { x: cols[1].x, y: rowY - 6, size: 7.2, font: fontMono, color: cDark });
@@ -1964,6 +2024,7 @@ export async function generateExperimentPdfReport(params: {
       page2.drawText(fmtNum(step.v, 2), { x: cols[6].x, y: rowY - 6, size: 7.2, font: fontMono, color: cEmerald });
       page2.drawText(fmtNum(step.ax, 1), { x: cols[7].x, y: rowY - 6, size: 7.2, font: fontMono, color: cDark });
       page2.drawText(fmtNum(step.ay, 1), { x: cols[8].x, y: rowY - 6, size: 7.2, font: fontMono, color: cDark });
+      page2.drawText(`+/-${stepErr.toFixed(2)}%`, { x: cols[9].x, y: rowY - 6, size: 7.2, font: fontMono, color: cHeader });
     }
   });
 

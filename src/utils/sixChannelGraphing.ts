@@ -36,7 +36,12 @@ import {
   ChannelSignMode,
   ChannelSignRule,
   SixDofSignMatrixConfig,
+  AnalysisErrorReport,
 } from '../types';
+import {
+  computeSeriesErrorAnalysis,
+  MetrologyEvaluationContext,
+} from './metrologyErrorEngine';
 
 export const SIX_DOF_CHANNELS: SixDofChannel[] = ['x', 'y', 'z', 'roll', 'pitch', 'yaw'];
 export const TRANSLATIONAL_CHANNELS: SixDofChannel[] = ['x', 'y', 'z'];
@@ -51,6 +56,9 @@ export const CHANNEL_COLORS: Record<string, string> = {
   yaw: '#0284c7',    // Sky Cyan
   d3d: '#0f766e',    // Teal
   pathLength: '#4338ca', // Indigo
+  errorPct: '#dc2626',   // Crimson Error %
+  reprojResidualPx: '#d97706', // Amber Reprojection Residual
+  triangulationSkewMm: '#7c3aed', // Violet 3D Skew
 };
 
 /**
@@ -280,6 +288,20 @@ export const RESEARCH_PLOT_PRESETS: ResearchPlotPreset[] = [
       viewMode: 'single',
       transformMode: 'signed',
       transformModeX: 'signed',
+      zoomDomainX: null,
+      zoomDomainY: null,
+    },
+  },
+  {
+    id: 'error-pct-vs-time',
+    label: 'Instantaneous Error (%) vs Time',
+    shortLabel: 'Error (%) vs Time',
+    description: 'Metrological instantaneous relative error percentage ε_i (%) vs Time',
+    configUpdates: {
+      varY: 'errorPct',
+      varX: 't',
+      viewMode: 'single',
+      transformMode: 'abs',
       zoomDomainX: null,
       zoomDomainY: null,
     },
@@ -1311,6 +1333,25 @@ export function evaluateSixChannelStepValue(
           ? (step.gForce ?? step.a! / 9.80665) * (extraInvert ? -1 : 1)
           : null;
       break;
+    case 'reprojResidualPx':
+      raw =
+        (step.triangulationResidual ?? step.residual ?? null) !== null
+          ? (step.triangulationResidual ?? step.residual ?? 0) * (extraInvert ? -1 : 1)
+          : 0.15;
+      break;
+    case 'triangulationSkewMm':
+      raw =
+        step.reconstructionError3D != null
+          ? step.reconstructionError3D * 1000.0 * (extraInvert ? -1 : 1)
+          : step.sigmaX != null || step.sigmaY != null || step.sigmaZ != null
+          ? Math.hypot(step.sigmaX ?? 0, step.sigmaY ?? 0, step.sigmaZ ?? 0) *
+            500.0 *
+            (extraInvert ? -1 : 1)
+          : (step.triangulationResidual ?? step.residual ?? 0.15) * 0.4;
+      break;
+    case 'errorPct':
+      raw = (step as any).errorPct ?? 0;
+      break;
     default:
       raw = (step as any)[variable] ?? null;
   }
@@ -1336,12 +1377,29 @@ export interface DerivedGraphPoint {
   yAbs: number | null;
   yActive: number | null;
   yPanel2Distance: number | null;
-  // 1-sigma uncertainty & confidence band bounds for active Y channel
+  // 1-sigma uncertainty & confidence band bounds for active Y and X channels
   ySigma: number | null;
+  xSigma?: number | null;
+  xUpper?: number | null;
+  xLower?: number | null;
   ySignedUpper: number | null;
   ySignedLower: number | null;
+  yActiveUpper?: number | null;
+  yActiveLower?: number | null;
   yDistUpper: number | null;
   yDistLower: number | null;
+  // Metrological Error % & Accuracy Certification per frame
+  errorPct?: number | null;
+  xErrorPct?: number | null;
+  yErrorPct?: number | null;
+  panel2ErrorPct?: number | null;
+  accuracyPct?: number | null;
+  panel2AccuracyPct?: number | null;
+  residualAbs?: number | null;
+  reprojResidualPx?: number | null;
+  triangulationSkewMm?: number | null;
+  isOutlier2Sigma?: boolean;
+  isPanel2Outlier2Sigma?: boolean;
   // PnP diagnostics & marker counts
   rmsePx: number | null;
   markerCountA?: number;
@@ -1436,7 +1494,8 @@ function resolveStepChannelSigma(
 }
 
 /**
- * Derives a complete, non-destructive graphing dataset from a track's steps and GraphConfig.
+ * Derives a complete, non-destructive graphing dataset and Metrology Error & Accuracy Certification
+ * reports from a track's steps and GraphConfig.
  * Applies the selected Relative Reference Frame ('M_wrt_L', 'M_wrt_A', 'L_wrt_A', 'camera_world'),
  * Signal Conditioning Filter ('raw', 'savgol', 'butterworth'), Aerospace Coordinate Convention ('NED_Z_DOWN' vs 'ENU_Z_UP'),
  * and the 6-DOF Sign & Direction Matrix (`channelSignConfig`).
@@ -1444,13 +1503,32 @@ function resolveStepChannelSigma(
 export function deriveSixChannelSeries(
   steps: PointStep[],
   config: GraphConfig,
-  includeMissingFrameGaps: boolean = true
+  includeMissingFrameGaps: boolean = true,
+  metrologyContext?: MetrologyEvaluationContext
 ): {
   points: DerivedGraphPoint[];
   referenceStep: PointStep | null;
+  panel1ErrorReport: AnalysisErrorReport;
+  panel2ErrorReport: AnalysisErrorReport;
 } {
   if (!steps || steps.length === 0) {
-    return { points: [], referenceStep: null };
+    const emptyReport = computeSeriesErrorAnalysis({
+      steps: [],
+      frames: [],
+      yValues: [],
+      xValues: [],
+      varY: config.varY || 'x',
+      varX: config.varX || 't',
+      transformModeY: config.transformMode || 'signed',
+      config,
+      context: metrologyContext,
+    });
+    return {
+      points: [],
+      referenceStep: null,
+      panel1ErrorReport: emptyReport,
+      panel2ErrorReport: emptyReport,
+    };
   }
 
   const conditioned = conditionStepsForGraphing(
@@ -1513,10 +1591,26 @@ export function deriveSixChannelSeries(
         yActive: null,
         yPanel2Distance: null,
         ySigma: null,
+        xSigma: null,
+        xUpper: null,
+        xLower: null,
         ySignedUpper: null,
         ySignedLower: null,
+        yActiveUpper: null,
+        yActiveLower: null,
         yDistUpper: null,
         yDistLower: null,
+        errorPct: null,
+        xErrorPct: null,
+        yErrorPct: null,
+        panel2ErrorPct: null,
+        accuracyPct: null,
+        panel2AccuracyPct: null,
+        residualAbs: null,
+        reprojResidualPx: null,
+        triangulationSkewMm: null,
+        isOutlier2Sigma: false,
+        isPanel2Outlier2Sigma: false,
         rmsePx: null,
         dx: null,
         dy: null,
@@ -1701,9 +1795,163 @@ export function deriveSixChannelSeries(
     });
   }
 
+  // Compute Metrological Error & Accuracy Reports for Panel 1 (Signed / Active) and Panel 2 (Distance / Abs)
+  // Safeguard 1 & Revision #3: Always compute error percentages on the continuous signed signal before rectification!
+  const baseEvalVarY: PlotVariable =
+    config.varY === 'errorPct' ||
+    config.varY === 'reprojResidualPx' ||
+    config.varY === 'triangulationSkewMm'
+      ? 'z'
+      : config.varY;
+
+  const signedBaselineY = resultPoints.map((pt) => {
+    if (pt.observationStatus === 'missing' || pt.observationStatus === 'rejected') return null;
+    if (config.varY === 'errorPct' || config.varY === 'reprojResidualPx' || config.varY === 'triangulationSkewMm') {
+      return pt.dz ?? pt.dx ?? 0;
+    }
+    return pt.ySigned;
+  });
+
+  const panel1ErrorReport = computeSeriesErrorAnalysis({
+    steps: sorted,
+    frames: resultPoints.map((p) => p.frame),
+    yValues: signedBaselineY,
+    xValues: resultPoints.map((p) => p.xVal),
+    varY: baseEvalVarY,
+    varX: config.varX,
+    transformModeY: config.viewMode === 'dual-sync' ? 'signed' : config.transformMode,
+    config,
+    context: metrologyContext,
+  });
+
+  const p2Mode = config.panel2TransformMode || 'abs';
+  const effectiveP2Mode: GraphTransformMode = !isVectorOrPathTransformAllowed(config.varY, p2Mode)
+    ? 'abs'
+    : p2Mode;
+
+  const panel2SeriesVals = resultPoints.map((pt) =>
+    effectiveP2Mode === 'abs' ? pt.ySigned : pt.yPanel2Distance
+  );
+
+  const panel2ErrorReport = computeSeriesErrorAnalysis({
+    steps: sorted,
+    frames: resultPoints.map((p) => p.frame),
+    yValues: panel2SeriesVals,
+    xValues: resultPoints.map((p) => p.xVal),
+    varY: baseEvalVarY,
+    varX: config.varX,
+    transformModeY: effectiveP2Mode,
+    config,
+    context: metrologyContext,
+  });
+
+  // Check if active Y channel is rectified positive (Always Positive |q| or non-signed transform)
+  const isPositiveRectifiedY =
+    config.transformMode !== 'signed' ||
+    isChannelRectifiedPositive(config.varY, config.channelSignConfig) ||
+    config.varY === 'errorPct' ||
+    config.varY === 'reprojResidualPx' ||
+    config.varY === 'triangulationSkewMm';
+
+  const isPositiveRectifiedPanel1 =
+    isChannelRectifiedPositive(config.varY, config.channelSignConfig) ||
+    config.varY === 'errorPct' ||
+    config.varY === 'reprojResidualPx' ||
+    config.varY === 'triangulationSkewMm';
+
+  const roundNum = (v: number | null | undefined, digits = 5): number | null =>
+    v !== null && v !== undefined && Number.isFinite(v) ? Number(v.toFixed(digits)) : null;
+
+  // Populate per-point error metrics, confidence bands (with Revision #3 Folded-Normal Clamping),
+  // and support plotting 'errorPct', 'reprojResidualPx', and 'triangulationSkewMm' on X or Y axes
+  for (let i = 0; i < resultPoints.length; i++) {
+    const pt = resultPoints[i];
+    const fm1 = panel1ErrorReport.frameMetrics[i];
+    const fm2 = panel2ErrorReport.frameMetrics[i];
+    if (!fm1 || pt.observationStatus === 'missing' || pt.observationStatus === 'rejected') {
+      continue;
+    }
+
+    const sigY = pt.ySigma !== null && pt.ySigma > 0 ? pt.ySigma : fm1.sigmaAbs;
+    const sigX = fm1.xSigmaAbs ?? 0;
+
+    pt.ySigma = roundNum(sigY, 5);
+    pt.xSigma = roundNum(sigX, 5);
+    pt.errorPct = roundNum(fm1.errorPct, 4);
+    pt.xErrorPct = roundNum(fm1.xErrorPct ?? 0, 4);
+    pt.yErrorPct = roundNum(fm1.yErrorPct ?? fm1.errorPct, 4);
+    pt.panel2ErrorPct = roundNum(fm2 ? fm2.errorPct : fm1.errorPct, 4);
+    pt.accuracyPct = roundNum(fm1.accuracyPct, 4);
+    pt.panel2AccuracyPct = roundNum(fm2 ? fm2.accuracyPct : fm1.accuracyPct, 4);
+    pt.residualAbs = roundNum(fm1.residualAbs, 5);
+    pt.reprojResidualPx = roundNum(fm1.reprojResidualPx, 4);
+    pt.triangulationSkewMm = roundNum(fm1.triangulationSkewMm, 4);
+    pt.isOutlier2Sigma = fm1.isOutlier2Sigma;
+    pt.isPanel2Outlier2Sigma = fm2 ? fm2.isOutlier2Sigma : fm1.isOutlier2Sigma;
+
+    // If user selected 'errorPct', 'reprojResidualPx', or 'triangulationSkewMm' as varY or varX, bind their values
+    if (config.varY === 'errorPct') {
+      pt.ySigned = pt.errorPct;
+      pt.yAbs = pt.errorPct;
+      pt.yActive = pt.errorPct;
+      pt.yPanel2Distance = pt.errorPct;
+    } else if (config.varY === 'reprojResidualPx') {
+      pt.ySigned = pt.reprojResidualPx;
+      pt.yAbs = pt.reprojResidualPx;
+      pt.yActive = pt.reprojResidualPx;
+      pt.yPanel2Distance = pt.reprojResidualPx;
+    } else if (config.varY === 'triangulationSkewMm') {
+      pt.ySigned = pt.triangulationSkewMm;
+      pt.yAbs = pt.triangulationSkewMm;
+      pt.yActive = pt.triangulationSkewMm;
+      pt.yPanel2Distance = pt.triangulationSkewMm;
+    }
+
+    if (config.varX === 'errorPct') {
+      pt.xVal = pt.errorPct != null ? pt.errorPct * (config.invertVarX ? -1 : 1) : null;
+    } else if (config.varX === 'reprojResidualPx') {
+      pt.xVal = pt.reprojResidualPx != null ? pt.reprojResidualPx * (config.invertVarX ? -1 : 1) : null;
+    } else if (config.varX === 'triangulationSkewMm') {
+      pt.xVal = pt.triangulationSkewMm != null ? pt.triangulationSkewMm * (config.invertVarX ? -1 : 1) : null;
+    }
+
+    if (pt.xVal !== null) {
+      pt.xUpper = roundNum(pt.xVal + sigX, 5);
+      pt.xLower = roundNum(
+        config.transformModeX === 'abs' ? Math.max(0, pt.xVal - sigX) : pt.xVal - sigX,
+        5
+      );
+    }
+
+    if (pt.ySigned !== null) {
+      pt.ySignedUpper = roundNum(pt.ySigned + sigY, 5);
+      // Revision #3: Folded-Normal Clamping when channel is Always Positive (|q|)
+      pt.ySignedLower = roundNum(
+        isPositiveRectifiedPanel1 ? Math.max(0, pt.ySigned - sigY) : pt.ySigned - sigY,
+        5
+      );
+    }
+
+    if (pt.yActive !== null) {
+      pt.yActiveUpper = roundNum(pt.yActive + sigY, 5);
+      pt.yActiveLower = roundNum(
+        isPositiveRectifiedY ? Math.max(0, pt.yActive - sigY) : pt.yActive - sigY,
+        5
+      );
+    }
+
+    if (pt.yPanel2Distance !== null) {
+      const sig2 = fm2 ? fm2.sigmaAbs : sigY;
+      pt.yDistUpper = roundNum(pt.yPanel2Distance + sig2, 5);
+      pt.yDistLower = roundNum(Math.max(0, pt.yPanel2Distance - sig2), 5);
+    }
+  }
+
   return {
     points: resultPoints,
     referenceStep: refStep,
+    panel1ErrorReport,
+    panel2ErrorReport,
   };
 }
 
@@ -1756,6 +2004,12 @@ export function getChannelUnit(
       return 'Mach';
     case 'gForce':
       return 'g';
+    case 'errorPct':
+      return '%';
+    case 'reprojResidualPx':
+      return 'px';
+    case 'triangulationSkewMm':
+      return 'mm';
     default:
       return '';
   }
@@ -1774,6 +2028,16 @@ export function getChannelLabel(
 
   if (variable === 't') {
     return relativeToOrigin ? `Relative Time Δt (${unit})` : `Time t (${unit})`;
+  }
+
+  if (variable === 'errorPct') {
+    return `Instantaneous Error ε(t) (%)`;
+  }
+  if (variable === 'reprojResidualPx') {
+    return `Reprojection Residual e_px (px)`;
+  }
+  if (variable === 'triangulationSkewMm') {
+    return `3D Triangulation Skew d_skew (mm)`;
   }
 
   if (transformMode === 'path_length' || variable === 'pathLength') {
@@ -1824,6 +2088,9 @@ export function getChannelLabel(
     totalEnergy: { rel: 'Total Energy E', raw: 'Total Energy E', sym: 'E' },
     mach: { rel: 'Mach Number M', raw: 'Mach Number M', sym: 'M' },
     gForce: { rel: 'G-Force', raw: 'G-Force', sym: 'g' },
+    errorPct: { rel: 'Instantaneous Error ε(t)', raw: 'Instantaneous Error ε(t)', sym: 'ε' },
+    reprojResidualPx: { rel: 'Reprojection Residual e_px', raw: 'Reprojection Residual e_px', sym: 'e_px' },
+    triangulationSkewMm: { rel: '3D Triangulation Skew d_skew', raw: '3D Triangulation Skew d_skew', sym: 'd_skew' },
   };
 
   const entry = baseLabels[variable] || {
