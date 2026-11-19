@@ -17,23 +17,55 @@
  * 5. Maintains a bounded LRU cache (default 120 frames) that calls bitmap.close() on eviction.
  */
 
-export interface AviStreamMetadata {
-  fileName: string;
-  fileSizeBytes: number;
-  width: number;
-  height: number;
-  isTopDown: boolean; // true if biHeight < 0 or Y800 top-down
-  bitCount: number; // 8, 16, 24, 32
-  compressionFourCC: string; // 'MJPG', 'DIB ', 'Y800', 'GREY', 'UYVY', 'YUY2', 'H264', etc.
-  compressionCode: number; // 0 = BI_RGB, 0x47504A4D = MJPG, etc.
-  fps: number;
-  totalFrames: number;
-  durationSec: number;
-  isOpenDML: boolean;
-  indexType: 'opendml_indx' | 'legacy_idx1' | 'movi_header_scan';
-  indexMemoryBytes: number;
-  palette?: Uint8Array; // Optional 256x4 BGRA palette for 8-bit DIB
-}
+import {
+  FrameSourceKind,
+  UnifiedFrameMetadata,
+  UnifiedFrameSource,
+} from './unifiedFrameSource';
+
+export type AviStreamMetadata = UnifiedFrameMetadata;
+
+/**
+ * Compressed inter-frame / proprietary codecs that MUST NEVER be decoded as raw uncompressed BGR.
+ */
+export const COMPRESSED_NON_RAW_FOURCCS = new Set([
+  'CVID',
+  'MSVC',
+  'CRAM',
+  'XVID',
+  'DIVX',
+  'DX50',
+  'IV32',
+  'IV41',
+  'IV50',
+  'H264',
+  'AVC1',
+  'X264',
+  'MP4V',
+  'M4S2',
+  'FMP4',
+  'MP42',
+  'MP43',
+  'WMV1',
+  'WMV2',
+  'WMV3',
+  'WVC1',
+  'WMVA',
+  'VP6F',
+  'FLV1',
+  'SVQ1',
+  'SVQ3',
+  'APCH',
+  'APCN',
+  'APCS',
+  'APCO',
+  'AP4H',
+  'HEV1',
+  'HVC1',
+  'VP80',
+  'VP90',
+  'AV01',
+]);
 
 export interface AviFrameIndexTable {
   count: number;
@@ -71,7 +103,8 @@ function isVideoChunkFourCC(fcc: string): boolean {
   );
 }
 
-export class AviHighSpeedLoader {
+export class AviHighSpeedLoader implements UnifiedFrameSource {
+  public readonly sourceKind: FrameSourceKind = 'avi';
   private file: File | Blob;
   private fileName: string;
   public metadata: AviStreamMetadata | null = null;
@@ -86,6 +119,36 @@ export class AviHighSpeedLoader {
     this.file = file;
     this.fileName = file instanceof File ? file.name : fileName;
     this.maxCacheFrames = maxCacheFrames;
+  }
+
+  public get width(): number {
+    return this.metadata?.width ?? 0;
+  }
+
+  public get height(): number {
+    return this.metadata?.height ?? 0;
+  }
+
+  public get totalFrames(): number {
+    return this.metadata?.totalFrames ?? 0;
+  }
+
+  public get fps(): number {
+    return this.metadata?.fps ?? 30;
+  }
+
+  public get durationSec(): number {
+    return this.metadata?.durationSec ?? 0;
+  }
+
+  public getFrameTimestampSec(frameIndex: number): number {
+    const safeFps = this.fps > 0 ? this.fps : 30;
+    const idx = Math.max(0, Math.min(Math.max(0, this.totalFrames - 1), Math.floor(frameIndex)));
+    return idx / safeFps;
+  }
+
+  public async getFrame(frameIndex: number): Promise<ImageBitmap | null> {
+    return await this.getFrameBitmap(frameIndex);
   }
 
   /**
@@ -544,6 +607,13 @@ export class AviHighSpeedLoader {
 
     // 1. MJPG / JPEG / PNG compressed frame
     const upperFcc = compressionFourCC.toUpperCase();
+    const trimmedFcc = upperFcc.trim();
+
+    // STRICT RANGE-SAFETY GUARD: Never decode compressed inter-frame bitstreams as raw uncompressed BGR.
+    if (COMPRESSED_NON_RAW_FOURCCS.has(trimmedFcc)) {
+      return null;
+    }
+
     if (upperFcc === 'MJPG' || upperFcc === 'JPEG' || upperFcc === 'MPNG' || upperFcc === 'PNG ') {
       const bitmap = await this.getFrameBitmap(idx);
       if (!bitmap) return null;
@@ -562,7 +632,7 @@ export class AviHighSpeedLoader {
       return null;
     }
 
-    // 2. Uncompressed / Raw High-Speed Sensor & Classic AVI Formats (Y800, Y16, GREY, DIB, RGB, UYVY, YUY2, NV12, MSVC, CVID)
+    // 2. Uncompressed / Raw High-Speed Sensor & QuickTime Raw Formats (Y800, Y16, GREY, DIB, RGB, RGBA, ARGB, BGRA, UYVY, 2VUY, YUY2, NV12)
     const frameBuf = await this.readSliceBuffer(offset, size);
     const src = new Uint8Array(frameBuf);
     const rgba = new Uint8ClampedArray(width * height * 4);
@@ -661,10 +731,11 @@ export class AviHighSpeedLoader {
           rgba[dIdx + 3] = 255;
         }
       }
-    } else if (upperFcc === 'UYVY' || upperFcc === 'YUY2' || upperFcc === 'YUYV') {
-      // 16-bit 4:2:2 YUV
-      const isUYVY = upperFcc === 'UYVY';
+    } else if (upperFcc === 'UYVY' || upperFcc === '2VUY' || upperFcc === 'YUY2' || upperFcc === 'YUYV') {
+      // 16-bit 4:2:2 YUV (UYVY / QuickTime 2vuy / YUY2)
+      const isUYVY = upperFcc === 'UYVY' || upperFcc === '2VUY';
       const rowStride = width * 2;
+      if (src.byteLength < height * rowStride) return null;
       for (let y = 0; y < height; y++) {
         const srcRowStart = y * rowStride;
         const dstRowStart = y * width * 4;
@@ -719,9 +790,12 @@ export class AviHighSpeedLoader {
           rgba[dIdx + 3] = 255;
         }
       }
-    } else if (bitCount === 32) {
-      // 32-bit BGRA
+    } else if (bitCount === 32 || upperFcc === 'ARGB' || upperFcc === 'RGBA' || upperFcc === 'BGRA') {
+      // 32-bit Uncompressed (QuickTime ARGB/RGBA or Windows BGRA)
       const rowStride = width * 4;
+      if (src.byteLength < height * rowStride) return null;
+      const isARGB = upperFcc === 'ARGB';
+      const isRGBA = upperFcc === 'RGBA';
       for (let y = 0; y < height; y++) {
         const srcRow = isTopDown ? y : height - 1 - y;
         const srcRowStart = srcRow * rowStride;
@@ -729,31 +803,54 @@ export class AviHighSpeedLoader {
         for (let x = 0; x < width; x++) {
           const sIdx = srcRowStart + x * 4;
           const dIdx = dstRowStart + x * 4;
-          rgba[dIdx] = src[sIdx + 2] ?? 0;
-          rgba[dIdx + 1] = src[sIdx + 1] ?? 0;
-          rgba[dIdx + 2] = src[sIdx] ?? 0;
-          rgba[dIdx + 3] = 255;
+          if (isARGB) {
+            rgba[dIdx] = src[sIdx + 1] ?? 0;
+            rgba[dIdx + 1] = src[sIdx + 2] ?? 0;
+            rgba[dIdx + 2] = src[sIdx + 3] ?? 0;
+            rgba[dIdx + 3] = 255;
+          } else if (isRGBA) {
+            rgba[dIdx] = src[sIdx] ?? 0;
+            rgba[dIdx + 1] = src[sIdx + 1] ?? 0;
+            rgba[dIdx + 2] = src[sIdx + 2] ?? 0;
+            rgba[dIdx + 3] = 255;
+          } else {
+            rgba[dIdx] = src[sIdx + 2] ?? 0;
+            rgba[dIdx + 1] = src[sIdx + 1] ?? 0;
+            rgba[dIdx + 2] = src[sIdx] ?? 0;
+            rgba[dIdx + 3] = 255;
+          }
         }
       }
-    } else {
-      // Default 24-bit BGR (with 4-byte DWORD row stride alignment) or fallback packed bitstream
-      const rowStride = (width * 3 + 3) & ~3;
-      const isFullUncompressed = src.byteLength >= height * width;
+    } else if (upperFcc === 'RGB ' || upperFcc === 'RGB' || upperFcc === 'DIB ' || upperFcc === 'DIB' || upperFcc === 'BGR ' || compressionCode === 0) {
+      // 24-bit Uncompressed RGB (QuickTime packed) or BGR (Windows DIB 4-byte aligned)
+      const isRgbOrder = upperFcc === 'RGB ' || upperFcc === 'RGB';
+      const rowStride = isRgbOrder ? width * 3 : (width * 3 + 3) & ~3;
+      if (src.byteLength < height * width * 3) {
+        // Never wrap compressed/truncated bitstreams modulo buffer length (eliminates static garbage)
+        return null;
+      }
       for (let y = 0; y < height; y++) {
         const srcRow = isTopDown ? y : height - 1 - y;
         const srcRowStart = srcRow * rowStride;
         const dstRowStart = y * width * 4;
         for (let x = 0; x < width; x++) {
-          const sIdx = isFullUncompressed
-            ? srcRowStart + x * 3
-            : ((y * width + x) * 3) % Math.max(3, src.byteLength - 3);
+          const sIdx = srcRowStart + x * 3;
           const dIdx = dstRowStart + x * 4;
-          rgba[dIdx] = src[sIdx + 2] ?? 0; // R
-          rgba[dIdx + 1] = src[sIdx + 1] ?? 0; // G
-          rgba[dIdx + 2] = src[sIdx] ?? 0; // B
-          rgba[dIdx + 3] = 255; // A
+          if (isRgbOrder) {
+            rgba[dIdx] = src[sIdx] ?? 0;
+            rgba[dIdx + 1] = src[sIdx + 1] ?? 0;
+            rgba[dIdx + 2] = src[sIdx + 2] ?? 0;
+          } else {
+            rgba[dIdx] = src[sIdx + 2] ?? 0; // R
+            rgba[dIdx + 1] = src[sIdx + 1] ?? 0; // G
+            rgba[dIdx + 2] = src[sIdx] ?? 0; // B
+          }
+          rgba[dIdx + 3] = 255;
         }
       }
+    } else {
+      // Unknown / unsupported codec: refuse to fabricate raw pixels
+      return null;
     }
 
     const imgData =

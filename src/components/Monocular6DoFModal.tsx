@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
   Crosshair,
@@ -10,7 +10,13 @@ import {
   Layers,
   Compass,
 } from 'lucide-react';
-import { Track, GraphConfig, VirtualPoint3D, ClearanceEnvelopeSummary } from '../types';
+import {
+  Track,
+  GraphConfig,
+  VirtualPoint3D,
+  ClearanceEnvelopeSummary,
+  SavedProjectData,
+} from '../types';
 import {
   CameraIntrinsicsK,
   DEFAULT_CAMERA_INTRINSICS,
@@ -24,11 +30,86 @@ import {
   Vec3,
 } from '../math/monocular6DoF';
 
+type LiftedSixDofState = NonNullable<SavedProjectData['sixDofState']>;
+
+function normalizeIntrinsics(
+  raw: LiftedSixDofState['intrinsics'] | undefined,
+  fallback: CameraIntrinsicsK
+): CameraIntrinsicsK {
+  if (!raw) return fallback;
+  const rawRecord = raw as {
+    fx?: number;
+    fy?: number;
+    cx?: number;
+    cy?: number;
+    width?: number;
+    height?: number;
+    k1?: number;
+    k2?: number;
+    k3?: number;
+    p1?: number;
+    p2?: number;
+    distortion?: Partial<CameraIntrinsicsK['distortion']>;
+  };
+  const width =
+    typeof rawRecord.width === 'number' && Number.isFinite(rawRecord.width)
+      ? rawRecord.width
+      : fallback.width;
+  const height =
+    typeof rawRecord.height === 'number' && Number.isFinite(rawRecord.height)
+      ? rawRecord.height
+      : fallback.height;
+
+  if (rawRecord.distortion) {
+    return {
+      fx: Number.isFinite(rawRecord.fx) ? (rawRecord.fx as number) : fallback.fx,
+      fy: Number.isFinite(rawRecord.fy) ? (rawRecord.fy as number) : fallback.fy,
+      cx: Number.isFinite(rawRecord.cx) ? (rawRecord.cx as number) : fallback.cx,
+      cy: Number.isFinite(rawRecord.cy) ? (rawRecord.cy as number) : fallback.cy,
+      width,
+      height,
+      distortion: {
+        enabled: Boolean(rawRecord.distortion.enabled),
+        k1: rawRecord.distortion.k1 ?? 0,
+        k2: rawRecord.distortion.k2 ?? 0,
+        k3: rawRecord.distortion.k3 ?? 0,
+        p1: rawRecord.distortion.p1 ?? 0,
+        p2: rawRecord.distortion.p2 ?? 0,
+      },
+    };
+  }
+  const hasDist =
+    Boolean(rawRecord.k1) ||
+    Boolean(rawRecord.k2) ||
+    Boolean(rawRecord.k3) ||
+    Boolean(rawRecord.p1) ||
+    Boolean(rawRecord.p2);
+  return {
+    fx: Number.isFinite(rawRecord.fx) ? (rawRecord.fx as number) : fallback.fx,
+    fy: Number.isFinite(rawRecord.fy) ? (rawRecord.fy as number) : fallback.fy,
+    cx: Number.isFinite(rawRecord.cx) ? (rawRecord.cx as number) : fallback.cx,
+    cy: Number.isFinite(rawRecord.cy) ? (rawRecord.cy as number) : fallback.cy,
+    width,
+    height,
+    distortion: {
+      enabled: hasDist,
+      k1: rawRecord.k1 ?? 0,
+      k2: rawRecord.k2 ?? 0,
+      k3: rawRecord.k3 ?? 0,
+      p1: rawRecord.p1 ?? 0,
+      p2: rawRecord.p2 ?? 0,
+    },
+  };
+}
+
 interface Monocular6DoFModalProps {
   isOpen: boolean;
   onClose: () => void;
   tracks: Track[];
   fps: number;
+  savedSixDofState?: SavedProjectData['sixDofState'];
+  hydrationRevision?: number;
+  onSixDofStateChange?: (updates: Partial<LiftedSixDofState>) => void;
   onApplySolvedTracks: (
     newTracks: Track[],
     selectTrackId: string,
@@ -41,29 +122,91 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
   onClose,
   tracks,
   fps,
+  savedSixDofState,
+  hydrationRevision = 0,
+  onSixDofStateChange,
   onApplySolvedTracks,
 }) => {
   const sampleBundle = useMemo(() => createSampleStoreSeparationDataset(25, fps || 500), [fps]);
+  const defaultIntrinsics = sampleBundle.config.intrinsics || DEFAULT_CAMERA_INTRINSICS;
 
   const [intrinsics, setIntrinsics] = useState<CameraIntrinsicsK>(
-    sampleBundle.config.intrinsics || DEFAULT_CAMERA_INTRINSICS
+    normalizeIntrinsics(savedSixDofState?.intrinsics, defaultIntrinsics)
   );
-  const [markers, setMarkers] = useState<SurveyMarker3D[]>(sampleBundle.config.markers);
-  const [csvText, setCsvText] = useState<string>(sampleBundle.csvText);
-  const [missileCg, setMissileCg] = useState<Vec3>([0, 0, 0]);
-  const [launcherRef, setLauncherRef] = useState<Vec3>([0, -0.22, 0.03]);
-  const [aircraftRef, setAircraftRef] = useState<Vec3>([0, -0.50, 0.05]);
-  const [huberDeltaPx, setHuberDeltaPx] = useState<number>(2.5);
-  const [virtualPoints, setVirtualPoints] = useState<VirtualPoint3D[]>(DEFAULT_VIRTUAL_POINTS);
+  const [markers, setMarkers] = useState<SurveyMarker3D[]>(
+    savedSixDofState?.markers && savedSixDofState.markers.length > 0
+      ? savedSixDofState.markers
+      : sampleBundle.config.markers
+  );
+  const [csvText, setCsvText] = useState<string>(
+    savedSixDofState?.csvText ?? sampleBundle.csvText
+  );
+  const [missileCg, setMissileCg] = useState<Vec3>(
+    savedSixDofState?.missileCgBody || [0, 0, 0]
+  );
+  const [launcherRef, setLauncherRef] = useState<Vec3>(
+    savedSixDofState?.launcherRefBody || [0, -0.22, 0.03]
+  );
+  const [aircraftRef, setAircraftRef] = useState<Vec3>(
+    savedSixDofState?.aircraftRefBody || [0, -0.5, 0.05]
+  );
+  const [huberDeltaPx, setHuberDeltaPx] = useState<number>(
+    savedSixDofState?.huberDeltaPx ?? 2.5
+  );
+  const [virtualPoints, setVirtualPoints] = useState<VirtualPoint3D[]>(
+    savedSixDofState?.virtualPoints && savedSixDofState.virtualPoints.length > 0
+      ? savedSixDofState.virtualPoints
+      : DEFAULT_VIRTUAL_POINTS
+  );
   const [clearanceEnvelope, setClearanceEnvelope] = useState<ClearanceEnvelopeSummary[] | null>(
-    null
+    savedSixDofState?.clearanceEnvelope ?? null
   );
   const [overallMinClearance, setOverallMinClearance] = useState<ClearanceEnvelopeSummary | null>(
-    null
+    savedSixDofState?.overallMinClearance ?? null
   );
   const [activeGroupTab, setActiveGroupTab] = useState<'ALL' | RigidBodyGroupId>('ALL');
   const [solvedResults, setSolvedResults] = useState<Frame6DoFResult[] | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
+  // Ref holds latest lifted state so hydration effect ONLY triggers on [isOpen, hydrationRevision]
+  // (prevents circular parent->child->parent useEffect loops during user edits).
+  const savedStateRef = useRef<SavedProjectData['sixDofState']>(savedSixDofState);
+  savedStateRef.current = savedSixDofState;
+
+  useEffect(() => {
+    const saved = savedStateRef.current;
+    if (!saved) return;
+    if (saved.intrinsics) {
+      setIntrinsics(normalizeIntrinsics(saved.intrinsics, defaultIntrinsics));
+    }
+    if (Array.isArray(saved.markers) && saved.markers.length > 0) setMarkers(saved.markers);
+    if (typeof saved.csvText === 'string') setCsvText(saved.csvText);
+    if (Array.isArray(saved.missileCgBody) && saved.missileCgBody.length === 3) {
+      setMissileCg(saved.missileCgBody as Vec3);
+    }
+    if (Array.isArray(saved.launcherRefBody) && saved.launcherRefBody.length === 3) {
+      setLauncherRef(saved.launcherRefBody as Vec3);
+    }
+    if (Array.isArray(saved.aircraftRefBody) && saved.aircraftRefBody.length === 3) {
+      setAircraftRef(saved.aircraftRefBody as Vec3);
+    }
+    if (typeof saved.huberDeltaPx === 'number' && Number.isFinite(saved.huberDeltaPx)) {
+      setHuberDeltaPx(saved.huberDeltaPx);
+    }
+    if (Array.isArray(saved.virtualPoints) && saved.virtualPoints.length > 0) {
+      setVirtualPoints(saved.virtualPoints);
+    }
+    if (saved.clearanceEnvelope !== undefined) {
+      setClearanceEnvelope(saved.clearanceEnvelope ?? null);
+    }
+    if (saved.overallMinClearance !== undefined) {
+      setOverallMinClearance(saved.overallMinClearance ?? null);
+    }
+  }, [isOpen, hydrationRevision]);
+
+  const emitSurveyUpdate = (patch: Partial<LiftedSixDofState>) => {
+    onSixDofStateChange?.(patch);
+  };
 
   if (!isOpen) return null;
 
@@ -74,6 +217,7 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
       return;
     }
     setMarkers(parsed);
+    emitSurveyUpdate({ markers: parsed, csvText });
     setStatusBanner(
       `Parsed ${parsed.length} Leica ACS 3D markers (A: ${
         parsed.filter((m) => m.group === 'A').length
@@ -93,7 +237,10 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
       const parsed = parseLeicaSurveyCSV(text);
       if (parsed.length > 0) {
         setMarkers(parsed);
+        emitSurveyUpdate({ markers: parsed, csvText: text });
         setStatusBanner(`Loaded ${parsed.length} Leica ACS survey points from ${file.name}.`);
+      } else {
+        emitSurveyUpdate({ csvText: text });
       }
     };
     reader.readAsText(file);
@@ -117,6 +264,18 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
     setSolvedResults(solved.frameResults);
     setClearanceEnvelope(solved.clearanceEnvelope);
     setOverallMinClearance(solved.overallMinClearance);
+    emitSurveyUpdate({
+      intrinsics: sample.config.intrinsics,
+      markers: sample.config.markers,
+      csvText: sample.csvText,
+      missileCgBody: sample.config.missileCgBody,
+      launcherRefBody: sample.config.launcherRefBody,
+      aircraftRefBody: sample.config.aircraftRefBody,
+      huberDeltaPx,
+      virtualPoints,
+      clearanceEnvelope: solved.clearanceEnvelope,
+      overallMinClearance: solved.overallMinClearance,
+    });
 
     const combinedTracks = [
       solved.synthesizedMissileTrack,
@@ -162,6 +321,18 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
     setSolvedResults(solved.frameResults);
     setClearanceEnvelope(solved.clearanceEnvelope);
     setOverallMinClearance(solved.overallMinClearance);
+    emitSurveyUpdate({
+      intrinsics,
+      markers,
+      csvText,
+      missileCgBody: missileCg,
+      launcherRefBody: launcherRef,
+      aircraftRefBody: aircraftRef,
+      huberDeltaPx,
+      virtualPoints,
+      clearanceEnvelope: solved.clearanceEnvelope,
+      overallMinClearance: solved.overallMinClearance,
+    });
 
     const filteredExisting = sourceTracks.filter(
       (t) =>
@@ -283,9 +454,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                   <input
                     type="number"
                     value={intrinsics.fx}
-                    onChange={(e) =>
-                      setIntrinsics({ ...intrinsics, fx: parseFloat(e.target.value) || 1600 })
-                    }
+                    onChange={(e) => {
+                      const next = { ...intrinsics, fx: parseFloat(e.target.value) || 1600 };
+                      setIntrinsics(next);
+                      emitSurveyUpdate({ intrinsics: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-1 font-mono font-bold"
                   />
                 </div>
@@ -294,9 +467,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                   <input
                     type="number"
                     value={intrinsics.fy}
-                    onChange={(e) =>
-                      setIntrinsics({ ...intrinsics, fy: parseFloat(e.target.value) || 1600 })
-                    }
+                    onChange={(e) => {
+                      const next = { ...intrinsics, fy: parseFloat(e.target.value) || 1600 };
+                      setIntrinsics(next);
+                      emitSurveyUpdate({ intrinsics: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-1 font-mono font-bold"
                   />
                 </div>
@@ -305,9 +480,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                   <input
                     type="number"
                     value={intrinsics.cx}
-                    onChange={(e) =>
-                      setIntrinsics({ ...intrinsics, cx: parseFloat(e.target.value) || 640 })
-                    }
+                    onChange={(e) => {
+                      const next = { ...intrinsics, cx: parseFloat(e.target.value) || 640 };
+                      setIntrinsics(next);
+                      emitSurveyUpdate({ intrinsics: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-1 font-mono font-bold"
                   />
                 </div>
@@ -316,9 +493,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                   <input
                     type="number"
                     value={intrinsics.cy}
-                    onChange={(e) =>
-                      setIntrinsics({ ...intrinsics, cy: parseFloat(e.target.value) || 360 })
-                    }
+                    onChange={(e) => {
+                      const next = { ...intrinsics, cy: parseFloat(e.target.value) || 360 };
+                      setIntrinsics(next);
+                      emitSurveyUpdate({ intrinsics: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-1 font-mono font-bold"
                   />
                 </div>
@@ -329,12 +508,14 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                   <input
                     type="checkbox"
                     checked={intrinsics.distortion.enabled}
-                    onChange={(e) =>
-                      setIntrinsics({
+                    onChange={(e) => {
+                      const next = {
                         ...intrinsics,
                         distortion: { ...intrinsics.distortion, enabled: e.target.checked },
-                      })
-                    }
+                      };
+                      setIntrinsics(next);
+                      emitSurveyUpdate({ intrinsics: next });
+                    }}
                   />
                   <span>Enable Brown-Conrady Undistortion (k₁, k₂, k₃, p₁, p₂)</span>
                 </label>
@@ -347,15 +528,17 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                         type="number"
                         step="0.001"
                         value={(intrinsics.distortion as any)[coeff] ?? 0}
-                        onChange={(e) =>
-                          setIntrinsics({
+                        onChange={(e) => {
+                          const next = {
                             ...intrinsics,
                             distortion: {
                               ...intrinsics.distortion,
                               [coeff]: parseFloat(e.target.value) || 0,
                             },
-                          })
-                        }
+                          };
+                          setIntrinsics(next);
+                          emitSurveyUpdate({ intrinsics: next });
+                        }}
                         className="w-full border border-[#808080] rounded-[2px] px-1 py-0.5 font-mono text-[10px]"
                       />
                     </div>
@@ -373,9 +556,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                     type="number"
                     step="0.05"
                     value={missileCg[0]}
-                    onChange={(e) =>
-                      setMissileCg([parseFloat(e.target.value) || 0, missileCg[1], missileCg[2]])
-                    }
+                    onChange={(e) => {
+                      const next: Vec3 = [parseFloat(e.target.value) || 0, missileCg[1], missileCg[2]];
+                      setMissileCg(next);
+                      emitSurveyUpdate({ missileCgBody: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-0.5 font-mono"
                   />
                 </div>
@@ -387,9 +572,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                     type="number"
                     step="0.05"
                     value={missileCg[1]}
-                    onChange={(e) =>
-                      setMissileCg([missileCg[0], parseFloat(e.target.value) || 0, missileCg[2]])
-                    }
+                    onChange={(e) => {
+                      const next: Vec3 = [missileCg[0], parseFloat(e.target.value) || 0, missileCg[2]];
+                      setMissileCg(next);
+                      emitSurveyUpdate({ missileCgBody: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-0.5 font-mono"
                   />
                 </div>
@@ -401,9 +588,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                     type="number"
                     step="0.05"
                     value={missileCg[2]}
-                    onChange={(e) =>
-                      setMissileCg([missileCg[0], missileCg[1], parseFloat(e.target.value) || 0])
-                    }
+                    onChange={(e) => {
+                      const next: Vec3 = [missileCg[0], missileCg[1], parseFloat(e.target.value) || 0];
+                      setMissileCg(next);
+                      emitSurveyUpdate({ missileCgBody: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-0.5 font-mono"
                   />
                 </div>
@@ -415,7 +604,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                     type="number"
                     step="0.5"
                     value={huberDeltaPx}
-                    onChange={(e) => setHuberDeltaPx(parseFloat(e.target.value) || 2.5)}
+                    onChange={(e) => {
+                      const next = parseFloat(e.target.value) || 2.5;
+                      setHuberDeltaPx(next);
+                      emitSurveyUpdate({ huberDeltaPx: next });
+                    }}
                     className="w-full border border-[#808080] rounded-[2px] px-1.5 py-0.5 font-mono"
                   />
                 </div>
@@ -452,7 +645,11 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
 
               <textarea
                 value={csvText}
-                onChange={(e) => setCsvText(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setCsvText(next);
+                  emitSurveyUpdate({ csvText: next });
+                }}
                 rows={7}
                 className="w-full border border-[#808080] rounded-[2px] p-1.5 font-mono text-[10px] bg-[#f8fafc] focus:outline-none"
                 placeholder="PointID,Group[A|L|M],X,Y,Z,u_init,v_init"
@@ -582,6 +779,7 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                               const next = [...virtualPoints];
                               next[idx] = { ...vp, x: parseFloat(e.target.value) || 0 };
                               setVirtualPoints(next);
+                              emitSurveyUpdate({ virtualPoints: next });
                             }}
                             className="w-20 border border-[#808080] rounded-[2px] px-1 py-0.5 font-mono"
                           />
@@ -595,6 +793,7 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                               const next = [...virtualPoints];
                               next[idx] = { ...vp, y: parseFloat(e.target.value) || 0 };
                               setVirtualPoints(next);
+                              emitSurveyUpdate({ virtualPoints: next });
                             }}
                             className="w-20 border border-[#808080] rounded-[2px] px-1 py-0.5 font-mono"
                           />
@@ -608,6 +807,7 @@ export const Monocular6DoFModal: React.FC<Monocular6DoFModalProps> = ({
                               const next = [...virtualPoints];
                               next[idx] = { ...vp, z: parseFloat(e.target.value) || 0 };
                               setVirtualPoints(next);
+                              emitSurveyUpdate({ virtualPoints: next });
                             }}
                             className="w-20 border border-[#808080] rounded-[2px] px-1 py-0.5 font-mono"
                           />

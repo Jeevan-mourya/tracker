@@ -80,7 +80,7 @@ describe('Universal Multi-Format & Codec Video Engine (.MP4, .AVI, .WMV, .FLV, .
     expect(tracked[1].u).toBeCloseTo(13, 0);
   });
 
-  it('4. Tier 3 (.WMV): detects ASF Header GUID (30 26 B2 75 8E 66 CF 11), parses WMV3 dimensions/duration, and provides frame-accurate loader', async () => {
+  it('4. Tier 3 (.WMV): detects ASF Header GUID (30 26 B2 75 8E 66 CF 11), parses WMV3 dimensions/duration, and rejects honestly in plain browser without fake pixels', async () => {
     const wmvBlob = createSyntheticWmvBlob({
       width: 320,
       height: 240,
@@ -98,14 +98,17 @@ describe('Universal Multi-Format & Codec Video Engine (.MP4, .AVI, .WMV, .FLV, .
 
     const loaded = await loadUniversalVideoFile(wmvFile);
     expect(loaded.container).toBe('WMV');
-    expect(loaded.frameLoader).not.toBeNull();
-    const frameData = await loaded.frameLoader!.getFrameImageData(0);
-    expect(frameData).not.toBeNull();
-    expect(frameData!.width).toBe(320);
-    expect(frameData!.height).toBe(240);
+    expect(loaded.requiresDesktopFfmpegBridge).toBe(true);
+    expect(loaded.frameLoader).toBeNull();
+    expect(loaded.videoUrl).toBe('');
+    expect(loaded.diagnostic).toBeDefined();
+    expect(loaded.diagnostic!.container).toBe('WMV');
+    expect(loaded.diagnostic!.codecFourCC).toBe('WMV3');
+    expect(loaded.diagnostic!.ffmpegCommand).toContain('ffmpeg -i');
+    expect(loaded.diagnostic!.ffmpegCommand).toContain('osp_pendulum.wmv');
   });
 
-  it('5. Tier 1/3 (.FLV): detects FLV signature (46 4C 56 01), parses Tag 0x09 CodecID & AMF metadata, and provides frame-accurate loader', async () => {
+  it('5. Tier 3 (.FLV): detects FLV signature (46 4C 56 01), parses Tag 0x09 CodecID & AMF metadata, and rejects honestly in plain browser without fake pixels', async () => {
     const flvBlob = createSyntheticFlvBlob({
       width: 320,
       height: 240,
@@ -124,9 +127,12 @@ describe('Universal Multi-Format & Codec Video Engine (.MP4, .AVI, .WMV, .FLV, .
 
     const loaded = await loadUniversalVideoFile(flvFile);
     expect(loaded.container).toBe('FLV');
-    expect(loaded.frameLoader).not.toBeNull();
-    const frameData = await loaded.frameLoader!.getFrameImageData(0);
-    expect(frameData).not.toBeNull();
-    expect(frameData!.width).toBe(320);
+    expect(loaded.requiresDesktopFfmpegBridge).toBe(true);
+    expect(loaded.frameLoader).toBeNull();
+    expect(loaded.videoUrl).toBe('');
+    expect(loaded.diagnostic).toBeDefined();
+    expect(loaded.diagnostic!.container).toBe('FLV');
+    expect(loaded.diagnostic!.codecFourCC).toContain('AVC1');
+    expect(loaded.diagnostic!.ffmpegCommand).toContain('ffmpeg -i');
   });
 });

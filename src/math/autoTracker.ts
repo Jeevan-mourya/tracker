@@ -8,7 +8,10 @@
  * 4. Direct integration with AviHighSpeedLoader (zero-copy File.slice() frame decoding) and HTMLCanvasElement
  */
 
-import { AviHighSpeedLoader } from '../video/aviHighSpeedLoader';
+import {
+  extractImageDataFromFrameSource,
+  UnifiedFrameSource,
+} from '../video/unifiedFrameSource';
 
 export interface AutoTrackerConfig {
   templateRadius: number; // Half-width of template patch in pixels (default: 7 -> 15x15 patch)
@@ -301,11 +304,43 @@ export function evolveTemplatePatch(
 }
 
 /**
- * Runs multi-frame ZNCC + Sub-Pixel auto-tracking directly on an AviHighSpeedLoader instance
- * using zero-copy File.slice() frame decoding.
+ * Unified frame pixel sampler for ZNCC auto-tracking across both `UnifiedFrameSource`
+ * (.AVI, Photo-JPEG .MOV, .GIF, image sequences, single images) and native HTML5 `<video>`.
+ * Whenever a `UnifiedFrameSource` is active, fetches frame pixels directly via
+ * `await frameSource.getFrame(frameIndex)` (drawn to an offscreen canvas for `getImageData`)
+ * instead of reading from an unmounted `<video>` element.
  */
-export async function autoTrackSequenceOnAviLoader(
-  aviLoader: AviHighSpeedLoader,
+export async function sampleFrameImageDataFromViewport(
+  frameSource: UnifiedFrameSource | null,
+  videoElement: HTMLVideoElement | null,
+  frameIndex: number
+): Promise<ImageData | null> {
+  if (frameSource) {
+    return await extractImageDataFromFrameSource(frameSource, frameIndex);
+  }
+
+  if (videoElement && videoElement.readyState >= 2 && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas');
+      canvas.width = videoElement.videoWidth;
+      canvas.height = videoElement.videoHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Runs multi-frame ZNCC + Sub-Pixel auto-tracking directly on any `UnifiedFrameSource`
+ * (`AviHighSpeedLoader`, `QuickTimeMovSliceLoader`, `AnimatedGifLoader`, `ImageSequenceLoader`).
+ */
+export async function autoTrackSequenceOnFrameSource(
+  frameSource: UnifiedFrameSource,
   startFrame: number,
   endFrame: number,
   stepSize: number,
@@ -313,7 +348,7 @@ export async function autoTrackSequenceOnAviLoader(
   initialV: number,
   config: AutoTrackerConfig = DEFAULT_AUTO_TRACKER_CONFIG
 ): Promise<{ frame: number; u: number; v: number; znccScore: number }[]> {
-  const firstFrameData = await aviLoader.getFrameImageData(startFrame);
+  const firstFrameData = await extractImageDataFromFrameSource(frameSource, startFrame);
   if (!firstFrameData) return [];
 
   const { width, height } = firstFrameData;
@@ -335,9 +370,10 @@ export async function autoTrackSequenceOnAviLoader(
   let prevV = initialV;
   let velU = 0;
   let velV = 0;
+  const safeStep = Math.max(1, Math.floor(stepSize));
 
-  for (let f = startFrame + stepSize; f <= endFrame; f += stepSize) {
-    const imgData = await aviLoader.getFrameImageData(f);
+  for (let f = startFrame + safeStep; f <= endFrame; f += safeStep) {
+    const imgData = await extractImageDataFromFrameSource(frameSource, f);
     if (!imgData) break;
 
     const lum = extractLuminanceBuffer(imgData);
@@ -375,4 +411,27 @@ export async function autoTrackSequenceOnAviLoader(
   }
 
   return tracked;
+}
+
+/**
+ * Backward-compatible alias accepting any `UnifiedFrameSource` (including `AviHighSpeedLoader`).
+ */
+export async function autoTrackSequenceOnAviLoader(
+  aviLoader: UnifiedFrameSource,
+  startFrame: number,
+  endFrame: number,
+  stepSize: number,
+  initialU: number,
+  initialV: number,
+  config: AutoTrackerConfig = DEFAULT_AUTO_TRACKER_CONFIG
+): Promise<{ frame: number; u: number; v: number; znccScore: number }[]> {
+  return await autoTrackSequenceOnFrameSource(
+    aviLoader,
+    startFrame,
+    endFrame,
+    stepSize,
+    initialU,
+    initialV,
+    config
+  );
 }

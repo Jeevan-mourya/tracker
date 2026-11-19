@@ -22,7 +22,12 @@ import {
 } from '../types';
 import { computeKinematics, pixelToWorld } from './physics';
 import { computeKinematics3D } from './triangulation';
+import { normalizeStereoSyncConfig } from './stereoSync';
 import JSZip from 'jszip';
+import {
+  filterAndSortZipImageEntries,
+  LazyZipImageEntry,
+} from '../video/imageSequenceLoader';
 
 export const CURRENT_PROJECT_VERSION = '2.1.0';
 export const AUTOSAVE_STORAGE_KEY_V2 = 'tracker_autosave_session_v2';
@@ -32,21 +37,111 @@ const IDB_DB_VERSION = 1;
 const IDB_STORE_PROJECT = 'project_state';
 const IDB_STORE_MEDIA = 'video_media';
 
+export type ProjectErrorStage =
+  | 'File Read'
+  | 'Magic-Byte Router'
+  | 'JSON/ZIP Parse'
+  | 'Schema Validation'
+  | 'Media Hydrate';
+
+export function formatProjectStageError(stage: ProjectErrorStage, reason: string): string {
+  const cleanReason = (reason || 'Unknown error').trim();
+  if (cleanReason.startsWith('[Stage:')) {
+    return cleanReason;
+  }
+  return `[Stage: ${stage}] — Exact Reason: ${cleanReason}`;
+}
+
+export function inferMediaMimeTypeFromFilename(fileName: string): string {
+  const clean = (fileName || '').trim().toLowerCase();
+  const dotIdx = clean.lastIndexOf('.');
+  const ext = dotIdx >= 0 ? clean.slice(dotIdx) : '';
+  switch (ext) {
+    case '.avi':
+      return 'video/x-msvideo';
+    case '.mov':
+    case '.qt':
+      return 'video/quicktime';
+    case '.wmv':
+    case '.asf':
+      return 'video/x-ms-wmv';
+    case '.flv':
+    case '.f4v':
+      return 'video/x-flv';
+    case '.ogg':
+    case '.ogv':
+      return 'video/ogg';
+    case '.webm':
+      return 'video/webm';
+    case '.mkv':
+      return 'video/x-matroska';
+    case '.mpg':
+    case '.mpeg':
+      return 'video/mpeg';
+    case '.mp4':
+    case '.m4v':
+      return 'video/mp4';
+    case '.gif':
+      return 'image/gif';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.webp':
+      return 'image/webp';
+    case '.bmp':
+      return 'image/bmp';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+export function resolveDualExportFilenames(
+  cam1Name?: string,
+  cam2Name?: string
+): { nameCam1?: string; nameCam2?: string; collided: boolean } {
+  const cleanBase = (raw?: string): string | undefined => {
+    if (!raw) return undefined;
+    const base = raw.replace(/\\/g, '/').split('/').pop()?.trim();
+    return base || undefined;
+  };
+  const base1 = cleanBase(cam1Name);
+  const base2 = cleanBase(cam2Name);
+  if (base1 && base2 && base1.toLowerCase() === base2.toLowerCase()) {
+    return {
+      nameCam1: `cam1_${base1}`,
+      nameCam2: `cam2_${base2}`,
+      collided: true,
+    };
+  }
+  return {
+    nameCam1: base1,
+    nameCam2: base2,
+    collided: false,
+  };
+}
+
 export interface ParseProjectResult {
   valid: boolean;
   data?: SavedProjectData;
   videoFileCam1?: File;
   videoFileCam2?: File;
+  zipImageEntries?: LazyZipImageEntry[];
+  archiveFileName?: string;
+  stage?: ProjectErrorStage;
   error?: string;
   errors?: string[];
   warnings?: string[];
 }
 
 export interface IngestedWorkstationFileResult extends Partial<ParseProjectResult> {
-  kind: 'project' | 'video';
-  route: 'zip-bundle' | 'json-trk' | 'osp-xml-trk' | 'video-decoder';
+  kind: 'project' | 'video' | 'image-sequence';
+  route: 'zip-bundle' | 'zip-image-sequence' | 'json-trk' | 'osp-xml-trk' | 'video-decoder';
   projectResult?: ParseProjectResult;
   videoFile?: File;
+  zipImageEntries?: LazyZipImageEntry[];
+  archiveFileName?: string;
 }
 
 export interface SerializeProjectOptions {
@@ -98,6 +193,7 @@ export interface SaveProjectResult {
   method: 'folder' | 'zip';
   pathOrName: string;
   filesWritten: string[];
+  omittedVideos?: string[];
 }
 
 const OPTIONAL_NUMERIC_STEP_KEYS: Array<keyof PointStep> = [
@@ -110,6 +206,9 @@ const OPTIONAL_NUMERIC_STEP_KEYS: Array<keyof PointStep> = [
   'ay',
   'az',
   'a',
+  'kineticEnergy',
+  'potentialEnergy',
+  'totalEnergy',
   'roll',
   'pitch',
   'yaw',
@@ -144,6 +243,90 @@ const OPTIONAL_NUMERIC_STEP_KEYS: Array<keyof PointStep> = [
   'markerCountL',
   'markerCountM',
 ];
+
+/**
+ * Normalizes a Calibration object while preserving partial (inactive) 2D calibration stick
+ * endpoints (`pointA`/`pointB` and `x1, y1, x2, y2`) and `realLength`/`worldLength` verbatim
+ * without auto-activating or auto-overwriting `scale` before the user finalizes calibration.
+ */
+function normalizeCalibrationForPersistence(
+  rawCal: any,
+  fallback?: Calibration
+): Calibration {
+  const base: Calibration = fallback || {
+    active: true,
+    visible: true,
+    locked: false,
+    pointA: { x: 100, y: 100 },
+    pointB: { x: 340, y: 100 },
+    realLength: 1.0,
+    unit: 'm',
+    scale: 240,
+  };
+
+  if (!rawCal || typeof rawCal !== 'object') {
+    return {
+      ...base,
+      x1: base.pointA.x,
+      y1: base.pointA.y,
+      x2: base.pointB.x,
+      y2: base.pointB.y,
+      worldLength: base.realLength,
+    };
+  }
+
+  const pickNum = (...candidates: unknown[]): number | undefined => {
+    for (const c of candidates) {
+      if (c === null || c === undefined || c === '') continue;
+      const n = Number(c);
+      if (Number.isFinite(n)) return n;
+    }
+    return undefined;
+  };
+
+  const x1 = pickNum(rawCal.pointA?.x, rawCal.p1?.x, rawCal.x1, base.pointA.x) ?? 100;
+  const y1 = pickNum(rawCal.pointA?.y, rawCal.p1?.y, rawCal.y1, base.pointA.y) ?? 100;
+  const x2 = pickNum(rawCal.pointB?.x, rawCal.p2?.x, rawCal.x2, base.pointB.x) ?? 340;
+  const y2 = pickNum(rawCal.pointB?.y, rawCal.p2?.y, rawCal.y2, base.pointB.y) ?? 100;
+  const realLength =
+    pickNum(rawCal.realLength, rawCal.worldLength, rawCal.length, base.realLength) ?? 1.0;
+
+  // Respect partial inactive calibration stick: never auto-activate or fabricate a finalized scale
+  const active = rawCal.active !== undefined ? Boolean(rawCal.active) : base.active;
+  const rawScale = pickNum(rawCal.scale, rawCal.pixelsPerMeter);
+  const scale =
+    rawScale !== undefined
+      ? rawScale
+      : active
+      ? base.scale
+      : 0;
+
+  const validUnit =
+    rawCal.unit === 'm' || rawCal.unit === 'cm' || rawCal.unit === 'mm' || rawCal.unit === 'ft'
+      ? rawCal.unit
+      : base.unit;
+
+  return {
+    ...rawCal,
+    active,
+    visible: rawCal.visible !== undefined ? Boolean(rawCal.visible) : base.visible,
+    locked: rawCal.locked !== undefined ? Boolean(rawCal.locked) : base.locked,
+    pointA: { x: x1, y: y1 },
+    pointB: { x: x2, y: y2 },
+    p1: { x: x1, y: y1 },
+    p2: { x: x2, y: y2 },
+    x1,
+    y1,
+    x2,
+    y2,
+    realLength,
+    worldLength: realLength,
+    length: realLength,
+    unit: validUnit,
+    scale,
+    pixelsPerMeter: rawCal.pixelsPerMeter !== undefined ? rawScale : scale,
+  };
+}
 
 /**
  * Sanitizes a single PointStep so that:
@@ -329,17 +512,9 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
       totalFrames: 100,
     };
 
-  const cam1Cal: Calibration = params.camera1?.calibration ||
-    params.calibration || {
-      active: true,
-      visible: true,
-      locked: false,
-      pointA: { x: 100, y: 100 },
-      pointB: { x: 340, y: 100 },
-      realLength: 1.0,
-      unit: 'm',
-      scale: 240,
-    };
+  const cam1Cal: Calibration = normalizeCalibrationForPersistence(
+    params.camera1?.calibration || params.calibration
+  );
 
   const cam1Origin =
     params.camera1?.origin || params.triangulation?.originCam1 || { x: 320, y: 240 };
@@ -347,6 +522,7 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
   const cam2Clip: ClipSettings | undefined =
     params.camera2?.clip ||
     params.clipCam2 ||
+    params.triangulation?.clipCam2 ||
     (is3D
       ? {
           ...cam1Clip,
@@ -403,6 +579,26 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
         cam1Clip.totalFrames || Math.max(1, cam1Clip.endFrame - cam1Clip.startFrame + 1),
     };
 
+  const videoMetadataCam2: VideoTelemetryMetadata | undefined =
+    params.videoMetadataCam2 ||
+    params.camera2?.videoMetadata ||
+    (is3D && (resolvedVideoNameCam2 || params.videoFileCam2 || cam2Clip)
+      ? {
+          fileName: resolvedVideoNameCam2 || 'camera2_video.mp4',
+          fileSize: params.videoFileCam2?.size,
+          duration: cam2Clip
+            ? (cam2Clip.totalFrames || Math.max(1, cam2Clip.endFrame - cam2Clip.startFrame + 1)) /
+              Math.max(1, cam2Clip.fps || 30)
+            : undefined,
+          width: 640,
+          height: 480,
+          sensorFps: cam2Clip?.fps || params.triangulation?.fpsCam2 || cam1Clip.fps || 30,
+          totalFrames:
+            cam2Clip?.totalFrames ||
+            Math.max(1, (cam2Clip?.endFrame ?? 100) - (cam2Clip?.startFrame ?? 0) + 1),
+        }
+      : undefined);
+
   const sanitizedTracks: Track[] = sanitizeProjectPayload({
     tracks: params.tracks,
     clip: cam1Clip,
@@ -425,8 +621,17 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
   );
 
   const sixDofState: SavedProjectData['sixDofState'] =
-    params.sixDofState ||
-    (is6DOF || sixDofPoseCount > 0 || params.graphConfig
+    params.sixDofState
+      ? {
+          referenceFrameMode: params.graphConfig?.referenceFrameMode || 'M_wrt_L',
+          activeVirtualPointId: params.graphConfig?.activeVirtualPointId || 'vp-cg',
+          coordConvention: params.graphConfig?.coordConvention || 'NED_Z_DOWN',
+          channelSignConfig: params.graphConfig?.channelSignConfig,
+          filterConfig: params.graphConfig?.filterConfig,
+          poseCount: sixDofPoseCount,
+          ...params.sixDofState,
+        }
+      : is6DOF || sixDofPoseCount > 0 || params.graphConfig
       ? {
           referenceFrameMode: params.graphConfig?.referenceFrameMode || 'M_wrt_L',
           activeVirtualPointId: params.graphConfig?.activeVirtualPointId || 'vp-cg',
@@ -435,7 +640,27 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
           filterConfig: params.graphConfig?.filterConfig,
           poseCount: sixDofPoseCount,
         }
-      : undefined);
+      : undefined;
+
+  const rawSync = params.synchronization || params.triangulation?.syncConfig;
+  const canonicalSync: StereoSyncConfig | undefined =
+    rawSync || is3D
+      ? normalizeStereoSyncConfig(
+          rawSync,
+          params.triangulation?.fpsCam1 || cam1Clip.fps || 30,
+          params.triangulation?.fpsCam2 || cam2Clip?.fps || cam1Clip.fps || 30
+        )
+      : undefined;
+
+  const serializedTriangulation: TriangulationConfig | undefined = params.triangulation
+    ? {
+        ...params.triangulation,
+        fpsCam1: params.triangulation.fpsCam1 || cam1Clip.fps,
+        fpsCam2: params.triangulation.fpsCam2 || cam2Clip?.fps || cam1Clip.fps,
+        clipCam2: cam2Clip ? { ...cam2Clip } : params.triangulation.clipCam2,
+        syncConfig: canonicalSync,
+      }
+    : undefined;
 
   return {
     version: CURRENT_PROJECT_VERSION,
@@ -448,7 +673,7 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
     isSynthetic: params.isSynthetic,
     syntheticType: params.syntheticType,
     videoMetadata: videoMetadataCam1,
-    videoMetadataCam2: params.videoMetadataCam2,
+    videoMetadataCam2,
     sixDofState,
     camera1: {
       videoName: resolvedVideoNameCam1,
@@ -464,15 +689,13 @@ export function serializeProject(params: SerializeProjectOptions): SavedProjectD
             videoName: resolvedVideoNameCam2,
             videoUrl: rawUrlCam2?.startsWith('blob:') ? undefined : rawUrlCam2,
             clip: { ...(cam2Clip || cam1Clip) },
-            calibration: { ...(cam2Cal || cam1Cal) },
+            calibration: normalizeCalibrationForPersistence(cam2Cal || cam1Cal),
             origin: { ...cam2Origin },
-            videoMetadata: params.videoMetadataCam2,
+            videoMetadata: videoMetadataCam2,
           }
         : undefined,
-    synchronization: params.synchronization
-      ? { ...params.synchronization }
-      : params.triangulation?.syncConfig,
-    triangulation: params.triangulation ? { ...params.triangulation } : undefined,
+    synchronization: canonicalSync,
+    triangulation: serializedTriangulation,
     // Top-level backward compatibility
     calibration: { ...cam1Cal },
     clip: { ...cam1Clip },
@@ -504,6 +727,81 @@ export function serializeProjectToTrk(
     },
     2
   );
+}
+
+/**
+ * Pre-download self-validation gate: serializes project data to `.trk` JSON and immediately
+ * runs `validateAndParseProject` in memory so the workstation can NEVER write an unloadable `.trk`.
+ */
+export function serializeAndValidateTrk(
+  projectOrOptions: SavedProjectData | SerializeProjectOptions
+):
+  | { valid: true; trkString: string; data: SavedProjectData }
+  | { valid: false; stage: ProjectErrorStage; error: string } {
+  if (!projectOrOptions || typeof projectOrOptions !== 'object') {
+    return {
+      valid: false,
+      stage: 'Schema Validation',
+      error: formatProjectStageError('Schema Validation', 'Project payload is empty or not an object.'),
+    };
+  }
+
+  const candidate = projectOrOptions as Record<string, any>;
+  if (candidate.tracks !== undefined && !Array.isArray(candidate.tracks)) {
+    return {
+      valid: false,
+      stage: 'Schema Validation',
+      error: formatProjectStageError('Schema Validation', 'Project "tracks" field must be an array.'),
+    };
+  }
+  if (
+    candidate.clip &&
+    typeof candidate.clip === 'object' &&
+    candidate.clip.fps !== undefined &&
+    (typeof candidate.clip.fps !== 'number' || !Number.isFinite(candidate.clip.fps) || candidate.clip.fps <= 0)
+  ) {
+    return {
+      valid: false,
+      stage: 'Schema Validation',
+      error: formatProjectStageError(
+        'Schema Validation',
+        `Invalid clip.fps value (${String(candidate.clip.fps)}): must be a positive finite number.`
+      ),
+    };
+  }
+
+  let trkString: string;
+  try {
+    trkString = serializeProjectToTrk(projectOrOptions);
+  } catch (err: any) {
+    return {
+      valid: false,
+      stage: 'JSON/ZIP Parse',
+      error: formatProjectStageError(
+        'JSON/ZIP Parse',
+        `Failed to serialize project payload: ${err?.message || 'Unserializable data'}`
+      ),
+    };
+  }
+
+  const check = validateAndParseProject(trkString);
+  if (!check.valid || !check.data) {
+    const stage: ProjectErrorStage = check.stage || 'Schema Validation';
+    return {
+      valid: false,
+      stage,
+      error: formatProjectStageError(
+        stage,
+        check.error || check.errors?.join('; ') || 'Serialized .trk payload failed validation'
+      ),
+    };
+  }
+
+  return {
+    valid: true,
+    trkString,
+    data: check.data,
+  };
 }
 
 /**
@@ -576,7 +874,7 @@ function parseClassicOspTrackerXml(
     };
 
     const tracks: Track[] = [];
-    const extractStepsFromBlock = (block: string): PointStep[] => {
+    const extractStepsFromBlock = (block: string, trackMassKg: number): PointStep[] => {
       const steps: PointStep[] = [];
       const frameBlockRegex =
         /<property name="\[(\d+)\]"[^>]*>[\s\S]*?<property name="x"[^>]*>\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*<\/property>[\s\S]*?<property name="y"[^>]*>\s*([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\s*<\/property>/gi;
@@ -602,7 +900,7 @@ function parseClassicOspTrackerXml(
           });
         }
       }
-      return computeKinematics(steps, 1 / clip.fps);
+      return computeKinematics(steps, trackMassKg);
     };
 
     const pmChunks = xmlText.split(/<object class="[^"]*PointMass"[^>]*>/i);
@@ -612,13 +910,17 @@ function parseClassicOspTrackerXml(
       const massMatch = block.match(
         /<property name="mass"[^>]*>\s*([+-]?\d+(?:\.\d+)?)\s*<\/property>/i
       );
-      const steps = extractStepsFromBlock(block);
+      const trackMass =
+        massMatch && Number.isFinite(Number(massMatch[1])) && Number(massMatch[1]) > 0
+          ? Number(massMatch[1])
+          : 0.1;
+      const steps = extractStepsFromBlock(block, trackMass);
       const trackIndex = i;
       tracks.push({
         id: `track-${trackIndex}`,
         name: nameMatch ? nameMatch[1].trim() : `Mass ${String.fromCharCode(64 + trackIndex)}`,
         color: trackIndex === 1 ? '#3b82f6' : trackIndex === 2 ? '#ef4444' : '#10b981',
-        mass: massMatch ? Math.max(0.001, Number(massMatch[1])) : 0.1,
+        mass: trackMass,
         footprint: 'circle',
         steps,
         visible: true,
@@ -629,7 +931,7 @@ function parseClassicOspTrackerXml(
     }
 
     if (tracks.length === 0) {
-      const fallbackSteps = extractStepsFromBlock(xmlText);
+      const fallbackSteps = extractStepsFromBlock(xmlText, 0.1);
       tracks.push({
         id: 'track-1',
         name: 'Mass A',
@@ -648,7 +950,7 @@ function parseClassicOspTrackerXml(
       analysisMode: '2D',
       experimentTitle: fallbackTitle,
       videoNameCam1: videoName,
-      clip,
+      clip: { ...clip, userTrimmed: true },
       calibration,
       axes,
       tracks,
@@ -660,8 +962,11 @@ function parseClassicOspTrackerXml(
       warnings: ['Imported Classic Open Source Physics (OSP) XML .trk project.'],
     };
   } catch (err: any) {
-    const msg = `Failed to parse OSP XML .trk file: ${err?.message || 'Malformed XML'}`;
-    return { valid: false, error: msg, errors: [msg] };
+    const msg = formatProjectStageError(
+      'JSON/ZIP Parse',
+      `Failed to parse OSP XML .trk file: ${err?.message || 'Malformed XML'}`
+    );
+    return { valid: false, stage: 'JSON/ZIP Parse', error: msg, errors: [msg] };
   }
 }
 
@@ -674,8 +979,8 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
   if (typeof jsonStringOrObj === 'string') {
     const cleaned = jsonStringOrObj.replace(/^\uFEFF/, '').trim();
     if (!cleaned) {
-      const msg = 'Project file is empty.';
-      return { valid: false, error: msg, errors: [msg] };
+      const msg = formatProjectStageError('JSON/ZIP Parse', 'Project file is empty.');
+      return { valid: false, stage: 'JSON/ZIP Parse', error: msg, errors: [msg] };
     }
 
     if (
@@ -689,9 +994,13 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     try {
       parsed = JSON.parse(cleaned);
     } catch (err: any) {
-      const msg = `JSON syntax error: ${err?.message || 'Corrupted file content'}`;
+      const msg = formatProjectStageError(
+        'JSON/ZIP Parse',
+        `JSON syntax error: ${err?.message || 'Corrupted file content'}`
+      );
       return {
         valid: false,
+        stage: 'JSON/ZIP Parse',
         error: msg,
         errors: [msg],
       };
@@ -700,9 +1009,12 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     parsed = jsonStringOrObj;
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    const msg = 'Project data must be a valid JSON object.';
-    return { valid: false, error: msg, errors: [msg] };
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const msg = formatProjectStageError(
+      'Schema Validation',
+      'Project data must be a valid JSON object.'
+    );
+    return { valid: false, stage: 'Schema Validation', error: msg, errors: [msg] };
   }
 
   // Unwrap if wrapped in `{ data: SavedProjectData }` or `{ project: SavedProjectData }`
@@ -715,19 +1027,38 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
   }
 
   if (!Array.isArray(parsed.tracks)) {
-    const msg = "Missing required 'tracks' array in project data.";
-    return { valid: false, error: msg, errors: [msg] };
+    const msg = formatProjectStageError(
+      'Schema Validation',
+      "Missing required 'tracks' array in project data."
+    );
+    return { valid: false, stage: 'Schema Validation', error: msg, errors: [msg] };
   }
 
   for (let tIdx = 0; tIdx < parsed.tracks.length; tIdx++) {
     const trk = parsed.tracks[tIdx];
     if (!trk || typeof trk !== 'object' || !Array.isArray(trk.steps)) {
-      const msg = `Track at index ${tIdx} is malformed or missing steps array.`;
+      const msg = formatProjectStageError(
+        'Schema Validation',
+        `Track at index ${tIdx} is malformed or missing steps array.`
+      );
       return {
         valid: false,
+        stage: 'Schema Validation',
         error: msg,
         errors: [msg],
       };
+    }
+  }
+
+  const rawClipCheck = parsed.camera1?.clip || parsed.clip;
+  if (rawClipCheck && rawClipCheck.fps !== undefined) {
+    const fpsNum = Number(rawClipCheck.fps);
+    if (!Number.isFinite(fpsNum) || fpsNum <= 0) {
+      const msg = formatProjectStageError(
+        'Schema Validation',
+        `Invalid clip.fps value (${String(rawClipCheck.fps)}); must be a finite number > 0.`
+      );
+      return { valid: false, stage: 'Schema Validation', error: msg, errors: [msg] };
     }
   }
 
@@ -743,7 +1074,7 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
       parsed.analysisMode === '3d_stereo' ||
       Boolean(parsed.triangulation && parsed.analysisMode !== '2D'));
 
-  const camera1Clip: ClipSettings = parsed.camera1?.clip ||
+  const rawCam1Clip: ClipSettings = parsed.camera1?.clip ||
     parsed.clip || {
       startFrame: 0,
       endFrame: 100,
@@ -755,22 +1086,20 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
       totalFrames: 100,
     };
 
-  const camera1Cal: Calibration = parsed.camera1?.calibration ||
-    parsed.calibration || {
-      active: true,
-      visible: true,
-      locked: false,
-      pointA: { x: 100, y: 100 },
-      pointB: { x: 340, y: 100 },
-      realLength: 1.0,
-      unit: 'm',
-      scale: 240,
-    };
+  const camera1Clip: ClipSettings = {
+    ...rawCam1Clip,
+    userTrimmed: true,
+  };
+
+  const camera1Cal: Calibration = normalizeCalibrationForPersistence(
+    parsed.camera1?.calibration || parsed.calibration
+  );
 
   const camera1Origin =
     parsed.camera1?.origin || parsed.triangulation?.originCam1 || { x: 320, y: 240 };
 
-  const camera2Clip: ClipSettings | undefined =
+  const rawCam2Clip: ClipSettings | undefined =
+    parsed.triangulation?.clipCam2 ||
     parsed.camera2?.clip ||
     (is3D
       ? {
@@ -779,32 +1108,55 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
         }
       : undefined);
 
+  const camera2Clip: ClipSettings | undefined = rawCam2Clip
+    ? {
+        ...rawCam2Clip,
+        userTrimmed: true,
+      }
+    : undefined;
+
   const camera2Cal: Calibration | undefined =
-    parsed.camera2?.calibration ||
-    parsed.triangulation?.calibrationCam2 ||
-    (is3D
-      ? {
-          ...camera1Cal,
-          scale: parsed.triangulation?.pixelsPerMeterCam2 || camera1Cal.scale,
-        }
-      : undefined);
+    parsed.camera2?.calibration || parsed.triangulation?.calibrationCam2
+      ? normalizeCalibrationForPersistence(
+          parsed.camera2?.calibration || parsed.triangulation?.calibrationCam2,
+          camera1Cal
+        )
+      : is3D
+      ? normalizeCalibrationForPersistence(
+          {
+            ...camera1Cal,
+            scale: parsed.triangulation?.pixelsPerMeterCam2 || camera1Cal.scale,
+          },
+          camera1Cal
+        )
+      : undefined;
 
   const camera2Origin =
     parsed.camera2?.origin || parsed.triangulation?.originCam2 || { x: 320, y: 240 };
 
+  const rawSync = parsed.synchronization || parsed.triangulation?.syncConfig;
   const synchronization: StereoSyncConfig | undefined =
-    parsed.synchronization ||
-    parsed.triangulation?.syncConfig ||
-    (is3D
-      ? {
-          anchorFrameCam1: parsed.clip?.startFrame || 0,
-          anchorFrameCam2: parsed.clip?.startFrame || 0,
-          fpsCam1: parsed.triangulation?.fpsCam1 || camera1Clip.fps,
-          fpsCam2: parsed.triangulation?.fpsCam2 || camera1Clip.fps,
-          toleranceSec: 0.005,
-          playbackMaster: 'cam1',
-        }
-      : undefined);
+    rawSync || is3D
+      ? normalizeStereoSyncConfig(
+          rawSync || {
+            anchorFrameCam1: parsed.clip?.startFrame || 0,
+            anchorFrameCam2: camera2Clip?.startFrame || parsed.clip?.startFrame || 0,
+            playbackMaster: 'both',
+          },
+          parsed.triangulation?.fpsCam1 || camera1Clip.fps,
+          parsed.triangulation?.fpsCam2 || camera2Clip?.fps || camera1Clip.fps
+        )
+      : undefined;
+
+  const restoredTriangulation: TriangulationConfig | undefined = parsed.triangulation
+    ? {
+        ...parsed.triangulation,
+        fpsCam1: parsed.triangulation.fpsCam1 || camera1Clip.fps,
+        fpsCam2: parsed.triangulation.fpsCam2 || camera2Clip?.fps || camera1Clip.fps,
+        clipCam2: camera2Clip ? { ...camera2Clip } : parsed.triangulation.clipCam2,
+        syncConfig: synchronization,
+      }
+    : undefined;
 
   const axes: CoordinateAxes = parsed.axes || {
     origin: { x: 320, y: 240 },
@@ -814,16 +1166,18 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     gridVisible: false,
   };
 
-  // Compute kinematics if steps lack velocity (vx/vy), and re-sanitize so edge-frame NaN velocities become undefined
+  // Compute kinematics ONLY if steps lack velocity (vx/vy), passing true physical mass in kg (NEVER dt!)
   const dt = 1 / Math.max(1, camera1Clip.fps || 30);
   const normalizedTracks: Track[] = parsed.tracks.map((trk: Track) => {
     const rawSteps = trk.steps || [];
+    const trackMass =
+      Number.isFinite(Number(trk.mass)) && Number(trk.mass) > 0 ? Number(trk.mass) : 1.0;
     const needsKinematics =
       rawSteps.length >= 2 && rawSteps.every((s) => s.vx === undefined && s.v === undefined);
     const computedSteps = needsKinematics
       ? is3D
-        ? computeKinematics3D(rawSteps, dt)
-        : computeKinematics(rawSteps, dt)
+        ? computeKinematics3D(rawSteps, trackMass)
+        : computeKinematics(rawSteps, trackMass)
       : rawSteps;
 
     const cleanSteps = computedSteps.map((s) =>
@@ -832,6 +1186,7 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
 
     return {
       ...trk,
+      mass: trackMass,
       steps: cleanSteps,
     };
   });
@@ -846,6 +1201,12 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     parsed.videoMetadata?.fileName ||
     parsed.experimentTitle;
 
+  const resolvedVideoNameCam2 =
+    parsed.camera2?.videoName ||
+    parsed.videoNameCam2 ||
+    parsed.videoMetadataCam2?.fileName ||
+    parsed.camera2?.videoMetadata?.fileName;
+
   const videoMetadata: VideoTelemetryMetadata = parsed.videoMetadata ||
     parsed.camera1?.videoMetadata || {
       fileName: resolvedVideoNameCam1 || 'experiment_video.mp4',
@@ -856,6 +1217,21 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
         camera1Clip.totalFrames ||
         Math.max(1, (camera1Clip.endFrame || 100) - (camera1Clip.startFrame || 0) + 1),
     };
+
+  const videoMetadataCam2: VideoTelemetryMetadata | undefined =
+    parsed.videoMetadataCam2 ||
+    parsed.camera2?.videoMetadata ||
+    (is3D && resolvedVideoNameCam2
+      ? {
+          fileName: resolvedVideoNameCam2,
+          width: 640,
+          height: 480,
+          sensorFps: camera2Clip?.fps || restoredTriangulation?.fpsCam2 || camera1Clip.fps || 30,
+          totalFrames:
+            camera2Clip?.totalFrames ||
+            Math.max(1, (camera2Clip?.endFrame ?? 100) - (camera2Clip?.startFrame ?? 0) + 1),
+        }
+      : undefined);
 
   const resolvedActiveTrackId =
     parsed.activeTrackId && normalizedTracks.some((t) => t.id === parsed.activeTrackId)
@@ -879,7 +1255,7 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     isSynthetic: parsed.isSynthetic,
     syntheticType: parsed.syntheticType,
     videoMetadata,
-    videoMetadataCam2: parsed.videoMetadataCam2 || parsed.camera2?.videoMetadata,
+    videoMetadataCam2,
     sixDofState: parsed.sixDofState,
     camera1: {
       videoName: resolvedVideoNameCam1,
@@ -892,16 +1268,16 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
     camera2:
       is3D && camera2Cal && camera2Clip
         ? {
-            videoName: parsed.camera2?.videoName || parsed.videoNameCam2,
+            videoName: resolvedVideoNameCam2,
             videoUrl: parsed.camera2?.videoUrl || parsed.videoUrlCam2,
             clip: camera2Clip,
             calibration: camera2Cal,
             origin: camera2Origin,
-            videoMetadata: parsed.videoMetadataCam2 || parsed.camera2?.videoMetadata,
+            videoMetadata: videoMetadataCam2,
           }
         : undefined,
     synchronization,
-    triangulation: parsed.triangulation,
+    triangulation: restoredTriangulation,
     calibration: camera1Cal,
     clip: camera1Clip,
     axes,
@@ -918,15 +1294,26 @@ export function validateAndParseProject(jsonStringOrObj: string | any): ParsePro
 
 /**
  * Extracts a `.zip` or `.trz` bundle using JSZip, finding any internal `.trk` or `.json`
- * project file AND any bundled video files (`.mp4`, `.avi`, `.mov`, `.wmv`, `.flv`).
+ * project file AND matching bundled media files to `cam1` / `cam2` strictly by normalized
+ * relative path first, then basename, then positional fallback, with extension-inferred MIME types.
  */
 export async function loadZipOrTrzBundle(file: File): Promise<ParseProjectResult> {
   const fileName = file.name || 'bundle.zip';
   const zip = new JSZip();
-  const loadedZip = await zip.loadAsync(file);
+  let loadedZip: JSZip;
+  try {
+    loadedZip = await zip.loadAsync(file);
+  } catch (err: any) {
+    const msg = formatProjectStageError(
+      'JSON/ZIP Parse',
+      `Failed to decompress ZIP/TRZ archive "${fileName}": ${err?.message || 'Corrupted ZIP header'}`
+    );
+    return { valid: false, stage: 'JSON/ZIP Parse', error: msg, errors: [msg] };
+  }
 
   let trkEntry: JSZip.JSZipObject | null = null;
   const videoEntries: Array<{ path: string; entry: JSZip.JSZipObject }> = [];
+  const imageEntries: Array<{ path: string; entry: JSZip.JSZipObject }> = [];
   const videoExts = [
     '.mp4',
     '.mov',
@@ -936,6 +1323,8 @@ export async function loadZipOrTrzBundle(file: File): Promise<ParseProjectResult
     '.asf',
     '.flv',
     '.f4v',
+    '.ogg',
+    '.ogv',
     '.webm',
     '.m4v',
     '.mkv',
@@ -943,9 +1332,13 @@ export async function loadZipOrTrzBundle(file: File): Promise<ParseProjectResult
     '.mpeg',
     '.gif',
   ];
+  const imageExts = ['.png', '.jpg', '.jpeg', '.webp', '.bmp'];
 
   loadedZip.forEach((relPath, entry) => {
     if (entry.dir) return;
+    if (/(^|\/)__MACOSX(\/|$)/i.test(relPath)) return;
+    const base = relPath.split('/').pop() || '';
+    if (base.startsWith('.')) return;
     const low = relPath.toLowerCase();
     if (low.endsWith('project.trk')) {
       trkEntry = entry;
@@ -953,44 +1346,111 @@ export async function loadZipOrTrzBundle(file: File): Promise<ParseProjectResult
       trkEntry = entry;
     } else if (videoExts.some((ext) => low.endsWith(ext))) {
       videoEntries.push({ path: relPath, entry });
+    } else if (imageExts.some((ext) => low.endsWith(ext))) {
+      imageEntries.push({ path: relPath, entry });
     }
   });
 
-  let videoFileCam1: File | undefined;
-  let videoFileCam2: File | undefined;
+  const normalizeZipPath = (p: string): string =>
+    p.replace(/\\/g, '/').replace(/^\/+/, '').replace(/^\.\//, '').toLowerCase();
+  const baseZipName = (p: string): string => normalizeZipPath(p).split('/').pop() || '';
 
-  if (videoEntries.length > 0) {
-    const v1 = videoEntries[0];
-    const blob1 = await v1.entry.async('blob');
-    const name1 = v1.path.split('/').pop() || 'camera1.mp4';
-    videoFileCam1 = new File([blob1], name1, { type: blob1.type || 'video/mp4' });
-  }
-  if (videoEntries.length > 1) {
-    const v2 = videoEntries[1];
-    const blob2 = await v2.entry.async('blob');
-    const name2 = v2.path.split('/').pop() || 'camera2.mp4';
-    videoFileCam2 = new File([blob2], name2, { type: blob2.type || 'video/mp4' });
-  }
+  const materializeZipEntry = async (item: {
+    path: string;
+    entry: JSZip.JSZipObject;
+  }): Promise<File> => {
+    const blob = await item.entry.async('blob');
+    const outName = item.path.replace(/\\/g, '/').split('/').pop() || 'media.bin';
+    const inferredMime = inferMediaMimeTypeFromFilename(outName);
+    const finalMime =
+      inferredMime !== 'application/octet-stream'
+        ? inferredMime
+        : blob.type || 'application/octet-stream';
+    return new File([blob], outName, { type: finalMime });
+  };
 
   if (trkEntry) {
-    const trkText = await (trkEntry as JSZip.JSZipObject).async('string');
-    const res = validateAndParseProject(trkText);
-    if (res.valid && res.data) {
-      return {
-        ...res,
-        videoFileCam1,
-        videoFileCam2,
-      };
+    let trkText: string;
+    try {
+      trkText = await (trkEntry as JSZip.JSZipObject).async('string');
+    } catch (err: any) {
+      const msg = formatProjectStageError(
+        'File Read',
+        `Could not read project descriptor inside "${fileName}": ${err?.message || 'Read failure'}`
+      );
+      return { valid: false, stage: 'File Read', error: msg, errors: [msg] };
     }
-    return res;
+
+    const res = validateAndParseProject(trkText);
+    if (!res.valid || !res.data) {
+      return res;
+    }
+
+    const allMediaPool = [...videoEntries, ...imageEntries];
+    const usedPaths = new Set<string>();
+
+    const findMatchingEntry = (expectedName?: string): { path: string; entry: JSZip.JSZipObject } | undefined => {
+      if (!expectedName || !expectedName.trim()) return undefined;
+      const normExpected = normalizeZipPath(expectedName);
+      const baseExpected = baseZipName(expectedName);
+
+      // 1. Exact normalized relative ZIP path match first (protects cam1/VID.avi vs cam2/VID.avi)
+      const exactPathMatch = allMediaPool.find(
+        (item) => !usedPaths.has(item.path) && normalizeZipPath(item.path) === normExpected
+      );
+      if (exactPathMatch) return exactPathMatch;
+
+      // 2. Case-insensitive basename match
+      const exactBaseMatch = allMediaPool.find(
+        (item) => !usedPaths.has(item.path) && baseZipName(item.path) === baseExpected
+      );
+      if (exactBaseMatch) return exactBaseMatch;
+
+      return undefined;
+    };
+
+    const expectedCam1Name = res.data.camera1?.videoName || res.data.videoMetadata?.fileName;
+    const expectedCam2Name = res.data.camera2?.videoName || res.data.videoMetadataCam2?.fileName;
+
+    let matchedCam1 = findMatchingEntry(expectedCam1Name);
+    if (matchedCam1) usedPaths.add(matchedCam1.path);
+
+    let matchedCam2 = findMatchingEntry(expectedCam2Name);
+    if (matchedCam2) usedPaths.add(matchedCam2.path);
+
+    // 3. Positional fallback ONLY when expected names did not match (prefers video entries)
+    if (!matchedCam1) {
+      matchedCam1 = videoEntries.find((item) => !usedPaths.has(item.path));
+      if (matchedCam1) usedPaths.add(matchedCam1.path);
+    }
+    if (!matchedCam2 && (res.data.analysisMode === '3D' || videoEntries.length > 1)) {
+      matchedCam2 = videoEntries.find((item) => !usedPaths.has(item.path));
+      if (matchedCam2) usedPaths.add(matchedCam2.path);
+    }
+
+    const videoFileCam1 = matchedCam1 ? await materializeZipEntry(matchedCam1) : undefined;
+    const videoFileCam2 = matchedCam2 ? await materializeZipEntry(matchedCam2) : undefined;
+
+    return {
+      ...res,
+      videoFileCam1,
+      videoFileCam2,
+    };
   }
 
-  if (videoFileCam1) {
+  // No .trk/.json descriptor: if bundle contains standalone video(s), open as video workspace
+  if (videoEntries.length > 0) {
+    const videoFileCam1 = await materializeZipEntry(videoEntries[0]);
+    const videoFileCam2 =
+      videoEntries.length > 1 ? await materializeZipEntry(videoEntries[1]) : undefined;
+
     const defaultData = serializeProject({
-      analysisMode: '2D',
+      analysisMode: videoFileCam2 ? '3D' : '2D',
       experimentTitle: fileName.replace(/\.[^/.]+$/, ''),
       videoNameCam1: videoFileCam1.name,
+      videoNameCam2: videoFileCam2?.name,
       videoFileCam1,
+      videoFileCam2,
       axes: {
         origin: { x: 320, y: 240 },
         angle: 0,
@@ -1021,9 +1481,25 @@ export async function loadZipOrTrzBundle(file: File): Promise<ParseProjectResult
     };
   }
 
+  // Phase 1 preservation: if ZIP contains no .trk/.json and no video, check for a numbered image sequence
+  const lazyImageEntries = await filterAndSortZipImageEntries(loadedZip);
+  if (lazyImageEntries.length > 0) {
+    return {
+      valid: true,
+      zipImageEntries: lazyImageEntries,
+      archiveFileName: fileName,
+    };
+  }
+
+  const msg = formatProjectStageError(
+    'JSON/ZIP Parse',
+    `Archive "${fileName}" does not contain a valid project.trk, video file, or image sequence.`
+  );
   return {
     valid: false,
-    error: `Archive ${fileName} does not contain a valid project.trk or video file.`,
+    stage: 'JSON/ZIP Parse',
+    error: msg,
+    errors: [msg],
   };
 }
 
@@ -1056,8 +1532,20 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
   try {
     const buf = await file.slice(0, 16).arrayBuffer();
     magicBytes = new Uint8Array(buf);
-  } catch {
-    // ignore slice errors in synthetic mocks
+  } catch (err: any) {
+    if (lowerName.endsWith('.trk') || lowerName.endsWith('.json') || lowerName.endsWith('.zip') || lowerName.endsWith('.trz')) {
+      const msg = formatProjectStageError(
+        'File Read',
+        `Unable to read leading bytes of "${fileName}": ${err?.message || 'File read error'}`
+      );
+      const failRes: ParseProjectResult = { valid: false, stage: 'File Read', error: msg, errors: [msg] };
+      return {
+        ...failRes,
+        kind: 'project',
+        route: 'json-trk',
+        projectResult: failRes,
+      };
+    }
   }
 
   // 1. Check ZIP magic header (`50 4B 03 04` = `PK\x03\x04`) or `.zip` / `.trz` extension
@@ -1071,6 +1559,20 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
   if (isZipMagic || lowerName.endsWith('.zip') || lowerName.endsWith('.trz')) {
     try {
       const projectResult = await loadZipOrTrzBundle(file);
+      if (
+        projectResult.valid &&
+        projectResult.zipImageEntries &&
+        projectResult.zipImageEntries.length > 0 &&
+        !projectResult.data
+      ) {
+        return {
+          ...projectResult,
+          kind: 'image-sequence',
+          route: 'zip-image-sequence',
+          zipImageEntries: projectResult.zipImageEntries,
+          archiveFileName: projectResult.archiveFileName || fileName,
+        };
+      }
       return {
         ...projectResult,
         kind: 'project',
@@ -1078,10 +1580,16 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
         projectResult,
       };
     } catch (err: any) {
-      if (isZipMagic) {
+      if (isZipMagic || lowerName.endsWith('.zip') || lowerName.endsWith('.trz')) {
+        const msg = formatProjectStageError(
+          'JSON/ZIP Parse',
+          `Could not read ZIP/TRZ archive "${fileName}": ${err?.message || 'Corrupted archive'}`
+        );
         const failRes: ParseProjectResult = {
           valid: false,
-          error: `Could not read ZIP/TRZ archive ${fileName}: ${err?.message || 'Corrupted archive'}`,
+          stage: 'JSON/ZIP Parse',
+          error: msg,
+          errors: [msg],
         };
         return {
           ...failRes,
@@ -1111,17 +1619,31 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
 
   // 2. Check XML magic prefix (`<?xml` or `<object`)
   if (leadingText.startsWith('<?xml') || leadingText.startsWith('<object')) {
-    const text = await readFileAsUtf8Text(file);
-    const projectResult = parseClassicOspTrackerXml(
-      text.replace(/^\uFEFF/, '').trim(),
-      fileName.replace(/\.[^/.]+$/, '') || 'OSP Tracker Import'
-    );
-    return {
-      ...projectResult,
-      kind: 'project',
-      route: 'osp-xml-trk',
-      projectResult,
-    };
+    try {
+      const text = await readFileAsUtf8Text(file);
+      const projectResult = parseClassicOspTrackerXml(
+        text.replace(/^\uFEFF/, '').trim(),
+        fileName.replace(/\.[^/.]+$/, '') || 'OSP Tracker Import'
+      );
+      return {
+        ...projectResult,
+        kind: 'project',
+        route: 'osp-xml-trk',
+        projectResult,
+      };
+    } catch (err: any) {
+      const msg = formatProjectStageError(
+        'File Read',
+        `Could not read XML .trk file "${fileName}": ${err?.message || 'Read error'}`
+      );
+      const failRes: ParseProjectResult = { valid: false, stage: 'File Read', error: msg, errors: [msg] };
+      return {
+        ...failRes,
+        kind: 'project',
+        route: 'osp-xml-trk',
+        projectResult: failRes,
+      };
+    }
   }
 
   // 3. Check JSON magic prefix (`{`) or `.trk` / `.json` extension
@@ -1130,43 +1652,15 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
     lowerName.endsWith('.trk') ||
     lowerName.endsWith('.json')
   ) {
+    let rawText: string;
     try {
-      const rawText = await readFileAsUtf8Text(file);
-      const cleaned = rawText.replace(/^\uFEFF/, '').trim();
-      if (cleaned.startsWith('<?xml') || cleaned.startsWith('<object')) {
-        const xmlResult = parseClassicOspTrackerXml(
-          cleaned,
-          fileName.replace(/\.[^/.]+$/, '') || 'OSP Tracker Import'
-        );
-        return {
-          ...xmlResult,
-          kind: 'project',
-          route: 'osp-xml-trk',
-          projectResult: xmlResult,
-        };
-      }
-
-      const projectResult = validateAndParseProject(cleaned);
-      if (
-        projectResult.valid &&
-        projectResult.data &&
-        (!projectResult.data.experimentTitle ||
-          projectResult.data.experimentTitle === 'Imported Tracking Project')
-      ) {
-        projectResult.data.experimentTitle =
-          fileName.replace(/\.[^/.]+$/, '') || 'Imported Tracking Project';
-      }
-      return {
-        ...projectResult,
-        kind: 'project',
-        route: 'json-trk',
-        projectResult,
-      };
+      rawText = await readFileAsUtf8Text(file);
     } catch (err: any) {
-      const failRes: ParseProjectResult = {
-        valid: false,
-        error: err?.message || 'Could not parse .trk / .json project file.',
-      };
+      const msg = formatProjectStageError(
+        'File Read',
+        `Could not read project file "${fileName}": ${err?.message || 'Read error'}`
+      );
+      const failRes: ParseProjectResult = { valid: false, stage: 'File Read', error: msg, errors: [msg] };
       return {
         ...failRes,
         kind: 'project',
@@ -1174,6 +1668,37 @@ export async function ingestWorkstationFile(file: File): Promise<IngestedWorksta
         projectResult: failRes,
       };
     }
+
+    const cleaned = rawText.replace(/^\uFEFF/, '').trim();
+    if (cleaned.startsWith('<?xml') || cleaned.startsWith('<object')) {
+      const xmlResult = parseClassicOspTrackerXml(
+        cleaned,
+        fileName.replace(/\.[^/.]+$/, '') || 'OSP Tracker Import'
+      );
+      return {
+        ...xmlResult,
+        kind: 'project',
+        route: 'osp-xml-trk',
+        projectResult: xmlResult,
+      };
+    }
+
+    const projectResult = validateAndParseProject(cleaned);
+    if (
+      projectResult.valid &&
+      projectResult.data &&
+      (!projectResult.data.experimentTitle ||
+        projectResult.data.experimentTitle === 'Imported Tracking Project')
+    ) {
+      projectResult.data.experimentTitle =
+        fileName.replace(/\.[^/.]+$/, '') || 'Imported Tracking Project';
+    }
+    return {
+      ...projectResult,
+      kind: 'project',
+      route: 'json-trk',
+      projectResult,
+    };
   }
 
   // 4. Otherwise, route to the 3-Tier Universal Video Engine
@@ -1192,9 +1717,15 @@ export async function parseProjectFile(file: File): Promise<ParseProjectResult> 
   if (ingested.kind === 'project' && ingested.projectResult) {
     return ingested.projectResult;
   }
+  const msg = formatProjectStageError(
+    'Magic-Byte Router',
+    `File "${file.name}" was classified as "${ingested.kind}" instead of a .trk or .zip project file.`
+  );
   return {
     valid: false,
-    error: `File "${file.name}" is not a valid .trk or .zip project file.`,
+    stage: 'Magic-Byte Router',
+    error: msg,
+    errors: [msg],
   };
 }
 
@@ -1630,8 +2161,27 @@ export function generateKinematicsCSV(tracks: Track[]): string {
 }
 
 /**
- * Saves project to a directory folder using File System Access API where available,
- * or packages into a self-contained ZIP bundle archive (including uploaded video if present).
+ * Streams a File directly into a FileSystemDirectoryHandle without loading multi-GB files into RAM.
+ */
+async function streamFileToDirectoryHandle(
+  dirHandle: any,
+  fileName: string,
+  file: File
+): Promise<void> {
+  const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  if (typeof file.stream === 'function' && typeof writable?.getWriter === 'function') {
+    await file.stream().pipeTo(writable);
+  } else {
+    await writable.write(file);
+    await writable.close();
+  }
+}
+
+/**
+ * Saves project to a directory folder using File System Access API where available (streaming full-size
+ * Cam 1 / Cam 2 media directly to disk with zero RAM spike and collision-safe naming),
+ * or packages into a self-contained ZIP bundle archive (with explicit >150 MB omission notice).
  */
 export async function saveProjectToFolderOrBundle(
   projectOrOptions: SavedProjectData | SerializeProjectOptions
@@ -1648,37 +2198,97 @@ export async function saveProjectToFolderOrBundle(
     ? (projectOrOptions as SerializeProjectOptions).videoFileCam2
     : undefined;
 
+  // Collision-safe dual-camera filenames (e.g. two cameras both named VID_0001.avi -> cam1_VID_0001.avi & cam2_VID_0001.avi)
+  const { nameCam1, nameCam2 } = resolveDualExportFilenames(
+    videoFileCam1?.name,
+    videoFileCam2?.name
+  );
+
+  if (videoFileCam1 && nameCam1) {
+    projectData.camera1 = {
+      ...projectData.camera1,
+      videoName: nameCam1,
+      videoMetadata: projectData.camera1.videoMetadata
+        ? { ...projectData.camera1.videoMetadata, fileName: nameCam1 }
+        : projectData.videoMetadata
+        ? { ...projectData.videoMetadata, fileName: nameCam1 }
+        : undefined,
+    };
+    if (projectData.videoMetadata) {
+      projectData.videoMetadata = { ...projectData.videoMetadata, fileName: nameCam1 };
+    }
+  }
+
+  if (videoFileCam2 && nameCam2) {
+    if (projectData.camera2) {
+      projectData.camera2 = {
+        ...projectData.camera2,
+        videoName: nameCam2,
+        videoMetadata: projectData.camera2.videoMetadata
+          ? { ...projectData.camera2.videoMetadata, fileName: nameCam2 }
+          : projectData.videoMetadataCam2
+          ? { ...projectData.videoMetadataCam2, fileName: nameCam2 }
+          : undefined,
+      };
+    }
+    if (projectData.videoMetadataCam2) {
+      projectData.videoMetadataCam2 = { ...projectData.videoMetadataCam2, fileName: nameCam2 };
+    }
+  }
+
+  // Pre-export self-validation gate: never write an unloadable project.trk
+  const validated = serializeAndValidateTrk(projectData);
+  if (!validated.valid) {
+    throw new Error(validated.error);
+  }
+  const projectJson = validated.trkString;
+
   const safeName = (projectData.experimentTitle || 'tracker_project').replace(
     /[^a-zA-Z0-9_-]/g,
     '_'
   );
-  const projectJson = serializeProjectToTrk(projectData);
   const csvContent = generateKinematicsCSV(projectData.tracks);
 
-  const readme = [
-    `Tracker / Open Source Physics – Defense Photogrammetry Project`,
-    `================================================================`,
-    `Title:        ${projectData.experimentTitle}`,
-    `Date:         ${projectData.timestamp}`,
-    `Version:      ${projectData.version}`,
-    `Analysis:     ${projectData.analysisMode}`,
-    `Tracks:       ${projectData.tracks.length} track(s)`,
-    `Total Points: ${projectData.tracks.reduce((acc, t) => acc + t.steps.length, 0)} observation(s)`,
-    ``,
-    `Files in this Project Bundle:`,
-    `- project.trk        : Complete serialized project dataset, calibration & 6-DOF configuration`,
-    `- tracking_data.csv  : Exported kinematics data table`,
-    `- README_PROJECT.txt : This project summary`,
-  ].join('\n');
+  const buildReadme = (mediaFiles: string[], omitted: string[]): string => {
+    const lines = [
+      `Tracker / Open Source Physics – Defense Photogrammetry Project`,
+      `================================================================`,
+      `Title:        ${projectData.experimentTitle}`,
+      `Date:         ${projectData.timestamp}`,
+      `Version:      ${projectData.version}`,
+      `Analysis:     ${projectData.analysisMode}`,
+      `Tracks:       ${projectData.tracks.length} track(s)`,
+      `Total Points: ${projectData.tracks.reduce((acc, t) => acc + t.steps.length, 0)} observation(s)`,
+      ``,
+      `Files in this Project Bundle:`,
+      `- project.trk        : Complete serialized project dataset, calibration & 6-DOF configuration`,
+      `- tracking_data.csv  : Exported kinematics data table`,
+      `- README_PROJECT.txt : This project summary`,
+      ...mediaFiles.map((mf) => `- ${mf} : Bundled source media`),
+    ];
+    if (omitted.length > 0) {
+      lines.push(
+        ``,
+        `OMITTED MEDIA (>150 MB IN-MEMORY ZIP CAP):`,
+        ...omitted.map((om) => `- ${om}`),
+        `Recommendation: Use "Save Project to Folder" (Directory Picker) to stream multi-GB range footage directly to disk without size limits.`
+      );
+    }
+    return lines.join('\n');
+  };
 
   const filesWritten = ['project.trk', 'tracking_data.csv', 'README_PROJECT.txt'];
 
-  // Attempt File System Access API if supported
+  // Attempt File System Access API if supported (streams full-size Cam 1 & Cam 2 videos directly to disk)
   if (typeof (window as any).showDirectoryPicker === 'function') {
     try {
       const dirHandle = await (window as any).showDirectoryPicker({
         mode: 'readwrite',
       });
+
+      const folderMediaNames: string[] = [];
+      if (videoFileCam1 && nameCam1) folderMediaNames.push(nameCam1);
+      if (videoFileCam2 && nameCam2) folderMediaNames.push(nameCam2);
 
       const fileHandleTrk = await dirHandle.getFileHandle('project.trk', { create: true });
       const writableTrk = await fileHandleTrk.createWritable();
@@ -1694,8 +2304,18 @@ export async function saveProjectToFolderOrBundle(
         create: true,
       });
       const writableReadme = await fileHandleReadme.createWritable();
-      await writableReadme.write(readme);
+      await writableReadme.write(buildReadme(folderMediaNames, []));
       await writableReadme.close();
+
+      // Stream full-size source videos directly to disk (no 150 MB cap, zero RAM spike)
+      if (videoFileCam1 && nameCam1) {
+        await streamFileToDirectoryHandle(dirHandle, nameCam1, videoFileCam1);
+        filesWritten.push(nameCam1);
+      }
+      if (videoFileCam2 && nameCam2) {
+        await streamFileToDirectoryHandle(dirHandle, nameCam2, videoFileCam2);
+        filesWritten.push(nameCam2);
+      }
 
       return {
         savedAsFolder: true,
@@ -1704,7 +2324,8 @@ export async function saveProjectToFolderOrBundle(
         filesWritten,
       };
     } catch (err: any) {
-      if (err.name === 'AbortError') {
+      // User cancelled directory picker: exit cleanly without falling back to a ZIP download
+      if (err?.name === 'AbortError') {
         throw err;
       }
       console.warn(
@@ -1714,21 +2335,38 @@ export async function saveProjectToFolderOrBundle(
     }
   }
 
-  // Fallback: Generate self-contained ZIP bundle containing project.trk + tracking_data.csv + README_PROJECT.txt + optional video
+  // Fallback: Generate self-contained ZIP bundle containing project.trk + tracking_data.csv + README_PROJECT.txt + optional video (<= 150 MB)
   const zip = new JSZip();
   zip.file('project.trk', projectJson);
   zip.file('tracking_data.csv', csvContent);
-  zip.file('README_PROJECT.txt', readme);
 
   const MAX_BUNDLE_VIDEO_BYTES = 150 * 1024 * 1024;
-  if (videoFileCam1 && videoFileCam1.size <= MAX_BUNDLE_VIDEO_BYTES) {
-    zip.file(videoFileCam1.name, videoFileCam1);
-    filesWritten.push(videoFileCam1.name);
+  const bundledMediaNames: string[] = [];
+  const omittedVideos: string[] = [];
+
+  if (videoFileCam1 && nameCam1) {
+    if (videoFileCam1.size <= MAX_BUNDLE_VIDEO_BYTES) {
+      zip.file(nameCam1, videoFileCam1);
+      filesWritten.push(nameCam1);
+      bundledMediaNames.push(nameCam1);
+    } else {
+      const sizeMb = (videoFileCam1.size / (1024 * 1024)).toFixed(1);
+      omittedVideos.push(`${nameCam1} (${sizeMb} MB)`);
+    }
   }
-  if (videoFileCam2 && videoFileCam2.size <= MAX_BUNDLE_VIDEO_BYTES) {
-    zip.file(videoFileCam2.name, videoFileCam2);
-    filesWritten.push(videoFileCam2.name);
+
+  if (videoFileCam2 && nameCam2) {
+    if (videoFileCam2.size <= MAX_BUNDLE_VIDEO_BYTES) {
+      zip.file(nameCam2, videoFileCam2);
+      filesWritten.push(nameCam2);
+      bundledMediaNames.push(nameCam2);
+    } else {
+      const sizeMb = (videoFileCam2.size / (1024 * 1024)).toFixed(1);
+      omittedVideos.push(`${nameCam2} (${sizeMb} MB)`);
+    }
   }
+
+  zip.file('README_PROJECT.txt', buildReadme(bundledMediaNames, omittedVideos));
 
   const blob = await zip.generateAsync({ type: 'blob' });
   const zipFilename = `${safeName}_project_bundle.zip`;
@@ -1745,5 +2383,6 @@ export async function saveProjectToFolderOrBundle(
     method: 'zip',
     pathOrName: zipFilename,
     filesWritten,
+    omittedVideos: omittedVideos.length > 0 ? omittedVideos : undefined,
   };
 }

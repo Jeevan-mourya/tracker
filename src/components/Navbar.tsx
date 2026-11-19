@@ -40,7 +40,7 @@ interface NavbarProps {
   currentExperimentId: string;
   currentExperimentTitle: string;
   onSelectExperiment: (exp: SampleExperiment) => void;
-  onUploadVideo: (file: File) => void;
+  onUploadVideo: (files: File | File[]) => void;
   onOpenProject?: (file: File) => void;
   onExportJSON: () => void;
   onSaveToFolder?: () => void;
@@ -176,9 +176,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   }, []);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      onUploadVideo(file);
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length > 0) {
+      onUploadVideo(files.length === 1 ? files[0] : files);
       e.target.value = '';
     }
   };
@@ -1126,6 +1126,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       <input
         ref={fileInputRef}
         type="file"
+        multiple
         accept={ACCEPTED_VIDEO_ACCEPT_STRING}
         className="hidden"
         onChange={handleFileChange}

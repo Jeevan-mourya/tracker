@@ -27,15 +27,18 @@ import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
 import { mediaDiagnostics } from '../utils/mediaDiagnostics';
-import { AviHighSpeedLoader } from '../video/aviHighSpeedLoader';
+import { CodecDiagnosticNotice, UnifiedFrameSource } from '../video/unifiedFrameSource';
+import { CodecDiagnosticCard } from './CodecDiagnosticCard';
 
 interface VideoPlayerViewProps {
   videoUrl: string;
-  aviLoader?: AviHighSpeedLoader | null;
+  aviLoader?: UnifiedFrameSource | null;
+  codecDiagnostic?: CodecDiagnosticNotice | null;
+  onClearCodecDiagnostic?: () => void;
   isSynthetic: boolean;
   syntheticType?: string;
   fileName?: string;
-  onUploadVideo?: (file: File) => void;
+  onUploadVideo?: (files: File | File[]) => void;
   onOpenFormatsModal?: (tab?: FormatsModalTab) => void;
   tracks: Track[];
   activeTrackId: string;
@@ -78,6 +81,8 @@ type DragTarget =
 export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   videoUrl,
   aviLoader,
+  codecDiagnostic = null,
+  onClearCodecDiagnostic,
   isSynthetic,
   syntheticType,
   tracks,
@@ -117,7 +122,6 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const hiddenFileInputRef = useRef<HTMLInputElement | null>(null);
-  const imageRef = useRef<HTMLImageElement | null>(null);
   const aviBitmapRef = useRef<ImageBitmap | null>(null);
   const aviImageDataRef = useRef<ImageData | null>(null);
 
@@ -133,10 +137,14 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const [videoError, setVideoError] = useState<string | null>(null);
   const [copiedFixCmd, setCopiedFixCmd] = useState<boolean>(false);
   const [isDraggingFile, setIsDraggingFile] = useState<boolean>(false);
+  const [decodedFrameTick, setDecodedFrameTick] = useState<number>(0);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isGif = Boolean(videoUrl?.toLowerCase().includes('.gif') || fileName?.toLowerCase().endsWith('.gif'));
   const isChunkedAvi = Boolean(aviLoader && aviLoader.metadata);
+  const isGif = false; // GIFs now decode frame-accurately through AnimatedGifLoader (UnifiedFrameSource)
+  const isSingleFrameSource = Boolean(
+    clip.totalFrames <= 1 || clip.endFrame <= clip.startFrame || aviLoader?.metadata?.isSingleFrame
+  );
 
   // Capture composite snapshot (video frame + tracking marks & overlays) for PDF reports
   const captureSnapshot = useCallback((): string | null => {
@@ -148,7 +156,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     const ctx = offscreen.getContext('2d');
     if (!ctx) return null;
 
-    // 1. Draw raw video / image frame
+    // 1. Draw raw video / UnifiedFrameSource frame
     if (!isSynthetic) {
       if (isChunkedAvi && aviBitmapRef.current) {
         try {
@@ -156,9 +164,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         } catch {
           // ignore
         }
-      } else if (isGif && imageRef.current && imageRef.current.complete) {
+      } else if (isChunkedAvi && aviImageDataRef.current) {
         try {
-          ctx.drawImage(imageRef.current, 0, 0, canvas.width, canvas.height);
+          ctx.putImageData(aviImageDataRef.current, 0, 0);
         } catch {
           // ignore
         }
@@ -313,16 +321,23 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const activeTrack = tracks.find((t) => t.id === activeTrackId) || tracks[0];
   const activeStep = activeTrack?.steps.find((s) => s.frame === currentFrame);
 
-  // Physical time calculations
-  const currentTime = (clip.startTime ?? 0) + (currentFrame - clip.startFrame) * (1 / clip.fps);
+  // Physical time calculations (uses exact GIF89a monotonic timestamps when available)
+  const currentTime =
+    isChunkedAvi && aviLoader?.getFrameTimestampSec && aviLoader.sourceKind === 'gif'
+      ? (clip.startTime ?? 0) + aviLoader.getFrameTimestampSec(currentFrame)
+      : (clip.startTime ?? 0) + (currentFrame - clip.startFrame) * (1 / Math.max(0.001, clip.fps));
 
   // Container playback fps (for seeking MP4/AVI files that were recorded at 1,000-100,000 fps but packaged at 30/60 fps)
-  const containerFps = clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps);
+  const containerFps = clip.playbackFps || (clip.fps > 240 ? 30 : Math.max(1, clip.fps));
 
   // Authoritative Play/Pause Toggle
   const handleTogglePlay = useCallback(() => {
+    if (isSingleFrameSource) {
+      setIsPlaying(false);
+      return;
+    }
     const video = videoRef.current;
-    if (!isSynthetic && !isGif && !isChunkedAvi && video) {
+    if (!isSynthetic && !isChunkedAvi && video) {
       if (isPlaying) {
         video.pause();
         setIsPlaying(false);
@@ -349,7 +364,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     } else {
       setIsPlaying((prev) => !prev);
     }
-  }, [isPlaying, isSynthetic, isGif, isChunkedAvi, playbackRate, currentFrame, clip.endFrame, clip.startFrame, containerFps]);
+  }, [isSingleFrameSource, isPlaying, isSynthetic, isChunkedAvi, playbackRate, currentFrame, clip.endFrame, clip.startFrame, containerFps]);
 
   // Explicit Manual Stepping (stops playback and seeks)
   const handleStepPrev = useCallback(() => {
@@ -501,16 +516,20 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     lastReportedFrameRef.current = currentFrame;
   }, [currentFrame, isPlaying, isSynthetic, isGif, isChunkedAvi, containerFps, videoUrl]);
 
-  // 3. Synthetic simulation, animated GIF, or Zero-Copy RIFF/OpenDML .AVI frame ticker
+  // 3. Synthetic simulation or UnifiedFrameSource (.AVI, .MOV stbl, .GIF, image sequence) frame ticker
   useEffect(() => {
-    if (!isPlaying || (!isSynthetic && !isGif && !isChunkedAvi)) return;
+    if (!isPlaying || (!isSynthetic && !isChunkedAvi)) return;
+    if (isSingleFrameSource) {
+      setIsPlaying(false);
+      return;
+    }
 
     let animationFrameId: number;
     const loopId = 'synthetic_playback_tick';
     mediaDiagnostics.registerLoop(loopId, 'raf');
 
     let lastTime = performance.now();
-    const playFps = Math.min(60, containerFps);
+    const playFps = Math.min(60, Math.max(1, containerFps));
     const interval = (1000 / playFps) / playbackRate;
 
     const tick = (now: number) => {
@@ -536,9 +555,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       cancelAnimationFrame(animationFrameId);
       mediaDiagnostics.unregisterLoop(loopId);
     };
-  }, [isPlaying, isSynthetic, isGif, isChunkedAvi, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, containerFps, playbackRate, isLooping, onFrameChange]);
+  }, [isPlaying, isSingleFrameSource, isSynthetic, isChunkedAvi, currentFrame, clip.stepSize, clip.startFrame, clip.endFrame, containerFps, playbackRate, isLooping, onFrameChange]);
 
-  // Handle video metadata loading to configure frames & size
+  // Handle video metadata loading to configure frames & size without destroying user clip trims
   const handleLoadedMetadata = useCallback(() => {
     if (isChunkedAvi) return;
     const video = videoRef.current;
@@ -555,13 +574,47 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
     const duration = video.duration;
     if (Number.isFinite(duration) && duration > 0) {
-      const totalFrames = Math.max(10, Math.round(duration * clip.fps));
-      onUpdateClip({
-        totalFrames,
-        endFrame: totalFrames - 1,
-      });
+      // NEVER multiply container duration by high-speed sensor clip.fps (e.g. 10s * 1000 fps = 10,000)
+      const safeContainerFps = Math.max(1, containerFps || 30);
+      const containerTotalFrames = Math.max(1, Math.round(duration * safeContainerFps));
+      const maxFrameIdx = Math.max(0, containerTotalFrames - 1);
+
+      const isUninitializedSentinel =
+        !clip.userTrimmed && clip.totalFrames === 10000 && clip.endFrame === 9999;
+      const hasValidUserTrim =
+        !isUninitializedSentinel &&
+        (clip.userTrimmed === true ||
+          (clip.endFrame >= clip.startFrame &&
+            clip.endFrame <= maxFrameIdx &&
+            clip.totalFrames > 0));
+
+      if (hasValidUserTrim) {
+        const clampedStart = Math.max(0, Math.min(clip.startFrame, maxFrameIdx));
+        const clampedEnd = Math.max(clampedStart, Math.min(clip.endFrame, maxFrameIdx));
+        if (
+          clip.totalFrames !== containerTotalFrames ||
+          clampedStart !== clip.startFrame ||
+          clampedEnd !== clip.endFrame
+        ) {
+          onUpdateClip({
+            totalFrames: containerTotalFrames,
+            startFrame: clampedStart,
+            endFrame: clampedEnd,
+          });
+        }
+      } else {
+        const clampedStart = isUninitializedSentinel ? 0 : Math.min(clip.startFrame, maxFrameIdx);
+        const clampedEnd = isUninitializedSentinel
+          ? maxFrameIdx
+          : Math.max(clampedStart, Math.min(clip.endFrame, maxFrameIdx));
+        onUpdateClip({
+          totalFrames: containerTotalFrames,
+          startFrame: clampedStart,
+          endFrame: clampedEnd,
+        });
+      }
     }
-  }, [clip.fps, onUpdateClip, isChunkedAvi]);
+  }, [containerFps, clip.startFrame, clip.endFrame, clip.totalFrames, clip.userTrimmed, onUpdateClip, isChunkedAvi]);
 
   // 4. Safe video reload and session reset when videoUrl changes
   useEffect(() => {
@@ -648,7 +701,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     ctx.clearRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = zoom < 3.0;
 
-    // 0. Paint video frame, Zero-Copy RIFF/OpenDML .AVI frame, or animated GIF directly to canvas if present
+    // 0. Paint video frame or UnifiedFrameSource (.AVI, .MOV stbl, .GIF, Image Sequence, Single Image) directly to canvas
     if (!isSynthetic) {
       if (isChunkedAvi && aviLoader?.metadata) {
         if (aviBitmapRef.current) {
@@ -663,25 +716,6 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           } catch {
             // ignore
           }
-        }
-        // Subtle HUD telemetry for Universal Zero-Copy Demuxer (.AVI / .MOV / .FLV / .WMV)
-        ctx.save();
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
-        ctx.fillRect(10, 10, 440, 22);
-        ctx.fillStyle = '#38bdf8';
-        ctx.font = 'bold 10px monospace';
-        const meta = aviLoader.metadata;
-        ctx.fillText(
-          `UNIVERSAL DEMUX [${meta.compressionFourCC.trim()}] · ${meta.width}x${meta.height} · ${(meta.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB · Index ${(meta.indexMemoryBytes / 1024).toFixed(1)} KB`,
-          16,
-          24
-        );
-        ctx.restore();
-      } else if (isGif && imageRef.current && imageRef.current.complete) {
-        try {
-          ctx.drawImage(imageRef.current, 0, 0, width, height);
-        } catch {
-          // ignore
         }
       } else if (videoRef.current && videoRef.current.readyState >= 2) {
         try {
@@ -1307,25 +1341,30 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     pan.y,
   ]);
 
-  // Decode single frame on-demand when Zero-Copy .AVI loader is active
+  // Decode single frame on-demand when UnifiedFrameSource (.AVI, .MOV stbl, .GIF, Image Sequence) is active
   useEffect(() => {
     if (!isChunkedAvi || !aviLoader) {
       aviBitmapRef.current = null;
       aviImageDataRef.current = null;
       return;
     }
+    setVideoError(null);
     let cancelled = false;
     aviLoader
-      .getFrameBitmap(currentFrame)
+      .getFrame(currentFrame)
       .then(async (bmp) => {
         if (cancelled) return;
         if (bmp) {
           aviBitmapRef.current = bmp;
+          aviImageDataRef.current = null;
+          setDecodedFrameTick((t) => t + 1);
           renderCanvas();
         } else {
           const imgData = await aviLoader.getFrameImageData(currentFrame);
           if (!cancelled && imgData) {
+            aviBitmapRef.current = null;
             aviImageDataRef.current = imgData;
+            setDecodedFrameTick((t) => t + 1);
             renderCanvas();
           }
         }
@@ -1363,12 +1402,12 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     lCtx.clearRect(0, 0, lWidth, lHeight);
     lCtx.imageSmoothingEnabled = false;
 
-    // 1. Draw raw video / sensor frame background into loupe first
+    // 1. Draw raw video or UnifiedFrameSource ImageBitmap background into 8x loupe first
     if (!isSynthetic) {
-      if (isGif && imageRef.current && imageRef.current.complete) {
+      if (isChunkedAvi && aviBitmapRef.current) {
         try {
           lCtx.drawImage(
-            imageRef.current,
+            aviBitmapRef.current,
             sourceX,
             sourceY,
             sourceW,
@@ -1379,9 +1418,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             lHeight
           );
         } catch {
-          // ignore potential frame read error
+          // ignore potential bitmap read error
         }
-      } else if (videoRef.current && videoRef.current.readyState >= 2) {
+      } else if (!isChunkedAvi && videoRef.current && videoRef.current.readyState >= 2) {
         try {
           lCtx.drawImage(
             videoRef.current,
@@ -1479,9 +1518,10 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     mouseCoord,
     canvasSize,
     currentFrame,
+    decodedFrameTick,
     videoUrl,
     isSynthetic,
-    isGif,
+    isChunkedAvi,
     tracks,
     calibration,
     axes,
@@ -1710,8 +1750,11 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           e.preventDefault();
           setIsDraggingFile(false);
           setVideoError(null);
-          const file = e.dataTransfer.files?.[0];
-          if (file) onUploadVideo?.(file);
+          onClearCodecDiagnostic?.();
+          const dropped = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+          if (dropped.length > 0) {
+            onUploadVideo?.(dropped.length === 1 ? dropped[0] : dropped);
+          }
         }}
         className="relative flex-1 bg-[#0F172A] min-h-0 overflow-hidden select-none"
       >
@@ -1796,7 +1839,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           <div className="bg-[#F1F3F5]/95 border border-[#CBD5E1] rounded-[3px] px-2 py-0.5 text-[11px] font-mono text-[#1E293B] flex items-center gap-1.5 shadow-xs">
             <span className="w-2 h-2 rounded-full bg-[#2563EB]" />
             <span>
-              Frame: <strong className="text-[#1E293B] font-bold">{currentFrame}</strong> / {clip.totalFrames - 1}
+              Frame: <strong className="text-[#1E293B] font-bold">{currentFrame}</strong> / {Math.max(0, clip.totalFrames - 1)}
             </span>
             <span className="text-[#2563EB] ml-1 font-bold">
               (t = {formatHighSpeedTime(currentTime, clip.fps, clip.timeUnit)})
@@ -1923,9 +1966,9 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         {isDraggingFile && (
           <div className="absolute inset-0 z-40 bg-[#1e3a5f]/85 border-2 border-dashed border-white text-white flex flex-col items-center justify-center pointer-events-none p-4 backdrop-blur-xs">
             <Upload className="w-12 h-12 mb-2 animate-bounce" />
-            <p className="text-sm font-bold">Drop Video to Load into Tracker</p>
+            <p className="text-sm font-bold">Drop Video, Image Sequence, or Project</p>
             <p className="text-xs text-blue-200 mt-1">
-              Accepts .MP4, .AVI, .WMV, .FLV, .MOV, .MKV, .WEBM, .GIF, .TRZ, .ZIP
+              Accepts .MP4, .AVI, .MOV, .WMV, .FLV, .OGG, .WEBM, .MKV, .GIF, .PNG/.JPG/.BMP/.WEBP, .TRK/.TRZ/.ZIP
             </p>
           </div>
         )}
@@ -1934,16 +1977,29 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         <input
           ref={hiddenFileInputRef}
           type="file"
+          multiple
           accept={ACCEPTED_VIDEO_ACCEPT_STRING}
           className="hidden"
           onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) {
+            const files = e.target.files ? Array.from(e.target.files) : [];
+            if (files.length > 0) {
               setVideoError(null);
-              onUploadVideo?.(file);
+              onClearCodecDiagnostic?.();
+              onUploadVideo?.(files.length === 1 ? files[0] : files);
+              e.target.value = '';
             }
           }}
         />
+
+        {/* Tier 3 Inline Codec Diagnostic Card (unscaled viewport-level overlay) */}
+        {codecDiagnostic && (
+          <CodecDiagnosticCard
+            diagnostic={codecDiagnostic}
+            onSelectAnotherFile={() => hiddenFileInputRef.current?.click()}
+            onOpenFormatsModal={onOpenFormatsModal}
+            onDismiss={onClearCodecDiagnostic}
+          />
+        )}
 
         {/* Transformed Video & Canvas Scene Viewport */}
         <div
@@ -1965,31 +2021,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
           }}
           className="rounded-[2px] overflow-hidden border border-[#555555] shadow-2xl bg-black select-none"
         >
-          {/* Animated GIF / Image Sequence View */}
-          {!isSynthetic && isGif && (
-            <img
-              ref={imageRef}
-              src={normalizeVideoUrl(videoUrl)}
-              alt="Tracked physics media"
-              onLoad={(e) => {
-                const img = e.currentTarget;
-                if (img.naturalWidth && img.naturalHeight) {
-                  setCanvasSize({ width: img.naturalWidth, height: img.naturalHeight });
-                }
-              }}
-              className="block"
-              style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'fill',
-                display: 'block',
-                imageRendering: zoom >= 3.0 ? 'pixelated' : 'auto',
-              }}
-            />
-          )}
-
-          {/* Real HTML5 Video element */}
-          {!isSynthetic && !isGif && (
+          {/* Real HTML5 Video element (NEVER mounted when UnifiedFrameSource is active) */}
+          {!isSynthetic && !isGif && !isChunkedAvi && Boolean(videoUrl) && (
             <video
               ref={(el) => {
                 videoRef.current = el;
@@ -2066,6 +2099,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                 if (isPlaying) renderCanvas();
               }}
               onError={(e) => {
+                if (isChunkedAvi) return;
                 const mediaError = (e.target as HTMLVideoElement)?.error;
                 mediaDiagnostics.logEvent('primary', 'error', videoRef.current);
                 if (mediaError) {
@@ -2093,13 +2127,13 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             />
           )}
 
-          {/* Video Codec / Stream Error Diagnostic Card */}
-          {videoError && (
+          {/* Video Codec / Stream Error Diagnostic Card (fallback for runtime <video> MediaError) */}
+          {videoError && !codecDiagnostic && !isChunkedAvi && (
             <div className="absolute inset-0 z-30 bg-slate-900/95 text-white flex flex-col items-center justify-center p-6 text-center select-text">
               <AlertCircle className="w-10 h-10 text-amber-400 mb-2 animate-pulse" />
               <h4 className="font-bold text-sm mb-1 text-white">Video Stream Codec Notice</h4>
               <p className="text-xs text-slate-300 max-w-lg mb-2 leading-relaxed">
-                The file container was recognized, but this specific file is encoded with an obsolete, proprietary, or unsupported codec (e.g. 1990s Indeo AVI, Cinepak, MPEG-1, or raw sensor stream) that cannot be decoded by Chromium's hardware pipeline.
+                {videoError}
               </p>
 
               {/* 1-Click Transcode Command Box */}
@@ -2110,7 +2144,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                     type="button"
                     onClick={() => {
                       const baseName = fileName ? fileName.replace(/\.[^/.]+$/, '') : 'input';
-                      const cmd = `ffmpeg -i "${fileName || 'input.avi'}" -c:v libx264 -crf 18 -pix_fmt yuv420p "${baseName}_converted.mp4"`;
+                      const cmd = `ffmpeg -i "${fileName || 'input.avi'}" -c:v libx264 -preset fast -crf 18 -g 1 -pix_fmt yuv420p "${baseName}_allintra.mp4"`;
                       navigator.clipboard.writeText(cmd);
                       setCopiedFixCmd(true);
                       setTimeout(() => setCopiedFixCmd(false), 2200);
@@ -2125,7 +2159,7 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                   </button>
                 </div>
                 <code className="text-[10px] font-mono text-emerald-400 block break-all select-all">
-                  ffmpeg -i &quot;{fileName || 'input.avi'}&quot; -c:v libx264 -crf 18 -pix_fmt yuv420p &quot;{fileName ? fileName.replace(/\.[^/.]+$/, '') : 'input'}_converted.mp4&quot;
+                  ffmpeg -i &quot;{fileName || 'input.avi'}&quot; -c:v libx264 -preset fast -crf 18 -g 1 -pix_fmt yuv420p &quot;{fileName ? fileName.replace(/\.[^/.]+$/, '') : 'input'}_allintra.mp4&quot;
                 </code>
               </div>
 
@@ -2145,24 +2179,6 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
                     className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white text-xs font-semibold rounded-[2px] transition-colors cursor-pointer"
                   >
                     Video Preparation Tips (FFmpeg)
-                  </button>
-                )}
-                {onOpenFormatsModal && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenFormatsModal('why-codecs')}
-                    className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-[2px] transition-colors cursor-pointer"
-                  >
-                    Why Original Tracker Worked
-                  </button>
-                )}
-                {onOpenFormatsModal && (
-                  <button
-                    type="button"
-                    onClick={() => onOpenFormatsModal('converters')}
-                    className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold rounded-[2px] transition-colors cursor-pointer"
-                  >
-                    Universal Converters (HandBrake)
                   </button>
                 )}
               </div>
@@ -2252,17 +2268,19 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="video-frame-slider"
               type="range"
               min={clip.startFrame}
-              max={clip.endFrame}
+              max={Math.max(clip.startFrame, clip.endFrame)}
               step={1}
-              value={currentFrame}
+              value={Math.min(Math.max(currentFrame, clip.startFrame), Math.max(clip.startFrame, clip.endFrame))}
+              disabled={isSingleFrameSource}
               onChange={(e) => {
                 if (videoRef.current && !videoRef.current.paused) {
                   videoRef.current.pause();
                   setIsPlaying(false);
                 }
-                onFrameChange(parseInt(e.target.value, 10));
+                const next = parseInt(e.target.value, 10);
+                if (Number.isFinite(next)) onFrameChange(next);
               }}
-              className="w-full h-2 bg-transparent rounded-[2px] appearance-none cursor-pointer focus:outline-none z-2"
+              className="w-full h-2 bg-transparent rounded-[2px] appearance-none cursor-pointer disabled:opacity-45 disabled:cursor-default focus:outline-none z-2"
             />
           </div>
 
@@ -2285,7 +2303,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-first-frame"
               type="button"
               onClick={handleJumpStart}
-              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
+              disabled={isSingleFrameSource}
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] disabled:opacity-40 disabled:pointer-events-none text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Jump to Start Frame (Home)"
             >
               <SkipBack className="w-3.5 h-3.5" />
@@ -2294,7 +2313,8 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-prev-frame"
               type="button"
               onClick={handleStepPrev}
-              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
+              disabled={isSingleFrameSource}
+              className="p-1.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] disabled:opacity-40 disabled:pointer-events-none text-[#1E293B] border border-[#CBD5E1] transition-colors active:scale-95 cursor-pointer"
               title="Step Backward (← Left Arrow)"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -2303,11 +2323,12 @@ export const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               id="btn-play-pause"
               type="button"
               onClick={handleTogglePlay}
-              className="px-3 py-1 rounded-[3px] bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold text-xs flex items-center gap-1 transition-all border border-[#1D4ED8] active:scale-95 cursor-pointer"
-              title={isPlaying ? 'Pause video (Space)' : 'Play video (Space)'}
+              disabled={isSingleFrameSource}
+              className="px-3 py-1 rounded-[3px] bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-45 disabled:pointer-events-none text-white font-semibold text-xs flex items-center gap-1 transition-all border border-[#1D4ED8] active:scale-95 cursor-pointer"
+              title={isSingleFrameSource ? 'Single-frame image source' : isPlaying ? 'Pause video (Space)' : 'Play video (Space)'}
             >
               {isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-              <span>{isPlaying ? 'Pause' : 'Play'}</span>
+              <span>{isSingleFrameSource ? 'Still' : isPlaying ? 'Pause' : 'Play'}</span>
             </button>
             <button
               id="btn-next-frame"

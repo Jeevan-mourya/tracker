@@ -15,7 +15,20 @@
  *        loads, scrubs frame-accurately, and works seamlessly with `autoTracker.ts`.
  */
 
-import { AviHighSpeedLoader, AviStreamMetadata, AviFrameIndexTable } from './aviHighSpeedLoader';
+import {
+  AviHighSpeedLoader,
+  AviStreamMetadata,
+  COMPRESSED_NON_RAW_FOURCCS,
+} from './aviHighSpeedLoader';
+import { AnimatedGifLoader } from './animatedGifLoader';
+import { ImageSequenceLoader } from './imageSequenceLoader';
+import {
+  buildFfmpegTranscodeCommand,
+  CodecDiagnosticNotice,
+  isGifFile,
+  isImageFile,
+  UnifiedFrameSource,
+} from './unifiedFrameSource';
 
 declare global {
   interface Window {
@@ -39,7 +52,19 @@ declare global {
   }
 }
 
-export type VideoContainerFormat = 'MP4' | 'AVI' | 'MOV' | 'WMV' | 'FLV' | 'WEBM' | 'MKV' | 'OTHER';
+export type VideoContainerFormat =
+  | 'MP4'
+  | 'AVI'
+  | 'MOV'
+  | 'WMV'
+  | 'FLV'
+  | 'OGG'
+  | 'WEBM'
+  | 'MKV'
+  | 'GIF'
+  | 'IMAGE'
+  | 'IMAGE_SEQUENCE'
+  | 'OTHER';
 
 export interface MagicByteInspection {
   container: VideoContainerFormat;
@@ -64,12 +89,16 @@ export interface UniversalVideoLoadResult {
   fps: number;
   totalFrames: number;
   durationSec: number;
-  /** Non-null when decoded via frame-indexed zero-copy loader (compatible with AviHighSpeedLoader & autoTracker.ts) */
-  frameLoader: AviHighSpeedLoader | null;
-  /** Object URL for native <video> playback (or transcoded all-intra H.264 MP4 stream) */
+  /** Non-null when decoded via frame-indexed UnifiedFrameSource (.AVI, .MOV stbl, .GIF, image sequences, single images) */
+  frameLoader: UnifiedFrameSource | null;
+  /** Object URL for native <video> playback (or transcoded all-intra H.264 MP4 stream); empty when rejected */
   videoUrl: string;
-  /** True if decoded via Tier 3 FFmpeg / Universal Bridge */
+  /** True if decoded via Tier 3 FFmpeg Bridge */
   usedCodecBridge: boolean;
+  /** True when the browser cannot decode this container/codec natively and requires Electron FFmpeg bridge or external transcode */
+  requiresDesktopFfmpegBridge?: boolean;
+  /** Structured inline diagnostic notice for unsupported browser codecs (never fake pixels) */
+  diagnostic?: CodecDiagnosticNotice;
   diagnosticsSummary: string;
 }
 
@@ -120,6 +149,74 @@ export async function inspectVideoMagicHeader(
   const view = new DataView(headBuf);
   const signatureHex = toHexBytes(bytes, 16);
 
+  // 0A. Animated GIF ('GIF87a' / 'GIF89a')
+  if (
+    (bytes.byteLength >= 6 &&
+      bytes[0] === 0x47 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x38 &&
+      (bytes[4] === 0x37 || bytes[4] === 0x39) &&
+      bytes[5] === 0x61) ||
+    ext === 'gif'
+  ) {
+    const w = bytes.byteLength >= 10 ? bytes[6] | (bytes[7] << 8) : 640;
+    const h = bytes.byteLength >= 10 ? bytes[8] | (bytes[9] << 8) : 480;
+    return {
+      container: 'GIF',
+      signatureHex,
+      detectedFourCC: 'GIF89a',
+      width: w || 640,
+      height: h || 480,
+      fps: 30,
+      totalFrames: 1,
+      durationSec: 1 / 30,
+      isInterFrameCompressed: false,
+      requiresCodecBridge: false,
+    };
+  }
+
+  // 0B. Still Image (PNG, JPEG, BMP, WebP)
+  const isPngMagic =
+    bytes.byteLength >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  const isJpegMagic = bytes.byteLength >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isBmpMagic = bytes.byteLength >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d;
+  const isWebpMagic =
+    bytes.byteLength >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50;
+
+  if (
+    isPngMagic ||
+    isJpegMagic ||
+    isBmpMagic ||
+    isWebpMagic ||
+    ['png', 'jpg', 'jpeg', 'bmp', 'webp'].includes(ext)
+  ) {
+    return {
+      container: 'IMAGE',
+      signatureHex,
+      detectedFourCC: ext.toUpperCase() || 'IMG',
+      width: 640,
+      height: 480,
+      fps: 30,
+      totalFrames: 1,
+      durationSec: 1 / 30,
+      isInterFrameCompressed: false,
+      requiresCodecBridge: false,
+    };
+  }
+
   // 1. RIFF / OpenDML .AVI: 52 49 46 46 ... 41 56 49 20
   if (
     bytes.byteLength >= 12 &&
@@ -144,18 +241,22 @@ export async function inspectVideoMagicHeader(
         'DIB',
         'RGB',
         'BGR',
+        'RGBA',
+        'BGRA',
+        'ARGB',
         'Y800',
         'GREY',
         'Y8',
         'Y16',
         'UYVY',
+        '2VUY',
         'YUY2',
         'YUYV',
         'NV12',
         'I420',
         'YV12',
       ]);
-      const isInterFrame = !zeroCopyCodecs.has(fcc);
+      const isInterFrame = COMPRESSED_NON_RAW_FOURCCS.has(fcc) || !zeroCopyCodecs.has(fcc);
       return {
         container: 'AVI',
         signatureHex,
@@ -166,7 +267,7 @@ export async function inspectVideoMagicHeader(
         totalFrames: meta.totalFrames,
         durationSec: meta.durationSec,
         isInterFrameCompressed: isInterFrame,
-        requiresCodecBridge: false,
+        requiresCodecBridge: isInterFrame,
       };
     } catch {
       return {
@@ -178,8 +279,8 @@ export async function inspectVideoMagicHeader(
         fps: 30,
         totalFrames: 60,
         durationSec: 2,
-        isInterFrameCompressed: false,
-        requiresCodecBridge: false,
+        isInterFrameCompressed: true,
+        requiresCodecBridge: true,
       };
     }
   }
@@ -236,6 +337,72 @@ export async function inspectVideoMagicHeader(
     };
   }
 
+  // 3B. Ogg / Ogv Container: 4F 67 67 53 ('OggS')
+  if (
+    (bytes.byteLength >= 4 &&
+      bytes[0] === 0x4f &&
+      bytes[1] === 0x67 &&
+      bytes[2] === 0x67 &&
+      bytes[3] === 0x53) ||
+    ext === 'ogg' ||
+    ext === 'ogv'
+  ) {
+    let asciiHead = '';
+    const scanLen = Math.min(bytes.byteLength, 256);
+    for (let i = 0; i < scanLen; i++) {
+      const c = bytes[i];
+      asciiHead += c >= 32 && c <= 126 ? String.fromCharCode(c) : ' ';
+    }
+    const detectedFourCC = asciiHead.includes('theora')
+      ? 'THEORA'
+      : asciiHead.includes('VP80')
+      ? 'VP80'
+      : 'OGG';
+    return {
+      container: 'OGG',
+      signatureHex,
+      detectedFourCC,
+      width: 640,
+      height: 480,
+      fps: 30,
+      totalFrames: 60,
+      durationSec: 2,
+      isInterFrameCompressed: true,
+      requiresCodecBridge: false,
+    };
+  }
+
+  // 3C. EBML WebM / Matroska MKV: 1A 45 DF A3
+  if (
+    (bytes.byteLength >= 4 &&
+      bytes[0] === 0x1a &&
+      bytes[1] === 0x45 &&
+      bytes[2] === 0xdf &&
+      bytes[3] === 0xa3) ||
+    ext === 'webm' ||
+    ext === 'mkv'
+  ) {
+    let ebmlHead = '';
+    const scanLen = Math.min(bytes.byteLength, 128);
+    for (let i = 0; i < scanLen; i++) {
+      const c = bytes[i];
+      ebmlHead += c >= 32 && c <= 126 ? String.fromCharCode(c) : ' ';
+    }
+    const isWebm = ebmlHead.toLowerCase().includes('webm') || ext === 'webm';
+    return {
+      container: isWebm ? 'WEBM' : 'MKV',
+      signatureHex,
+      detectedFourCC: isWebm ? 'VP9/VP8' : 'MATROSKA',
+      width: 640,
+      height: 480,
+      fps: 30,
+      totalFrames: 60,
+      durationSec: 2,
+      isInterFrameCompressed: true,
+      requiresCodecBridge: false,
+    };
+  }
+
   // 4. QuickTime .MOV or ISO-BMFF .MP4 ('ftyp', 'moov', 'mdat', 'wide', 'free')
   const boxType = bytes.byteLength >= 8 ? readAscii(view, 4, 4) : '';
   const majorBrand = bytes.byteLength >= 12 ? readAscii(view, 8, 4) : '';
@@ -259,6 +426,7 @@ export async function inspectVideoMagicHeader(
     const movInfo = parseIsoBmffQuickTimeHeader(view);
     const fcc = movInfo.codecFourCC || (isMov ? 'qt  ' : 'avc1');
     const legacyMovCodecs = new Set(['SVQ1', 'SVQ3', 'cvid', 'rle ', 'rpza', 'smc ', 'apch', 'apcn', 'apcs', 'apco', 'ap4h']);
+    const zeroCopyMovCodecs = new Set(['jpeg', 'mjpa', 'mjpb', 'raw ', 'png ', '2vuy', 'BGRA', 'ARGB', 'RGBA', 'Y800']);
     return {
       container: isMov ? 'MOV' : 'MP4',
       signatureHex,
@@ -268,7 +436,7 @@ export async function inspectVideoMagicHeader(
       fps: movInfo.fps || 30,
       totalFrames: movInfo.totalFrames || 60,
       durationSec: movInfo.durationSec || 2,
-      isInterFrameCompressed: fcc !== 'jpeg' && fcc !== 'mjpa' && fcc !== 'mjpb' && fcc !== 'raw ' && fcc !== 'png ',
+      isInterFrameCompressed: !zeroCopyMovCodecs.has(fcc),
       requiresCodecBridge: legacyMovCodecs.has(fcc),
     };
   }
@@ -284,8 +452,16 @@ export async function inspectVideoMagicHeader(
     asf: 'WMV',
     flv: 'FLV',
     f4v: 'FLV',
+    ogg: 'OGG',
+    ogv: 'OGG',
     webm: 'WEBM',
     mkv: 'MKV',
+    gif: 'GIF',
+    png: 'IMAGE',
+    jpg: 'IMAGE',
+    jpeg: 'IMAGE',
+    bmp: 'IMAGE',
+    webp: 'IMAGE',
   };
 
   return {
@@ -480,6 +656,7 @@ function parseIsoBmffQuickTimeHeader(view: DataView): {
   fps: number;
   totalFrames: number;
   durationSec: number;
+  bitDepth?: number;
 } {
   let codecFourCC = '';
   let width = 640;
@@ -503,6 +680,11 @@ function parseIsoBmffQuickTimeHeader(view: DataView): {
     'mjpb',
     'png ',
     'raw ',
+    '2vuy',
+    'BGRA',
+    'ARGB',
+    'RGBA',
+    'Y800',
     'rle ',
     'rpza',
     'apch',
@@ -516,17 +698,25 @@ function parseIsoBmffQuickTimeHeader(view: DataView): {
     'mp4v',
   ];
 
+  let bitDepth = 0;
+
   for (const fcc of knownMovCodecs) {
     const idx = ascii.indexOf(fcc);
     if (idx !== -1) {
       codecFourCC = fcc;
-      // In QuickTime VisualSampleEntry (stsd), width (uint16 BE) is at offset +28 from FourCC, height (uint16 BE) at +30
+      // In QuickTime VisualSampleEntry (stsd), width (uint16 BE) is at offset +28 from FourCC, height (uint16 BE) at +30, depth at +78
       if (idx + 32 <= view.byteLength) {
         const w = view.getUint16(idx + 28, false);
         const h = view.getUint16(idx + 30, false);
         if (w >= 16 && w <= 7680 && h >= 16 && h <= 4320) {
           width = w;
           height = h;
+        }
+      }
+      if (idx + 80 <= view.byteLength) {
+        const d = view.getUint16(idx + 78, false);
+        if (d === 8 || d === 16 || d === 24 || d === 32 || d === 40) {
+          bitDepth = d === 40 ? 8 : d; // QuickTime depth 40 = 8-bit grayscale
         }
       }
       break;
@@ -561,15 +751,16 @@ function parseIsoBmffQuickTimeHeader(view: DataView): {
     }
   }
 
-  return { codecFourCC, width, height, fps, totalFrames, durationSec };
+  return { codecFourCC, width, height, fps, totalFrames, durationSec, bitDepth };
 }
 
 /**
- * Tier 1B: QuickTime .MOV Zero-Copy Sample Table (`stbl`) Frame Loader (`jpeg`/`mjpa`/`png `/`raw `)
- * Parses `stsz` and `stco`/`co64` from the `.mov` container and decodes individual frames via `File.slice()`.
- * Extends `AviHighSpeedLoader` so it drops directly into `VideoPlayerView`, `DualVideoPlayerView`, and `autoTracker.ts`.
+ * Tier 1B: QuickTime .MOV Zero-Copy Sample Table (`stbl`) Frame Loader
+ * Supports `jpeg`/`mjpa`/`mjpb`, `png `, `raw ` (8/24/32-bit), `2vuy`, `BGRA`, `ARGB`, `RGBA`, `Y800`.
+ * Parses `stsz`, `stsc` (sample-to-chunk runs), AND both 32-bit `stco` and 64-bit `co64` chunk offsets.
  */
 export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
+  public override readonly sourceKind = 'mov' as const;
   private movFile: File | Blob;
   private movFileName: string;
 
@@ -611,7 +802,7 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
     const fps = headerInfo.fps || 30;
     const codecFourCC = headerInfo.codecFourCC || 'jpeg';
 
-    // Extract sample sizes from `stsz` and chunk offsets from `stco`
+    // 1. Extract sample sizes from `stsz`
     const sizesList: number[] = [];
     const offsetsList: number[] = [];
 
@@ -622,7 +813,7 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
       uniformSampleSize = parseView.getUint32(stszPos + 8, false);
       sampleCount = parseView.getUint32(stszPos + 12, false);
       let entryPos = stszPos + 16;
-      for (let i = 0; i < sampleCount && i < 100000; i++) {
+      for (let i = 0; i < sampleCount && i < 200000; i++) {
         if (uniformSampleSize > 0) {
           sizesList.push(uniformSampleSize);
         } else if (entryPos + 4 <= parseView.byteLength) {
@@ -632,9 +823,21 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
       }
     }
 
-    const stcoPos = ascii.indexOf('stco');
+    // 2. Extract chunk offsets from 64-bit `co64` OR 32-bit `stco`
     const chunkOffsets: number[] = [];
-    if (stcoPos !== -1 && stcoPos + 12 <= parseView.byteLength) {
+    const co64Pos = ascii.indexOf('co64');
+    const stcoPos = ascii.indexOf('stco');
+
+    if (co64Pos !== -1 && co64Pos + 12 <= parseView.byteLength) {
+      const chunkCount = parseView.getUint32(co64Pos + 8, false);
+      let entryPos = co64Pos + 12;
+      for (let i = 0; i < chunkCount && entryPos + 8 <= parseView.byteLength; i++) {
+        const hi = parseView.getUint32(entryPos, false);
+        const lo = parseView.getUint32(entryPos + 4, false);
+        chunkOffsets.push(hi * 4294967296 + lo);
+        entryPos += 8;
+      }
+    } else if (stcoPos !== -1 && stcoPos + 12 <= parseView.byteLength) {
       const chunkCount = parseView.getUint32(stcoPos + 8, false);
       let entryPos = stcoPos + 12;
       for (let i = 0; i < chunkCount && entryPos + 4 <= parseView.byteLength; i++) {
@@ -643,25 +846,64 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
       }
     }
 
+    // 3. Extract `stsc` (sample-to-chunk runs) to map chunks -> per-sample byte offsets
+    interface StscEntry {
+      firstChunk: number; // 1-based
+      samplesPerChunk: number;
+    }
+    const stscEntries: StscEntry[] = [];
+    const stscPos = ascii.indexOf('stsc');
+    if (stscPos !== -1 && stscPos + 12 <= parseView.byteLength) {
+      const entryCount = parseView.getUint32(stscPos + 8, false);
+      let entryPos = stscPos + 12;
+      for (let i = 0; i < entryCount && entryPos + 12 <= parseView.byteLength; i++) {
+        const firstChunk = parseView.getUint32(entryPos, false);
+        const samplesPerChunk = parseView.getUint32(entryPos + 4, false);
+        if (firstChunk >= 1 && samplesPerChunk >= 1) {
+          stscEntries.push({ firstChunk, samplesPerChunk });
+        }
+        entryPos += 12;
+      }
+    }
+
     if (chunkOffsets.length > 0 && sizesList.length > 0) {
-      if (chunkOffsets.length === sizesList.length) {
+      if (stscEntries.length > 0) {
+        let sampleIdx = 0;
+        for (let chunkIdx = 0; chunkIdx < chunkOffsets.length && sampleIdx < sizesList.length; chunkIdx++) {
+          const chunkNumber1Based = chunkIdx + 1;
+          let samplesInThisChunk = stscEntries[0].samplesPerChunk;
+          for (let r = 0; r < stscEntries.length; r++) {
+            if (stscEntries[r].firstChunk <= chunkNumber1Based) {
+              samplesInThisChunk = stscEntries[r].samplesPerChunk;
+            } else {
+              break;
+            }
+          }
+          let curOffset = chunkOffsets[chunkIdx];
+          for (let s = 0; s < samplesInThisChunk && sampleIdx < sizesList.length; s++) {
+            offsetsList.push(curOffset);
+            curOffset += sizesList[sampleIdx];
+            sampleIdx++;
+          }
+        }
+      } else if (chunkOffsets.length === sizesList.length) {
         for (let i = 0; i < sizesList.length; i++) {
           offsetsList.push(chunkOffsets[i]);
         }
       } else {
-        // Sequential samples inside chunks
+        // Sequential samples inside single/first chunk when stsc is absent
         let curOffset = chunkOffsets[0];
         for (let i = 0; i < sizesList.length; i++) {
           offsetsList.push(curOffset);
           curOffset += sizesList[i];
         }
       }
-    } else if (baseSliceOffset === 0) {
-      // Check for `mdat` payload start
+    } else if (baseSliceOffset === 0 && codecFourCC === 'raw ') {
       const mdatPos = ascii.indexOf('mdat');
       if (mdatPos !== -1 && mdatPos >= 4) {
         const mdatPayloadStart = mdatPos + 4;
-        const frameBytes = width * height * 3;
+        const bpp = headerInfo.bitDepth === 8 ? 1 : headerInfo.bitDepth === 32 ? 4 : 3;
+        const frameBytes = width * height * bpp;
         const estFrames = Math.max(1, Math.floor((fileSize - mdatPayloadStart) / frameBytes));
         for (let i = 0; i < estFrames; i++) {
           offsetsList.push(mdatPayloadStart + i * frameBytes);
@@ -670,18 +912,55 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
       }
     }
 
-    const count = offsetsList.length;
-    const mappedFourCC =
-      codecFourCC === 'jpeg' || codecFourCC === 'mjpa' || codecFourCC === 'mjpb'
-        ? 'MJPG'
-        : codecFourCC === 'png '
-        ? 'MPNG'
-        : 'RGB ';
+    const count = Math.min(offsetsList.length, sizesList.length);
+    const firstSampleSize = sizesList[0] ?? 0;
+    const pixelCount = Math.max(1, width * height);
+    const bytesPerPixel = firstSampleSize > 0 ? Math.round(firstSampleSize / pixelCount) : 3;
+
+    let mappedFourCC = 'RGB ';
+    let bitCount = 24;
+
+    if (codecFourCC === 'jpeg' || codecFourCC === 'mjpa' || codecFourCC === 'mjpb') {
+      mappedFourCC = 'MJPG';
+      bitCount = 24;
+    } else if (codecFourCC === 'png ') {
+      mappedFourCC = 'MPNG';
+      bitCount = 32;
+    } else if (codecFourCC === '2vuy') {
+      mappedFourCC = '2VUY';
+      bitCount = 16;
+    } else if (codecFourCC === 'BGRA') {
+      mappedFourCC = 'BGRA';
+      bitCount = 32;
+    } else if (codecFourCC === 'ARGB') {
+      mappedFourCC = 'ARGB';
+      bitCount = 32;
+    } else if (codecFourCC === 'RGBA') {
+      mappedFourCC = 'RGBA';
+      bitCount = 32;
+    } else if (codecFourCC === 'Y800') {
+      mappedFourCC = 'Y800';
+      bitCount = 8;
+    } else if (codecFourCC === 'raw ') {
+      const effectiveDepth = headerInfo.bitDepth || bytesPerPixel * 8;
+      if (effectiveDepth === 8 || bytesPerPixel === 1) {
+        mappedFourCC = 'Y800';
+        bitCount = 8;
+      } else if (effectiveDepth === 32 || bytesPerPixel === 4) {
+        mappedFourCC = 'ARGB';
+        bitCount = 32;
+      } else {
+        mappedFourCC = 'RGB ';
+        bitCount = 24;
+      }
+    } else {
+      mappedFourCC = codecFourCC;
+    }
 
     this.frameIndex = {
       count,
-      offsets: new Float64Array(offsetsList),
-      sizes: new Uint32Array(sizesList),
+      offsets: new Float64Array(offsetsList.slice(0, count)),
+      sizes: new Uint32Array(sizesList.slice(0, count)),
       flags: new Uint8Array(count).fill(1),
     };
 
@@ -691,137 +970,19 @@ export class QuickTimeMovSliceLoader extends AviHighSpeedLoader {
       width,
       height,
       isTopDown: true,
-      bitCount: 24,
+      bitCount,
       compressionFourCC: mappedFourCC,
       compressionCode: mappedFourCC === 'MJPG' ? 0x47504a4d : 0,
       fps,
       totalFrames: Math.max(1, count),
       durationSec: Math.max(1, count) / fps,
-      isOpenDML: false,
+      isOpenDML: co64Pos !== -1,
       indexType: 'movi_header_scan',
       indexMemoryBytes: count * 13,
+      sourceKind: 'mov',
     };
 
     return this.metadata;
-  }
-}
-
-/**
- * Tier 3 Fallback Frame Loader (`UniversalSynthesizedFrameLoader`)
- * Ensures that even in browser environments without native `ffmpeg.exe` or OS codecs for legacy `.wmv`, `.flv`,
- * or compressed `.avi`/`.mov`, the file loads with its exact parsed dimensions, frame count, FPS, and container
- * telemetry, rendering a high-contrast calibrated fiducial target sequence so frame scrubbing and `autoTracker.ts`
- * work with 100% reliability.
- */
-export class UniversalSynthesizedFrameLoader extends AviHighSpeedLoader {
-  private containerFormat: VideoContainerFormat;
-  private codecName: string;
-
-  constructor(
-    file: File | Blob,
-    fileName: string,
-    container: VideoContainerFormat,
-    codecFourCC: string,
-    width: number,
-    height: number,
-    fps: number,
-    totalFrames: number
-  ) {
-    super(file, fileName);
-    this.containerFormat = container;
-    this.codecName = codecFourCC;
-    const safeFrames = Math.max(10, Math.min(5000, totalFrames));
-    const offsets = new Float64Array(safeFrames);
-    const sizes = new Uint32Array(safeFrames);
-    const flags = new Uint8Array(safeFrames).fill(1);
-
-    this.frameIndex = {
-      count: safeFrames,
-      offsets,
-      sizes,
-      flags,
-    } as AviFrameIndexTable;
-
-    this.metadata = {
-      fileName,
-      fileSizeBytes: file.size,
-      width: Math.max(64, width),
-      height: Math.max(48, height),
-      isTopDown: true,
-      bitCount: 24,
-      compressionFourCC: `${container}:${codecFourCC}`.slice(0, 8),
-      compressionCode: 0,
-      fps: fps > 0 ? fps : 30,
-      totalFrames: safeFrames,
-      durationSec: safeFrames / (fps > 0 ? fps : 30),
-      isOpenDML: false,
-      indexType: 'movi_header_scan',
-      indexMemoryBytes: safeFrames * 13,
-    };
-  }
-
-  public override async initialize(): Promise<AviStreamMetadata> {
-    return this.metadata!;
-  }
-
-  public override async getFrameImageData(frameNumber: number): Promise<ImageData | null> {
-    if (!this.metadata) return null;
-    const { width, height, totalFrames } = this.metadata;
-    const idx = Math.max(0, Math.min(totalFrames - 1, Math.floor(frameNumber)));
-    const rgba = new Uint8ClampedArray(width * height * 4);
-
-    // Deterministic ballistic/kinematic fiducial trajectory across frames
-    const progress = totalFrames > 1 ? idx / (totalFrames - 1) : 0;
-    const targetX = Math.round(width * (0.15 + 0.7 * progress));
-    const targetY = Math.round(
-      height * (0.65 - 0.42 * Math.sin(progress * Math.PI))
-    );
-    const radius = Math.max(3, Math.round(Math.min(width, height) * 0.025));
-
-    for (let y = 0; y < height; y++) {
-      const dstRow = y * width * 4;
-      const isGridY = y % 32 === 0;
-      for (let x = 0; x < width; x++) {
-        const dIdx = dstRow + x * 4;
-        const dx = x - targetX;
-        const dy = y - targetY;
-        const distSq = dx * dx + dy * dy;
-
-        if (distSq <= radius * radius) {
-          // High-contrast fiducial target with sub-pixel radial gradient for ZNCC autoTracker
-          const norm = Math.max(0, 1 - Math.sqrt(distSq) / (radius + 1));
-          const val = Math.round(215 + 40 * norm);
-          rgba[dIdx] = val;
-          rgba[dIdx + 1] = val;
-          rgba[dIdx + 2] = Math.min(255, val + 15);
-          rgba[dIdx + 3] = 255;
-        } else if (isGridY || x % 32 === 0) {
-          rgba[dIdx] = 34;
-          rgba[dIdx + 1] = 42;
-          rgba[dIdx + 2] = 56;
-          rgba[dIdx + 3] = 255;
-        } else {
-          rgba[dIdx] = 18;
-          rgba[dIdx + 1] = 23;
-          rgba[dIdx + 2] = 33;
-          rgba[dIdx + 3] = 255;
-        }
-      }
-    }
-
-    return typeof ImageData !== 'undefined'
-      ? new ImageData(rgba, width, height)
-      : ({ data: rgba, width, height, colorSpace: 'srgb' } as ImageData);
-  }
-
-  public override async getFrameBitmap(frameNumber: number): Promise<ImageBitmap | null> {
-    const imgData = await this.getFrameImageData(frameNumber);
-    if (!imgData || typeof createImageBitmap !== 'function') return null;
-    try {
-      return await createImageBitmap(imgData);
-    } catch {
-      return null;
-    }
   }
 }
 
@@ -877,10 +1038,58 @@ async function probeNativeVideoElement(
 }
 
 /**
- * Master entry point for the 3-Tier Universal Video Demuxer & Codec Engine.
- * Accepts any `.mp4`, `.avi`, `.wmv`, `.flv`, or `.mov` file and returns either:
- * - A zero-copy `frameLoader` (`AviHighSpeedLoader`-compatible) for frame-accurate slice decoding, OR
- * - A hardware-accelerated / FFmpeg-bridged `videoUrl` for `<video>` playback.
+ * Constructs an honest, range-safety compliant Tier 3 rejection payload when a legacy or
+ * inter-frame compressed codec cannot be decoded in a plain browser without the desktop FFmpeg bridge.
+ * NEVER fabricates synthetic pixels or raw-BGR garbage static.
+ */
+function buildBrowserCodecRejection(
+  fileName: string,
+  magic: MagicByteInspection,
+  customReason?: string
+): UniversalVideoLoadResult {
+  const codecLabel = magic.detectedFourCC.trim() || 'UNKNOWN';
+  const ffmpegCommand = buildFfmpegTranscodeCommand(fileName);
+  const reason =
+    customReason ||
+    `Container ${magic.container} with codec [${codecLabel}] cannot be decoded natively in this browser without the offline Desktop FFmpeg Bridge.`;
+
+  const diagnostic: CodecDiagnosticNotice = {
+    fileName,
+    container: magic.container,
+    codecFourCC: codecLabel,
+    signatureHex: magic.signatureHex,
+    width: magic.width,
+    height: magic.height,
+    fps: magic.fps,
+    reason,
+    ffmpegCommand,
+    electronHint:
+      'Open this file in the Desktop Electron (.exe) workstation for automatic offline all-intra FFmpeg decoding, or transcode once using the command below.',
+  };
+
+  return {
+    tier: 3,
+    tierDescription: `Tier 3 Codec Diagnostic (${magic.container} / ${codecLabel} — Requires Desktop FFmpeg Bridge)`,
+    container: magic.container,
+    codecFourCC: codecLabel,
+    width: magic.width,
+    height: magic.height,
+    fps: magic.fps,
+    totalFrames: magic.totalFrames,
+    durationSec: magic.durationSec,
+    frameLoader: null,
+    videoUrl: '',
+    usedCodecBridge: false,
+    requiresDesktopFfmpegBridge: true,
+    diagnostic,
+    diagnosticsSummary: `Unsupported browser codec: ${magic.container} [${codecLabel}] — requires Desktop FFmpeg Bridge or H.264 MP4 transcode`,
+  };
+}
+
+/**
+ * Master entry point for the Unified Multi-Format Media Engine.
+ * Supports `.mp4`, `.avi`, `.mov`, `.wmv`, `.flv`, `.ogg`/`.ogv`, `.webm`, `.mkv`,
+ * animated `.gif`, and single images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`).
  */
 export async function loadUniversalVideoFile(
   file: File,
@@ -889,41 +1098,95 @@ export async function loadUniversalVideoFile(
   const magic = await inspectVideoMagicHeader(file, file.name);
 
   // =========================================================================
-  // TIER 1A: Zero-Copy RIFF / OpenDML .AVI Demuxer
+  // TIER 1C: Frame-Accurate Animated GIF89a Loader
+  // =========================================================================
+  if (magic.container === 'GIF' || isGifFile(file)) {
+    const gifLoader = new AnimatedGifLoader(file, file.name);
+    const meta = await gifLoader.initialize();
+    return {
+      tier: 1,
+      tierDescription: `Tier 1 Frame-Accurate GIF89a Decoder (${meta.totalFrames} frame${meta.totalFrames === 1 ? '' : 's'})`,
+      container: 'GIF',
+      codecFourCC: 'GIF89a',
+      width: meta.width,
+      height: meta.height,
+      fps: meta.fps,
+      totalFrames: meta.totalFrames,
+      durationSec: meta.durationSec,
+      frameLoader: gifLoader,
+      videoUrl: '',
+      usedCodecBridge: false,
+      diagnosticsSummary: `GIF89a ${meta.width}×${meta.height} @ ${meta.fps} fps (${meta.totalFrames} frames)`,
+    };
+  }
+
+  // =========================================================================
+  // TIER 1D: Single Image (.png, .jpg, .jpeg, .bmp, .webp, Clipboard Paste)
+  // =========================================================================
+  if (magic.container === 'IMAGE' || isImageFile(file)) {
+    const imgLoader = ImageSequenceLoader.fromSingleImage(file, file.name, 30);
+    const meta = await imgLoader.initialize();
+    return {
+      tier: 1,
+      tierDescription: `Tier 1 Single-Frame Calibratable Image (${magic.detectedFourCC})`,
+      container: 'IMAGE',
+      codecFourCC: magic.detectedFourCC || 'IMG',
+      width: meta.width,
+      height: meta.height,
+      fps: meta.fps,
+      totalFrames: 1,
+      durationSec: meta.durationSec,
+      frameLoader: imgLoader,
+      videoUrl: '',
+      usedCodecBridge: false,
+      diagnosticsSummary: `Single Image [${magic.detectedFourCC}] ${meta.width}×${meta.height} (1 frame)`,
+    };
+  }
+
+  // =========================================================================
+  // TIER 1A: Zero-Copy RIFF / OpenDML .AVI Demuxer (Uncompressed / MJPG Only)
   // =========================================================================
   if (magic.container === 'AVI') {
-    if (!magic.isInterFrameCompressed) {
+    const trimmedFcc = magic.detectedFourCC.trim().toUpperCase();
+    const isBlockedCompressed =
+      magic.isInterFrameCompressed || COMPRESSED_NON_RAW_FOURCCS.has(trimmedFcc);
+
+    if (!isBlockedCompressed) {
       const aviLoader = new AviHighSpeedLoader(file, file.name);
       const meta = await aviLoader.initialize();
-      const url = URL.createObjectURL(file);
-      return {
-        tier: 1,
-        tierDescription: `Tier 1 Zero-Copy RIFF/OpenDML .AVI Demuxer (${meta.compressionFourCC.trim()})`,
-        container: 'AVI',
-        codecFourCC: meta.compressionFourCC.trim() || 'DIB',
-        width: meta.width,
-        height: meta.height,
-        fps: meta.fps,
-        totalFrames: meta.totalFrames,
-        durationSec: meta.durationSec,
-        frameLoader: aviLoader,
-        videoUrl: url,
-        usedCodecBridge: false,
-        diagnosticsSummary: `RIFF/AVI [${meta.compressionFourCC.trim()}] ${meta.width}×${meta.height} @ ${meta.fps} fps (${meta.totalFrames} frames)`,
-      };
+      const postFcc = meta.compressionFourCC.trim().toUpperCase();
+      if (!COMPRESSED_NON_RAW_FOURCCS.has(postFcc) && aviLoader.frameIndex && aviLoader.frameIndex.count > 0) {
+        return {
+          tier: 1,
+          tierDescription: `Tier 1 Zero-Copy RIFF/OpenDML .AVI Demuxer (${postFcc || 'DIB'})`,
+          container: 'AVI',
+          codecFourCC: postFcc || 'DIB',
+          width: meta.width,
+          height: meta.height,
+          fps: meta.fps,
+          totalFrames: meta.totalFrames,
+          durationSec: meta.durationSec,
+          frameLoader: aviLoader,
+          videoUrl: '',
+          usedCodecBridge: false,
+          diagnosticsSummary: `RIFF/AVI [${postFcc || 'DIB'}] ${meta.width}×${meta.height} @ ${meta.fps} fps (${meta.totalFrames} frames)`,
+        };
+      }
+      aviLoader.dispose();
     }
 
-    // Compressed .AVI (e.g. CVID, MSVC, XVID, DIVX, H264): test native <video>, then Electron FFmpeg bridge, then AviHighSpeedLoader
+    // Compressed .AVI (CVID, MSVC, XVID, DIVX, IV32/41/50, H264, MP4V, etc.):
+    // Probe native <video> first; if rejected, fall through to Tier 3 Electron FFmpeg bridge or honest diagnostic card.
     const testUrl = URL.createObjectURL(file);
     const nativeProbe = await probeNativeVideoElement(testUrl, 1200);
     if (nativeProbe.playable) {
       const fps = magic.fps || 30;
-      const totalFrames = Math.max(10, Math.round(nativeProbe.duration * fps));
+      const totalFrames = Math.max(1, Math.round(nativeProbe.duration * fps));
       return {
         tier: 2,
-        tierDescription: `Tier 2 Native Chromium Video Pipeline (.AVI / ${magic.detectedFourCC})`,
+        tierDescription: `Tier 2 Native Chromium Video Pipeline (.AVI / ${trimmedFcc})`,
         container: 'AVI',
-        codecFourCC: magic.detectedFourCC,
+        codecFourCC: trimmedFcc,
         width: nativeProbe.width,
         height: nativeProbe.height,
         fps,
@@ -932,30 +1195,29 @@ export async function loadUniversalVideoFile(
         frameLoader: null,
         videoUrl: testUrl,
         usedCodecBridge: false,
-        diagnosticsSummary: `AVI [${magic.detectedFourCC}] ${nativeProbe.width}×${nativeProbe.height} @ ${fps} fps`,
+        diagnosticsSummary: `AVI [${trimmedFcc}] ${nativeProbe.width}×${nativeProbe.height} @ ${fps} fps`,
       };
     }
     URL.revokeObjectURL(testUrl);
   }
 
   // =========================================================================
-  // TIER 1B & TIER 2: QuickTime .MOV & .MP4
+  // TIER 1B & TIER 2: QuickTime .MOV, .MP4, .OGG/.OGV, .WEBM, .MKV
   // =========================================================================
-  if (magic.container === 'MOV' || magic.container === 'MP4') {
-    // If QuickTime MOV with Photo-JPEG ('jpeg', 'mjpa', 'mjpb') or uncompressed ('raw '), check if zero-copy slice loader has frames
-    if (
-      magic.container === 'MOV' &&
-      (magic.detectedFourCC === 'jpeg' ||
-        magic.detectedFourCC === 'mjpa' ||
-        magic.detectedFourCC === 'mjpb' ||
-        magic.detectedFourCC === 'raw ' ||
-        magic.detectedFourCC === 'png ')
-    ) {
+  if (
+    magic.container === 'MOV' ||
+    magic.container === 'MP4' ||
+    magic.container === 'OGG' ||
+    magic.container === 'WEBM' ||
+    magic.container === 'MKV'
+  ) {
+    // Tier 1B: QuickTime MOV with Photo-JPEG, PNG, or raw/2vuy/BGRA/ARGB/Y800
+    const movZeroCopyCodecs = new Set(['jpeg', 'mjpa', 'mjpb', 'raw ', 'png ', '2vuy', 'BGRA', 'ARGB', 'RGBA', 'Y800']);
+    if (magic.container === 'MOV' && movZeroCopyCodecs.has(magic.detectedFourCC)) {
       try {
         const movLoader = new QuickTimeMovSliceLoader(file, file.name);
         const meta = await movLoader.initialize();
         if (movLoader.frameIndex && movLoader.frameIndex.count > 0) {
-          const url = URL.createObjectURL(file);
           return {
             tier: 1,
             tierDescription: `Tier 1 Zero-Copy QuickTime .MOV stbl Slice Demuxer (${magic.detectedFourCC.trim()})`,
@@ -967,22 +1229,23 @@ export async function loadUniversalVideoFile(
             totalFrames: meta.totalFrames,
             durationSec: meta.durationSec,
             frameLoader: movLoader,
-            videoUrl: url,
+            videoUrl: '',
             usedCodecBridge: false,
             diagnosticsSummary: `QuickTime .MOV [${magic.detectedFourCC.trim()}] ${meta.width}×${meta.height} @ ${meta.fps} fps (${meta.totalFrames} frames)`,
           };
         }
+        movLoader.dispose();
       } catch {
         // Fallback to native probe or Tier 3
       }
     }
 
-    // Tier 2: Test Native Chromium <video> playback
+    // Tier 2: Test Native Chromium <video> playback (.MP4, .MOV H.264/HEVC, .OGG/.OGV, .WEBM, .MKV)
     const nativeUrl = URL.createObjectURL(file);
     const nativeProbe = await probeNativeVideoElement(nativeUrl, 1500);
     if (nativeProbe.playable) {
       const fps = magic.fps || 30;
-      const totalFrames = Math.max(10, Math.round(nativeProbe.duration * fps));
+      const totalFrames = Math.max(1, Math.round(nativeProbe.duration * fps));
       return {
         tier: 2,
         tierDescription: `Tier 2 Hardware-Accelerated HTML5/WebCodecs (${magic.container} / ${magic.detectedFourCC.trim()})`,
@@ -1003,12 +1266,11 @@ export async function loadUniversalVideoFile(
   }
 
   // =========================================================================
-  // TIER 3: Universal FFmpeg Codec Bridge (.WMV, .FLV, Legacy .MOV / .AVI)
+  // TIER 3: Universal Offline Electron FFmpeg Bridge (.WMV, .FLV, Legacy .MOV / Compressed .AVI)
   // =========================================================================
-  // 3A. Desktop Electron .EXE Native Static FFmpeg Fast-Path (100% Offline Air-Gapped)
   if (typeof window !== 'undefined' && window.electronVideoBridge?.transcodeOrDecodeFile) {
     try {
-      onProgress?.(5, `Decoding ${magic.container} (${magic.detectedFourCC}) for Frame-Accurate Analysis...`);
+      onProgress?.(5, `Decoding ${magic.container} (${magic.detectedFourCC}) via Desktop FFmpeg Bridge...`);
       const filePath = (file as any).path as string | undefined;
       const inputPayload = filePath ? filePath : await file.arrayBuffer();
       const bridgeRes = await window.electronVideoBridge.transcodeOrDecodeFile(
@@ -1020,7 +1282,7 @@ export async function loadUniversalVideoFile(
         const mp4Blob = new Blob([bridgeRes.mp4Buffer], { type: 'video/mp4' });
         const mp4Url = URL.createObjectURL(mp4Blob);
         const fps = bridgeRes.fps || magic.fps || 30;
-        const totalFrames = bridgeRes.totalFrames || magic.totalFrames || 60;
+        const totalFrames = Math.max(1, bridgeRes.totalFrames || magic.totalFrames || 60);
         return {
           tier: 3,
           tierDescription: `Tier 3 Native Offline FFmpeg Codec Bridge (${magic.container} → All-Intra H.264)`,
@@ -1037,72 +1299,58 @@ export async function loadUniversalVideoFile(
           diagnosticsSummary: `FFmpeg All-Intra Bridge: ${magic.container} [${magic.detectedFourCC}] → CFR ${fps} fps (${totalFrames} frames)`,
         };
       }
-    } catch (err) {
-      console.warn('Electron native FFmpeg bridge fallback:', err);
-    }
-  }
-
-  // 3B. If it's a compressed .AVI and native/Electron bridge wasn't used, try AviHighSpeedLoader chunk reader first
-  if (magic.container === 'AVI') {
-    try {
-      const aviLoader = new AviHighSpeedLoader(file, file.name);
-      const meta = await aviLoader.initialize();
-      if (aviLoader.frameIndex && aviLoader.frameIndex.count > 0) {
-        const url = URL.createObjectURL(file);
-        return {
-          tier: 1,
-          tierDescription: `Tier 1 RIFF .AVI Chunk Demuxer (${meta.compressionFourCC.trim()})`,
-          container: 'AVI',
-          codecFourCC: meta.compressionFourCC.trim(),
-          width: meta.width,
-          height: meta.height,
-          fps: meta.fps,
-          totalFrames: meta.totalFrames,
-          durationSec: meta.durationSec,
-          frameLoader: aviLoader,
-          videoUrl: url,
-          usedCodecBridge: false,
-          diagnosticsSummary: `RIFF/AVI [${meta.compressionFourCC.trim()}] ${meta.width}×${meta.height} @ ${meta.fps} fps`,
-        };
+      if (bridgeRes.error) {
+        return buildBrowserCodecRejection(file.name, magic, `Desktop FFmpeg Bridge error: ${bridgeRes.error}`);
       }
-    } catch {
-      // continue to universal frame loader
+    } catch (err: any) {
+      return buildBrowserCodecRejection(
+        file.name,
+        magic,
+        `Desktop FFmpeg Bridge failed: ${err?.message || 'Unknown error'}`
+      );
     }
   }
 
-  // 3C. Browser Universal Frame-Indexed Telemetry Stream Fallback for .WMV, .FLV, .MOV, .AVI
-  onProgress?.(
-    100,
-    `Indexed ${magic.container} (${magic.detectedFourCC}) • ${magic.width}×${magic.height} @ ${magic.fps} fps`
-  );
-  const synthLoader = new UniversalSynthesizedFrameLoader(
-    file,
-    file.name,
-    magic.container,
-    magic.detectedFourCC,
-    magic.width,
-    magic.height,
-    magic.fps,
-    magic.totalFrames
-  );
-  await synthLoader.initialize();
-  const fallbackUrl = URL.createObjectURL(file);
+  // Honest Range-Safety Rejection (NO fake white dots, NO raw-BGR static!)
+  return buildBrowserCodecRejection(file.name, magic);
+}
 
-  return {
-    tier: 3,
-    tierDescription: `Tier 3 Universal ${magic.container} Demuxer (${magic.detectedFourCC})`,
-    container: magic.container,
-    codecFourCC: magic.detectedFourCC,
-    width: magic.width,
-    height: magic.height,
-    fps: magic.fps,
-    totalFrames: magic.totalFrames,
-    durationSec: magic.durationSec,
-    frameLoader: synthLoader,
-    videoUrl: fallbackUrl,
-    usedCodecBridge: true,
-    diagnosticsSummary: `${magic.container} [${magic.detectedFourCC}] ${magic.width}×${magic.height} @ ${magic.fps} fps (${magic.totalFrames} frames)`,
-  };
+/**
+ * Unified multi-file ingestion entry point.
+ * - Multiple image files (`files.length > 1`) -> naturally-sorted lazy `ImageSequenceLoader` (default 30 fps)
+ * - Single file -> delegates to `loadUniversalVideoFile`
+ */
+export async function loadUnifiedMediaFiles(
+  files: File[],
+  onProgress?: (percent: number, statusText: string) => void,
+  defaultSequenceFps = 30
+): Promise<UniversalVideoLoadResult> {
+  if (!files || files.length === 0) {
+    throw new Error('No media files were selected.');
+  }
+
+  const imageFiles = files.filter((f) => isImageFile(f));
+  if (files.length > 1 && imageFiles.length > 0) {
+    const seqLoader = ImageSequenceLoader.fromFiles(imageFiles, defaultSequenceFps);
+    const meta = await seqLoader.initialize();
+    return {
+      tier: 1,
+      tierDescription: `Tier 1 Lazy Image Sequence (${meta.totalFrames} frames @ ${meta.fps} fps)`,
+      container: meta.totalFrames === 1 ? 'IMAGE' : 'IMAGE_SEQUENCE',
+      codecFourCC: meta.totalFrames === 1 ? 'IMG' : 'SEQ',
+      width: meta.width,
+      height: meta.height,
+      fps: meta.fps,
+      totalFrames: meta.totalFrames,
+      durationSec: meta.durationSec,
+      frameLoader: seqLoader,
+      videoUrl: '',
+      usedCodecBridge: false,
+      diagnosticsSummary: `Image Sequence ${meta.width}×${meta.height} • ${meta.totalFrames} frames @ ${meta.fps} fps`,
+    };
+  }
+
+  return await loadUniversalVideoFile(files[0], onProgress);
 }
 
 /**
@@ -1114,20 +1362,21 @@ export function createSyntheticMovBlob(options: {
   height?: number;
   fps?: number;
   frameCount?: number;
+  useCo64?: boolean;
+  fourCC?: 'raw ' | 'Y800' | 'ARGB';
 } = {}): Blob {
   const width = options.width ?? 64;
   const height = options.height ?? 48;
   const fps = options.fps ?? 240;
   const frameCount = options.frameCount ?? 8;
-  const frameByteSize = width * height * 3;
+  const useCo64 = options.useCo64 ?? false;
+  const fourCC = options.fourCC ?? 'raw ';
+  const bpp = fourCC === 'Y800' ? 1 : fourCC === 'ARGB' ? 4 : 3;
+  const frameByteSize = width * height * bpp;
   const mdatPayloadSize = frameCount * frameByteSize;
 
-  // Layout:
-  // ftyp (20 bytes)
-  // moov (120 bytes containing mdhd, stsd with 'raw ', stsz, stco)
-  // mdat (8 + mdatPayloadSize)
   const ftypSize = 20;
-  const moovSize = 128;
+  const moovSize = 160;
   const mdatOffset = ftypSize + moovSize;
   const mdatSize = 8 + mdatPayloadSize;
   const totalSize = mdatOffset + mdatSize;
@@ -1150,30 +1399,45 @@ export function createSyntheticMovBlob(options: {
   writeStr(16, 'qt  ');
 
   // 2. moov box
-  let pos = ftypSize;
+  const pos = ftypSize;
   view.setUint32(pos, moovSize, false);
   writeStr(pos + 4, 'moov');
 
   // mdhd (28 bytes)
   writeStr(pos + 12, 'mdhd');
-  view.setUint8(pos + 16, 0); // version 0
-  view.setUint32(pos + 28, fps, false); // timeScale
-  view.setUint32(pos + 32, frameCount, false); // duration
+  view.setUint8(pos + 16, 0);
+  view.setUint32(pos + 28, fps, false);
+  view.setUint32(pos + 32, frameCount, false);
 
-  // stsd VisualSampleEntry ('raw ')
-  writeStr(pos + 40, 'raw ');
+  // stsd VisualSampleEntry
+  writeStr(pos + 40, fourCC);
   view.setUint16(pos + 40 + 28, width, false);
   view.setUint16(pos + 40 + 30, height, false);
 
   // stsz (20 bytes)
   writeStr(pos + 80, 'stsz');
-  view.setUint32(pos + 88, frameByteSize, false); // uniform sample size
-  view.setUint32(pos + 92, frameCount, false); // sample count
+  view.setUint32(pos + 88, frameByteSize, false);
+  view.setUint32(pos + 92, frameCount, false);
 
-  // stco (16 bytes, 1 chunk starting at mdatOffset + 8)
-  writeStr(pos + 104, 'stco');
-  view.setUint32(pos + 112, 1, false); // chunk count = 1
-  view.setUint32(pos + 116, mdatOffset + 8, false); // first chunk offset
+  // stsc (24 bytes: 1 entry -> chunk 1 has frameCount samples)
+  writeStr(pos + 100, 'stsc');
+  view.setUint32(pos + 108, 1, false); // entry count = 1
+  view.setUint32(pos + 112, 1, false); // first_chunk = 1
+  view.setUint32(pos + 116, frameCount, false); // samples_per_chunk
+  view.setUint32(pos + 120, 1, false); // sample_desc_index = 1
+
+  // co64 (64-bit) or stco (32-bit)
+  if (useCo64) {
+    writeStr(pos + 128, 'co64');
+    view.setUint32(pos + 136, 1, false); // chunk count = 1
+    const off64 = mdatOffset + 8;
+    view.setUint32(pos + 140, Math.floor(off64 / 4294967296), false);
+    view.setUint32(pos + 144, off64 >>> 0, false);
+  } else {
+    writeStr(pos + 128, 'stco');
+    view.setUint32(pos + 136, 1, false);
+    view.setUint32(pos + 140, mdatOffset + 8, false);
+  }
 
   // 3. mdat box
   view.setUint32(mdatOffset, mdatSize, false);
@@ -1187,16 +1451,40 @@ export function createSyntheticMovBlob(options: {
       for (let x = 0; x < width; x++) {
         const isMarker = Math.abs(x - targetX) <= 1 && Math.abs(y - targetY) <= 1;
         const val = isMarker ? 245 : 28;
-        const pOff = framePos + (y * width + x) * 3;
-        bytes[pOff] = val;
-        bytes[pOff + 1] = val;
-        bytes[pOff + 2] = val;
+        const pOff = framePos + (y * width + x) * bpp;
+        if (bpp === 1) {
+          bytes[pOff] = val;
+        } else if (bpp === 4) {
+          bytes[pOff] = 255;
+          bytes[pOff + 1] = val;
+          bytes[pOff + 2] = val;
+          bytes[pOff + 3] = val;
+        } else {
+          bytes[pOff] = val;
+          bytes[pOff + 1] = val;
+          bytes[pOff + 2] = val;
+        }
       }
     }
     framePos += frameByteSize;
   }
 
   return new Blob([buf], { type: 'video/quicktime' });
+}
+
+/**
+ * Helper utility that builds a minimal Ogg/Theora (`OggS`) magic-header Blob for unit testing.
+ */
+export function createSyntheticOggBlob(): Blob {
+  const bytes = new Uint8Array(64);
+  // 'OggS'
+  bytes.set([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02], 0);
+  // Embed '\x80theora' identification packet signature
+  const tag = '\x80theora';
+  for (let i = 0; i < tag.length; i++) {
+    bytes[28 + i] = tag.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: 'video/ogg' });
 }
 
 /**

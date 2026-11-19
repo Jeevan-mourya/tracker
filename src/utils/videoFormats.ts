@@ -147,24 +147,24 @@ export const ACCEPTED_VIDEO_FORMATS: AcceptedFormatInfo[] = [
     notes: 'Natively decoded in Chrome, Firefox, and Electron.',
   },
   {
-    name: 'Animated GIF & WebP Image Sequence',
+    name: 'Animated GIF & Image Sequences (GIF, PNG, JPG, BMP, WebP)',
     category: 'Animated Image',
-    extensions: ['.gif', '.webp'],
-    mimeTypes: ['image/gif', 'image/webp'],
-    codecs: 'LZW, Lossless WebP',
+    extensions: ['.gif', '.png', '.jpg', '.jpeg', '.bmp', '.webp'],
+    mimeTypes: ['image/gif', 'image/png', 'image/jpeg', 'image/bmp', 'image/webp'],
+    codecs: 'GIF89a LZW, PNG, JPEG, BMP, WebP',
     nativeBrowserSupport: 'Special Handling',
-    typicalUsage: 'Thermal camera exports, oscilloscope capture loops, slow-motion GIF demonstrations.',
-    notes: 'Automatically detected and rendered with full step-by-step point tracking and coordinate marking.',
+    typicalUsage: 'Thermal/high-speed camera image exports, numbered frame folders/ZIPs, clipboard screenshots, oscilloscope loops.',
+    notes: 'Frame-accurate GIF89a decoding, naturally sorted multi-file or zipped image sequences, and single-image calibration.',
   },
   {
     name: 'Tracker Experiment Packages (TRZ / TRK / ZIP)',
     category: 'Tracker Package',
     extensions: ['.trz', '.trk', '.zip'],
     mimeTypes: ['application/zip', 'application/x-zip-compressed'],
-    codecs: 'Embedded MP4 / MOV / AVI / WebM',
+    codecs: 'Embedded MP4 / MOV / AVI / WebM / Numbered Image Sequences',
     nativeBrowserSupport: 'Full Native',
-    typicalUsage: 'Classic Open Source Physics (OSP) Tracker experiment archives (e.g. BallToss.trz, car.trz).',
-    notes: 'Automatically unzips and extracts the bundled laboratory video and loads it straight into the workstation.',
+    typicalUsage: 'Classic Open Source Physics (OSP) Tracker experiment archives (e.g. BallToss.trz) or zipped image frame sequences.',
+    notes: 'Automatically unzips projects, bundled videos, or numbered image sequences directly into the workstation.',
   },
 ];
 
@@ -173,18 +173,23 @@ export const ALL_ACCEPTED_EXTENSIONS: string[] = Array.from(
   new Set(ACCEPTED_VIDEO_FORMATS.flatMap((f) => f.extensions))
 );
 
-// Explicit file input accept attribute string (ensures Windows File Explorer shows .wmv, .flv, .avi, .mov, .mp4)
+// Explicit file input accept attribute string (ensures OS File Dialogs show all supported video, image, and archive formats)
 export const EXPLICIT_CORE_VIDEO_ACCEPT =
-  '.mp4,.avi,.wmv,.flv,.mov,.mkv,.webm,.mpg,.mpeg,.m4v,video/mp4,video/x-msvideo,video/x-ms-wmv,video/x-flv,video/quicktime,video/*';
+  '.mp4,.avi,.mov,.wmv,.flv,.ogg,.ogv,.webm,.mkv,.mpg,.mpeg,.m4v,.gif,.jpg,.jpeg,.png,.bmp,.webp,.trz,.trk,.zip,video/mp4,video/x-msvideo,video/x-ms-wmv,video/x-flv,video/quicktime,video/ogg,video/webm,video/x-matroska,video/*';
 
-export const ACCEPTED_VIDEO_ACCEPT_STRING: string = [
-  EXPLICIT_CORE_VIDEO_ACCEPT,
-  'image/gif',
-  'image/webp',
-  'application/zip',
-  'application/x-zip-compressed',
-  ...ALL_ACCEPTED_EXTENSIONS,
-].join(',');
+export const ACCEPTED_VIDEO_ACCEPT_STRING: string = Array.from(
+  new Set([
+    ...EXPLICIT_CORE_VIDEO_ACCEPT.split(','),
+    'image/gif',
+    'image/png',
+    'image/jpeg',
+    'image/bmp',
+    'image/webp',
+    'application/zip',
+    'application/x-zip-compressed',
+    ...ALL_ACCEPTED_EXTENSIONS,
+  ])
+).join(',');
 
 export interface VideoInspectionResult {
   fileName: string;
@@ -216,13 +221,13 @@ export function inspectVideoFile(file: File): VideoInspectionResult {
       (mimeType && f.mimeTypes.some((m) => mimeType.toLowerCase().startsWith(m.toLowerCase())))
   );
 
-  const isArchive = ['.trz', '.trk', '.zip'].includes(extension);
+  const isArchive = ['.trz', '.zip'].includes(extension);
   const isImageSequence = ['.gif', '.webp'].includes(extension) || mimeType.startsWith('image/');
 
   // Test standard HTML5 video support
   let isProbablySupported = true;
   if (!isArchive && !isImageSequence) {
-    if (mimeType) {
+    if (mimeType && typeof document !== 'undefined') {
       const probe = document.createElement('video');
       const canPlay = probe.canPlayType(mimeType);
       if (canPlay === '') {
@@ -287,7 +292,7 @@ export async function probeVideoMetadata(file: File): Promise<VideoMetadataProbe
   let isNativelyPlayable = true;
   let isOptimalForKinematics = true;
 
-  const isArchive = ['.trz', '.trk', '.zip'].includes(extension);
+  const isArchive = ['.trz', '.zip'].includes(extension);
   const isImageSequence = ['.gif', '.webp'].includes(extension) || mimeType.startsWith('image/');
 
   if (isArchive) {

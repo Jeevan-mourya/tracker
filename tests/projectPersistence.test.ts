@@ -3,6 +3,9 @@ import JSZip from 'jszip';
 import {
   serializeProject,
   serializeProjectToTrk,
+  serializeAndValidateTrk,
+  resolveDualExportFilenames,
+  inferMediaMimeTypeFromFilename,
   validateAndParseProject,
   ingestWorkstationFile,
   isProjectFileOrBundle,
@@ -11,6 +14,7 @@ import {
   createHydrationController,
   AUTOSAVE_STORAGE_KEY_V2,
 } from '../src/utils/projectPersistence';
+import { inspectVideoFile } from '../src/utils/videoFormats';
 import {
   DEFAULT_GRAPH_CONFIG,
   deriveSixChannelSeries,
@@ -430,5 +434,335 @@ describe('Bulletproof Session Persistence & Universal .TRK / .ZIP Project Serial
     expect(result.data!.tracks[0].name).toBe('Pendulum Bob');
     expect(result.data!.tracks[0].steps).toHaveLength(3);
     expect(result.data!.tracks[0].steps[1].vx).toBeDefined();
+    // Verify physics mass (0.5 kg) was used rather than dt (0.02 s)
+    const midStep = result.data!.tracks[0].steps[1];
+    expect(midStep.v).toBeGreaterThan(0);
+    expect(midStep.kineticEnergy).toBeCloseTo(0.5 * 0.5 * (midStep.v! ** 2), 6);
+  });
+
+  it('6. Physics Mass Exactness: Reopening a 2.5 kg track recomputes kineticEnergy = 0.5 * 2.5 * v^2 (never dt)', () => {
+    const rawPayload = {
+      version: '2.0',
+      analysisMode: '2D',
+      experimentTitle: 'Heavy_Store_Drop_2p5kg',
+      clip: { startFrame: 0, endFrame: 10, stepSize: 1, fps: 1000, startTime: 0, totalFrames: 11 },
+      tracks: [
+        {
+          id: 'heavy-1',
+          name: '2.5 kg Test Body',
+          color: '#2563EB',
+          mass: 2.5,
+          // Deliberately omit vx/vy/v/kineticEnergy so parser recomputes via computeKinematics
+          steps: [
+            { frame: 0, time: 0.0, px: 100, py: 200, x: 0.0, y: 1.0 },
+            { frame: 1, time: 0.1, px: 140, py: 200, x: 1.0, y: 1.0 },
+            { frame: 2, time: 0.2, px: 180, py: 200, x: 2.0, y: 1.0 },
+          ],
+        },
+      ],
+    };
+
+    const parsed = validateAndParseProject(rawPayload);
+    expect(parsed.valid).toBe(true);
+    const restoredTrack = parsed.data!.tracks[0];
+    expect(restoredTrack.mass).toBe(2.5);
+    const step1 = restoredTrack.steps[1];
+    // Constant velocity vx = 10 m/s -> KE = 0.5 * 2.5 * 10^2 = 125 J (if dt=0.001 were passed, KE would be 0.05 J!)
+    expect(step1.vx).toBeCloseTo(10.0, 5);
+    expect(step1.v).toBeCloseTo(10.0, 5);
+    expect(step1.kineticEnergy).toBeCloseTo(125.0, 4);
+  });
+
+  it('7. Partial Inactive 2D Calibration Stick: Preserves saved endpoints & worldLength with active: false verbatim', async () => {
+    const trkJson = serializeProjectToTrk({
+      analysisMode: '2D',
+      experimentTitle: 'Partial_Stick_Draft',
+      calibration: {
+        active: false,
+        pointA: { x: 112.5, y: 318.25 },
+        pointB: { x: 488.75, y: 320.5 },
+        x1: 112.5,
+        y1: 318.25,
+        x2: 488.75,
+        y2: 320.5,
+        realLength: 1.5,
+        worldLength: 1.5,
+        length: 1.5,
+        unit: 'm',
+        scale: 100,
+        locked: false,
+        visible: true,
+      },
+      tracks: [
+        {
+          id: 'track-1',
+          name: 'Mass A',
+          color: '#2563EB',
+          mass: 1.0,
+          footprint: 'circle',
+          visible: true,
+          showVectors: true,
+          showTrails: true,
+          showLabels: true,
+          steps: [],
+        },
+      ],
+    });
+
+    const trkFile = new File([trkJson], 'Partial_Stick_Draft.trk', { type: 'application/json' });
+    const routed = await ingestWorkstationFile(trkFile);
+    expect(routed.valid).toBe(true);
+    const cal = routed.data!.calibration!;
+    expect(cal.active).toBe(false);
+    expect(cal.pointA).toEqual({ x: 112.5, y: 318.25 });
+    expect(cal.pointB).toEqual({ x: 488.75, y: 320.5 });
+    expect(cal.x1).toBe(112.5);
+    expect(cal.y1).toBe(318.25);
+    expect(cal.x2).toBe(488.75);
+    expect(cal.y2).toBe(320.5);
+    expect(cal.realLength).toBe(1.5);
+    expect(cal.worldLength).toBe(1.5);
+  });
+
+  it('8. Phase 2 3D Multi-Rate (clipCam2 + canonical syncConfig + cam1Time/cam2Time) & 6-DOF Leica ACS Survey Markers Round-Trip', async () => {
+    const project = serializeProject({
+      analysisMode: '3D',
+      experimentTitle: 'MultiRate_Stereo_And_Leica_ACS',
+      activeTrackId: 'store-3d',
+      clip: {
+        startFrame: 120,
+        endFrame: 620,
+        stepSize: 2,
+        fps: 1000,
+        startTime: 0.0,
+        frameDt: 0.001,
+        dt: 0.001,
+        totalFrames: 1000,
+        userTrimmed: true,
+      },
+      triangulation: {
+        method: 'dlt-2cam',
+        pixelsPerMeterCam1: 310,
+        pixelsPerMeterCam2: 295,
+        originCam1: { x: 640, y: 360 },
+        originCam2: { x: 640, y: 360 },
+        baselineMeters: 2.4,
+        convergenceAngleDeg: 68,
+        calibrated: true,
+        fpsCam1: 1000,
+        fpsCam2: 250,
+        clipCam2: {
+          startFrame: 30,
+          endFrame: 180,
+          stepSize: 1,
+          fps: 250,
+          startTime: 0.0,
+          frameDt: 0.004,
+          dt: 0.004,
+          totalFrames: 300,
+          userTrimmed: true,
+        },
+        syncConfig: {
+          anchorFrameCam1: 120,
+          anchorFrameCam2: 30,
+          fpsCam1: 1000,
+          fpsCam2: 250,
+          toleranceSec: 0.003,
+          playbackMaster: 'cam1',
+        },
+      },
+      sixDofState: {
+        intrinsics: {
+          fx: 1750,
+          fy: 1752,
+          cx: 642,
+          cy: 358,
+          distortion: { enabled: true, k1: -0.02, k2: 0.004, k3: 0, p1: 0.0002, p2: -0.0001 },
+        },
+        markers: [
+          { id: 'A1', group: 'A', x: 0.0, y: 0.0, z: 0.0 },
+          { id: 'L7', group: 'L', x: 0.4, y: -0.22, z: 0.03 },
+          { id: 'M15', group: 'M', x: 0.85, y: -0.45, z: 0.12 },
+        ],
+        csvText: 'A1,A,0,0,0\nL7,L,0.4,-0.22,0.03\nM15,M,0.85,-0.45,0.12',
+        missileCgBody: [0.12, -0.04, 0.02],
+        huberDeltaPx: 3.0,
+      },
+      tracks: [
+        {
+          id: 'store-3d',
+          name: 'Store 3D',
+          color: '#2563EB',
+          mass: 4.0,
+          footprint: 'circle',
+          visible: true,
+          showVectors: true,
+          showTrails: true,
+          showLabels: true,
+          steps: [
+            {
+              frame: 120,
+              time: 0.0,
+              px: 512,
+              py: 300,
+              cam1Px: 512,
+              cam1Py: 300,
+              cam2Px: 498,
+              cam2Py: 304,
+              cam1Time: 0.0,
+              cam2Time: 0.0,
+              cam2Frame: 30,
+              x: 0.0,
+              y: 0.0,
+              z: 5.0,
+            },
+            {
+              frame: 124,
+              time: 0.004,
+              px: 520,
+              py: 308,
+              cam1Px: 520,
+              cam1Py: 308,
+              cam2Px: 504,
+              cam2Py: 311,
+              cam1Time: 0.004,
+              cam2Time: 0.004,
+              cam2Frame: 31,
+              x: 0.08,
+              y: -0.02,
+              z: 5.04,
+            },
+          ],
+        },
+      ],
+    });
+
+    const validated = serializeAndValidateTrk(project);
+    expect(validated.valid).toBe(true);
+    if (!validated.valid) throw new Error('Expected valid .trk');
+    expect(validated.trkString).toBeDefined();
+
+    const restored = validated.data;
+    expect(restored.clip.startFrame).toBe(120);
+    expect(restored.clip.endFrame).toBe(620);
+    expect(restored.clip.userTrimmed).toBe(true);
+    expect(restored.triangulation?.clipCam2?.startFrame).toBe(30);
+    expect(restored.triangulation?.clipCam2?.endFrame).toBe(180);
+    expect(restored.triangulation?.clipCam2?.fps).toBe(250);
+    expect(restored.triangulation?.clipCam2?.userTrimmed).toBe(true);
+    expect(restored.triangulation?.syncConfig).toEqual({
+      anchorFrameCam1: 120,
+      anchorFrameCam2: 30,
+      fpsCam1: 1000,
+      fpsCam2: 250,
+      toleranceSec: 0.003,
+      playbackMaster: 'cam1',
+    });
+    expect(restored.tracks[0].steps[1].cam1Time).toBeCloseTo(0.004, 6);
+    expect(restored.tracks[0].steps[1].cam2Time).toBeCloseTo(0.004, 6);
+    expect(restored.tracks[0].steps[1].cam2Frame).toBe(31);
+    expect(restored.sixDofState?.intrinsics?.fx).toBe(1750);
+    expect(restored.sixDofState?.markers?.map((m) => m.id)).toEqual(['A1', 'L7', 'M15']);
+    expect(restored.sixDofState?.missileCgBody).toEqual([0.12, -0.04, 0.02]);
+    expect(restored.sixDofState?.huberDeltaPx).toBe(3.0);
+  });
+
+  it('9. Reversed-Order Dual-Camera .ZIP Matching & MIME Inference: Maps Cam 1 AVI and Cam 2 MP4 strictly by project.trk metadata', async () => {
+    const project3D = serializeProject({
+      analysisMode: '3D',
+      experimentTitle: 'Reversed_Order_Stereo_ZIP',
+      videoNameCam1: 'cam1_drop.avi',
+      videoNameCam2: 'cam2_side.mp4',
+      tracks: [],
+    });
+
+    const zip = new JSZip();
+    // Deliberately add Cam 2 BEFORE Cam 1 in ZIP entry order
+    zip.file('cam2_side.mp4', new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]));
+    zip.file('cam1_drop.avi', new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x20, 0x00, 0x00, 0x00]));
+    zip.file('project.trk', JSON.stringify(project3D, null, 2));
+
+    const zipBytes = await zip.generateAsync({ type: 'uint8array' });
+    const zipFile = new File([zipBytes], 'Reversed_Order_Stereo.zip', { type: 'application/zip' });
+
+    const routed = await ingestWorkstationFile(zipFile);
+    expect(routed.valid).toBe(true);
+    expect(routed.route).toBe('zip-bundle');
+    expect(routed.videoFileCam1?.name).toBe('cam1_drop.avi');
+    expect(routed.videoFileCam1?.type).toBe('video/x-msvideo');
+    expect(routed.videoFileCam2?.name).toBe('cam2_side.mp4');
+    expect(routed.videoFileCam2?.type).toBe('video/mp4');
+    expect(inferMediaMimeTypeFromFilename('highspeed.mov')).toBe('video/quicktime');
+  });
+
+  it('10. Dual-Camera Same-Filename Collision Protection: Disambiguates colliding VID_0001.avi filenames and restores both streams accurately', async () => {
+    const resolvedNames = resolveDualExportFilenames('VID_0001.avi', 'VID_0001.avi');
+    expect(resolvedNames.collided).toBe(true);
+    expect(resolvedNames.nameCam1).toBe('cam1_VID_0001.avi');
+    expect(resolvedNames.nameCam2).toBe('cam2_VID_0001.avi');
+
+    // Also verify nested relative paths (cam1/VID_0001.avi vs cam2/VID_0001.avi) match exact path first
+    const project3D = serializeProject({
+      analysisMode: '3D',
+      experimentTitle: 'Collision_Protected_Stereo',
+      videoNameCam1: 'cam1/VID_0001.avi',
+      videoNameCam2: 'cam2/VID_0001.avi',
+      tracks: [],
+    });
+
+    const cam1Bytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x01, 0x01, 0x01, 0x01]);
+    const cam2Bytes = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x02, 0x02, 0x02, 0x02]);
+    const zip = new JSZip();
+    zip.file('cam2/VID_0001.avi', cam2Bytes);
+    zip.file('cam1/VID_0001.avi', cam1Bytes);
+    zip.file('project.trk', JSON.stringify(project3D, null, 2));
+
+    const zipBytes = await zip.generateAsync({ type: 'uint8array' });
+    const zipFile = new File([zipBytes], 'Collision_Protected_Stereo.zip', { type: 'application/zip' });
+
+    const routed = await ingestWorkstationFile(zipFile);
+    expect(routed.valid).toBe(true);
+    expect(routed.videoFileCam1).toBeDefined();
+    expect(routed.videoFileCam2).toBeDefined();
+    expect(routed.videoFileCam1!.type).toBe('video/x-msvideo');
+    expect(routed.videoFileCam2!.type).toBe('video/x-msvideo');
+    const restoredCam1Buf = new Uint8Array(await routed.videoFileCam1!.arrayBuffer());
+    const restoredCam2Buf = new Uint8Array(await routed.videoFileCam2!.arrayBuffer());
+    expect(restoredCam1Buf[4]).toBe(0x01);
+    expect(restoredCam2Buf[4]).toBe(0x02);
+  });
+
+  it('11. Image-Sequence ZIP Disambiguation, VideoFormat .trk Guard & Pre-Download Self-Validation Failure', async () => {
+    // 11a. .trk must NOT be classified as a binary ZIP archive in videoFormats.ts
+    const dummyTrk = new File(['{"version":"2.0","tracks":[]}'], 'test_run.trk', {
+      type: 'application/json',
+    });
+    expect(inspectVideoFile(dummyTrk).isArchive).toBe(false);
+
+    // 11b. Numbered .png sequence ZIP routes cleanly to image-sequence without missing-.trk error
+    const pngHeader = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const seqZip = new JSZip();
+    seqZip.file('frames/frame_0001.png', pngHeader);
+    seqZip.file('frames/frame_0002.png', pngHeader);
+    seqZip.file('__MACOSX/frames/._frame_0001.png', pngHeader);
+    const seqBytes = await seqZip.generateAsync({ type: 'uint8array' });
+    const seqFile = new File([seqBytes], 'drop_frames.zip', { type: 'application/zip' });
+
+    const routedSeq = await ingestWorkstationFile(seqFile);
+    expect(routedSeq.kind).toBe('image-sequence');
+    expect(routedSeq.route).toBe('zip-image-sequence');
+    expect(routedSeq.zipImageEntries?.length).toBe(2);
+
+    // 11c. Pre-download self-validation rejects malformed payloads with stage-tagged diagnostics
+    const invalidPayload: any = {
+      version: '2.0',
+      clip: { startFrame: 0, endFrame: 10, fps: -5, stepSize: 1, startTime: 0, totalFrames: 11 },
+      tracks: 'not-an-array',
+    };
+    const selfCheck = serializeAndValidateTrk(invalidPayload);
+    expect(selfCheck.valid).toBe(false);
+    if (selfCheck.valid) throw new Error('Expected invalid .trk selfCheck');
+    expect(selfCheck.stage).toBe('Schema Validation');
+    expect(selfCheck.error).toContain('[Stage: Schema Validation] — Exact Reason:');
   });
 });

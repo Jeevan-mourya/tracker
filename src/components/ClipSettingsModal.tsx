@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { ClipSettings } from '../types';
+import React, { useState, useEffect } from 'react';
+import { ClipSettings, TriangulationConfig } from '../types';
 import {
   Sliders,
   X,
@@ -17,15 +17,20 @@ import {
   calculateRequiredShutter,
   formatHighSpeedTime,
 } from '../utils/highSpeedCameras';
+import {
+  normalizeStereoSyncConfig,
+  resolveEffectiveClipCam2,
+  computeStereoTimeWindow,
+} from '../utils/stereoSync';
 
 interface ClipSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   clip: ClipSettings;
-  onSave: (clip: Partial<ClipSettings>) => void;
+  onSave: (clip: Partial<ClipSettings>, triUpdates?: Partial<TriangulationConfig>) => void;
   is3D?: boolean;
-  triangulation?: any;
-  onUpdateTriangulation?: (tri: any) => void;
+  triangulation?: TriangulationConfig;
+  onUpdateTriangulation?: (tri: Partial<TriangulationConfig>) => void;
 }
 
 export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
@@ -49,37 +54,60 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   const [selectedCamera, setSelectedCamera] = useState<string>(clip.cameraModel || 'photron-saz');
   const [timeUnit, setTimeUnit] = useState<'auto' | 's' | 'ms' | 'us' | 'ns'>(clip.timeUnit || 'auto');
 
-  // Camera 2 settings (Requirement 3: distinct f2, start, end, step, t0, duration)
-  const initialCam2Clip = triangulation?.clipCam2 || {
-    fps: triangulation?.fpsCam2 || clip.fps || 30,
-    startFrame: 0,
-    endFrame: clip.totalFrames ? clip.totalFrames - 1 : clip.endFrame || 100,
-    stepSize: 1,
-    startTime: 0,
-    playbackFps: 30,
-  };
-  const [fpsCam2, setFpsCam2] = useState((triangulation?.fpsCam2 || initialCam2Clip.fps || 30).toString());
+  // Camera 2 settings
+  const initialCam2Clip = resolveEffectiveClipCam2(triangulation, clip);
+  const [fpsCam2, setFpsCam2] = useState(initialCam2Clip.fps.toString());
   const [playbackFpsCam2, setPlaybackFpsCam2] = useState((initialCam2Clip.playbackFps || 30).toString());
   const [startFrameCam2, setStartFrameCam2] = useState(initialCam2Clip.startFrame.toString());
   const [endFrameCam2, setEndFrameCam2] = useState(initialCam2Clip.endFrame.toString());
   const [stepSizeCam2, setStepSizeCam2] = useState(initialCam2Clip.stepSize.toString());
   const [startTimeCam2, setStartTimeCam2] = useState((initialCam2Clip.startTime ?? 0).toString());
 
-  // Stereo Synchronization Settings (Requirement 2 & 3: Anchor frames n and m, tolerance)
-  const initialSync = triangulation?.syncConfig || {
-    anchorCam1Frame: 0,
-    anchorCam2Frame: 0,
-    syncToleranceSeconds: 0.005,
-  };
-  const [anchorCam1, setAnchorCam1] = useState(initialSync.anchorCam1Frame.toString());
-  const [anchorCam2, setAnchorCam2] = useState(initialSync.anchorCam2Frame.toString());
+  // Canonical Stereo Synchronization Settings
+  const initialSync = normalizeStereoSyncConfig(
+    triangulation?.syncConfig,
+    triangulation?.fpsCam1 || clip.fps || 30,
+    initialCam2Clip.fps
+  );
+  const [anchorCam1, setAnchorCam1] = useState(initialSync.anchorFrameCam1.toString());
+  const [anchorCam2, setAnchorCam2] = useState(initialSync.anchorFrameCam2.toString());
   const [syncToleranceMs, setSyncToleranceMs] = useState(
-    ((initialSync.syncToleranceSeconds || 0.005) * 1000).toString()
+    (initialSync.toleranceSec * 1000).toString()
   );
 
   // Defense shutter / blur calculator state
   const [calcSpeedMps, setCalcSpeedMps] = useState<string>('920'); // 5.56mm NATO default
   const [calcBlurMm, setCalcBlurMm] = useState<string>('0.5');
+
+  // Resync all modal fields to live Camera 1, Camera 2, and Stereo Sync state whenever opened
+  useEffect(() => {
+    if (!isOpen) return;
+    setStartFrame(clip.startFrame.toString());
+    setEndFrame(clip.endFrame.toString());
+    setStepSize(clip.stepSize.toString());
+    setFps((triangulation?.fpsCam1 || clip.fps || 30).toString());
+    setPlaybackFps((clip.playbackFps || (clip.fps > 240 ? 30 : clip.fps) || 30).toString());
+    setStartTime((clip.startTime ?? 0).toString());
+    setSelectedCamera(clip.cameraModel || 'photron-saz');
+    setTimeUnit(clip.timeUnit || 'auto');
+
+    const liveCam2 = resolveEffectiveClipCam2(triangulation, clip);
+    setFpsCam2(liveCam2.fps.toString());
+    setPlaybackFpsCam2((liveCam2.playbackFps || (liveCam2.fps > 240 ? 30 : liveCam2.fps) || 30).toString());
+    setStartFrameCam2(liveCam2.startFrame.toString());
+    setEndFrameCam2(liveCam2.endFrame.toString());
+    setStepSizeCam2(liveCam2.stepSize.toString());
+    setStartTimeCam2((liveCam2.startTime ?? 0).toString());
+
+    const liveSync = normalizeStereoSyncConfig(
+      triangulation?.syncConfig,
+      triangulation?.fpsCam1 || clip.fps || 30,
+      liveCam2.fps
+    );
+    setAnchorCam1(liveSync.anchorFrameCam1.toString());
+    setAnchorCam2(liveSync.anchorFrameCam2.toString());
+    setSyncToleranceMs((liveSync.toleranceSec * 1000).toString());
+  }, [isOpen, clip, triangulation]);
 
   if (!isOpen) return null;
 
@@ -121,7 +149,9 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     const s = Math.max(0, parseInt(startFrame, 10) || 0);
-    const end = Math.max(s, parseInt(endFrame, 10) || clip.totalFrames - 1);
+    const maxCam1End = Math.max(s, Math.max(0, (clip.totalFrames || 1) - 1));
+    const parsedEnd1 = parseInt(endFrame, 10);
+    const end = Math.max(s, Number.isFinite(parsedEnd1) ? parsedEnd1 : maxCam1End);
     const step = Math.max(1, parseInt(stepSize, 10) || 1);
     const fRate = Math.max(0.1, parseFloat(fps) || 30);
     const pFps = Math.max(1, parseFloat(playbackFps) || 30);
@@ -130,8 +160,7 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
 
     const matchedCam = DEFENSE_HIGH_SPEED_CAMERAS.find((c) => c.id === selectedCamera);
 
-    // Save Camera 1 to clip
-    onSave({
+    const clipUpdates: Partial<ClipSettings> = {
       startFrame: s,
       endFrame: end,
       stepSize: step,
@@ -140,40 +169,54 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
       startTime: t0,
       frameDt: dt,
       dt,
-      cameraModel: matchedCam ? `${matchedCam.manufacturer} ${matchedCam.model}` : 'High-Speed Camera',
+      totalFrames: Math.max(clip.totalFrames || 1, end + 1),
+      cameraModel: matchedCam ? `${matchedCam.manufacturer} ${matchedCam.model}` : clip.cameraModel || 'High-Speed Camera',
       timeUnit,
-    });
+    };
 
-    // Save Camera 2 and Stereo Sync to triangulation if handler present
-    if (onUpdateTriangulation) {
-      const fRate2 = Math.max(0.1, parseFloat(fpsCam2) || 30);
-      const s2 = Math.max(0, parseInt(startFrameCam2, 10) || 0);
-      const end2 = Math.max(s2, parseInt(endFrameCam2, 10) || 100);
-      const step2 = Math.max(1, parseInt(stepSizeCam2, 10) || 1);
-      const pFps2 = Math.max(1, parseFloat(playbackFpsCam2) || 30);
-      const t02 = parseFloat(startTimeCam2) || 0;
+    const existingCam2 = resolveEffectiveClipCam2(triangulation, clip);
+    const fRate2 = Math.max(0.1, parseFloat(fpsCam2) || 30);
+    const s2 = Math.max(0, parseInt(startFrameCam2, 10) || 0);
+    const parsedEnd2 = parseInt(endFrameCam2, 10);
+    const end2 = Math.max(s2, Number.isFinite(parsedEnd2) ? parsedEnd2 : existingCam2.endFrame);
+    const step2 = Math.max(1, parseInt(stepSizeCam2, 10) || 1);
+    const pFps2 = Math.max(1, parseFloat(playbackFpsCam2) || 30);
+    const t02 = parseFloat(startTimeCam2) || 0;
+    const dt2 = step2 / fRate2;
 
-      const n = Math.max(0, parseInt(anchorCam1, 10) || 0);
-      const m = Math.max(0, parseInt(anchorCam2, 10) || 0);
-      const tolSec = Math.max(0.0001, (parseFloat(syncToleranceMs) || 5) / 1000);
+    const n = Math.max(0, parseInt(anchorCam1, 10) || 0);
+    const m = Math.max(0, parseInt(anchorCam2, 10) || 0);
+    const tolSec = Math.max(0.0001, (parseFloat(syncToleranceMs) || 5) / 1000);
 
-      onUpdateTriangulation({
+    const triUpdates: Partial<TriangulationConfig> = {
+      fpsCam1: fRate,
+      fpsCam2: fRate2,
+      clipCam2: {
+        ...existingCam2,
+        fps: fRate2,
+        startFrame: s2,
+        endFrame: end2,
+        stepSize: step2,
+        startTime: t02,
+        frameDt: dt2,
+        dt: dt2,
+        totalFrames: Math.max(existingCam2.totalFrames || 1, end2 + 1),
+        playbackFps: pFps2,
+      },
+      syncConfig: {
+        anchorFrameCam1: n,
+        anchorFrameCam2: m,
         fpsCam1: fRate,
         fpsCam2: fRate2,
-        clipCam2: {
-          fps: fRate2,
-          startFrame: s2,
-          endFrame: end2,
-          stepSize: step2,
-          startTime: t02,
-          playbackFps: pFps2,
-        },
-        syncConfig: {
-          anchorCam1Frame: n,
-          anchorCam2Frame: m,
-          syncToleranceSeconds: tolSec,
-        },
-      });
+        toleranceSec: tolSec,
+        playbackMaster: triangulation?.syncConfig?.playbackMaster || 'both',
+      },
+    };
+
+    // Route through unified save handler (supports atomic Cam1 + Cam2 + re-triangulation in App.tsx)
+    onSave(clipUpdates, triUpdates);
+    if (onUpdateTriangulation) {
+      onUpdateTriangulation(triUpdates);
     }
 
     onClose();
@@ -603,10 +646,42 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
                 </div>
               </div>
 
-              <div className="bg-[#f0f9ff] border border-[#bae6fd] p-2 rounded-[2px] text-[11px] text-blue-950 font-mono">
-                <div>Current Configuration:</div>
-                <div>Anchor Pair: Cam 1 Frame {anchorCam1} &harr; Cam 2 Frame {anchorCam2}</div>
-                <div>Rates: f₁ = {currentFps} fps, f₂ = {currentFps2} fps (Ratio: {(currentFps2 / currentFps).toFixed(4)})</div>
+              <div className="bg-[#f0f9ff] border border-[#bae6fd] p-2 rounded-[2px] text-[11px] text-blue-950 font-mono space-y-0.5">
+                {(() => {
+                  const previewWin = computeStereoTimeWindow(
+                    {
+                      startFrame: Math.max(0, parseInt(startFrame, 10) || 0),
+                      endFrame: Math.max(0, parseInt(endFrame, 10) || 0),
+                      totalFrames: Math.max(1, clip.totalFrames || 1),
+                      fps: currentFps,
+                    },
+                    {
+                      startFrame: Math.max(0, parseInt(startFrameCam2, 10) || 0),
+                      endFrame: Math.max(0, parseInt(endFrameCam2, 10) || 0),
+                      totalFrames: Math.max(1, (parseInt(endFrameCam2, 10) || 0) + 1),
+                      fps: currentFps2,
+                    },
+                    {
+                      anchorFrameCam1: Math.max(0, parseInt(anchorCam1, 10) || 0),
+                      anchorFrameCam2: Math.max(0, parseInt(anchorCam2, 10) || 0),
+                      fpsCam1: currentFps,
+                      fpsCam2: currentFps2,
+                    }
+                  );
+                  return (
+                    <>
+                      <div className="font-bold">Live Master Physical Clock Preview:</div>
+                      <div>Anchor Pair: Cam 1 F#{anchorCam1} &harr; Cam 2 F#{anchorCam2} (t = 0.0000 s)</div>
+                      <div>Rates: f₁ = {currentFps} fps, f₂ = {currentFps2} fps (Ratio: {(currentFps2 / currentFps).toFixed(4)})</div>
+                      <div>
+                        Overlap Window:{' '}
+                        {previewWin.hasOverlap
+                          ? `[${previewWin.overlapStartSec.toFixed(4)} s .. ${previewWin.overlapEndSec.toFixed(4)} s] (${previewWin.overlapDurationSec.toFixed(4)} s)`
+                          : 'DISJOINT — Out-of-Clip badge active during union playback'}
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}

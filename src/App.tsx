@@ -18,8 +18,13 @@ import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import { ExperimentReportModal } from './components/ExperimentReportModal';
 import { Monocular6DoFModal } from './components/Monocular6DoFModal';
 import { MetrologyAuditModal } from './components/MetrologyAuditModal';
-import { AviHighSpeedLoader } from './video/aviHighSpeedLoader';
-import { loadUniversalVideoFile } from './video/universalVideoDecoder';
+import type { UnifiedFrameSource, CodecDiagnosticNotice } from './video/unifiedFrameSource';
+import {
+  loadUniversalVideoFile,
+  loadUnifiedMediaFiles,
+  UniversalVideoLoadResult,
+} from './video/universalVideoDecoder';
+import { ImageSequenceLoader } from './video/imageSequenceLoader';
 import { SAMPLE_EXPERIMENTS } from './data/samples';
 import {
   Track,
@@ -30,6 +35,7 @@ import {
   SampleExperiment,
   TriangulationConfig,
   GraphConfig,
+  SavedProjectData,
 } from './types';
 import { DEFAULT_GRAPH_CONFIG, deriveSixChannelSeries } from './utils/sixChannelGraphing';
 import { computeKinematics, pixelToWorld } from './utils/physics';
@@ -39,13 +45,21 @@ import {
   triangulateDLT,
 } from './utils/triangulation';
 import {
+  normalizeStereoSyncConfig,
+  resolveEffectiveClipCam2,
+  frameToPhysicalTestTime,
+  mapCam1ToCam2,
+} from './utils/stereoSync';
+import {
+  ACCEPTED_VIDEO_ACCEPT_STRING,
   extractVideoFromArchive,
   probeVideoMetadata,
   VideoMetadataProbeResult,
 } from './utils/videoFormats';
 import {
   serializeProject,
-  serializeProjectToTrk,
+  serializeAndValidateTrk,
+  formatProjectStageError,
   validateAndParseProject,
   ingestWorkstationFile,
   saveProjectToFolderOrBundle,
@@ -60,6 +74,7 @@ import {
 import { mediaDiagnostics } from './utils/mediaDiagnostics';
 import {
   CheckCircle2,
+  AlertTriangle,
   Maximize2,
   Minimize2,
   ChevronLeft,
@@ -80,8 +95,10 @@ export const App: React.FC = () => {
   // before synchronous LocalStorage + asynchronous IndexedDB restoration finishes.
   const isHydratedRef = useRef<boolean>(false);
   const [isRestoringSession, setIsRestoringSession] = useState<boolean>(true);
-  const [pendingRelinkVideoName, setPendingRelinkVideoName] = useState<string | null>(null);
-  const relinkInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingRelinkCam1Name, setPendingRelinkCam1Name] = useState<string | null>(null);
+  const [pendingRelinkCam2Name, setPendingRelinkCam2Name] = useState<string | null>(null);
+  const relinkCam1InputRef = useRef<HTMLInputElement | null>(null);
+  const relinkCam2InputRef = useRef<HTMLInputElement | null>(null);
 
   // Synchronously load any auto-saved session from localStorage so refreshing or reopening
   // never wipes user work or overwrites it with SAMPLE_EXPERIMENTS[0].
@@ -149,9 +166,33 @@ export const App: React.FC = () => {
   const [analysisMode, setAnalysisMode] = useState<'2D' | '3D' | '6DOF'>(
     initialSession?.analysisMode ?? (SAMPLE_EXPERIMENTS[0].is3D ? '3D' : '2D')
   );
-  const [aviLoader, setAviLoader] = useState<AviHighSpeedLoader | null>(null);
-  const [aviLoaderCam2, setAviLoaderCam2] = useState<AviHighSpeedLoader | null>(null);
+  const [aviLoader, setAviLoader] = useState<UnifiedFrameSource | null>(null);
+  const [aviLoaderCam2, setAviLoaderCam2] = useState<UnifiedFrameSource | null>(null);
+  const aviLoaderRef = useRef<UnifiedFrameSource | null>(null);
+  const aviLoaderCam2Ref = useRef<UnifiedFrameSource | null>(null);
+  const [codecDiagnosticCam1, setCodecDiagnosticCam1] = useState<CodecDiagnosticNotice | null>(null);
+  const [codecDiagnosticCam2, setCodecDiagnosticCam2] = useState<CodecDiagnosticNotice | null>(null);
+  const [active3DPasteCam, setActive3DPasteCam] = useState<'cam1' | 'cam2'>('cam1');
   const [transcodeProgress, setTranscodeProgress] = useState<{ percent: number; text: string } | null>(null);
+
+  const replaceFrameLoader = useCallback(
+    (slot: 'cam1' | 'cam2', next: UnifiedFrameSource | null) => {
+      if (slot === 'cam1') {
+        if (aviLoaderRef.current && aviLoaderRef.current !== next) {
+          aviLoaderRef.current.dispose();
+        }
+        aviLoaderRef.current = next;
+        setAviLoader(next);
+      } else {
+        if (aviLoaderCam2Ref.current && aviLoaderCam2Ref.current !== next) {
+          aviLoaderCam2Ref.current.dispose();
+        }
+        aviLoaderCam2Ref.current = next;
+        setAviLoaderCam2(next);
+      }
+    },
+    []
+  );
 
   // Calibration
   const [calibration, setCalibration] = useState<Calibration>(
@@ -183,6 +224,12 @@ export const App: React.FC = () => {
   const [clip, setClip] = useState<ClipSettings>(
     initialSession?.clip || SAMPLE_EXPERIMENTS[0].clip
   );
+
+  // Lifted Monocular 6-DOF Leica ACS Survey State (persisted in .trk / .zip / Auto-Save)
+  const [sixDofState, setSixDofState] = useState<SavedProjectData['sixDofState']>(
+    initialSession?.sixDofState
+  );
+  const [sixDofHydrationRevision, setSixDofHydrationRevision] = useState<number>(0);
 
   // Playback / scrubber frame
   const [currentFrame, setCurrentFrame] = useState<number>(
@@ -478,14 +525,24 @@ export const App: React.FC = () => {
   const snapshotGetterRef = useRef<(() => string | null) | null>(null);
 
   // Save / project notification toast
-  const [saveToast, setSaveToast] = useState<{ message: string; sub?: string } | null>(null);
+  const [saveToast, setSaveToast] = useState<{
+    message: string;
+    sub?: string;
+    variant?: 'info' | 'warning';
+  } | null>(null);
   const saveToastTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const showToast = useCallback((message: string, sub?: string) => {
-    setSaveToast({ message, sub });
-    if (saveToastTimerRef.current) clearTimeout(saveToastTimerRef.current);
-    saveToastTimerRef.current = setTimeout(() => setSaveToast(null), 3500);
-  }, []);
+  const showToast = useCallback(
+    (message: string, sub?: string, variant: 'info' | 'warning' = 'info') => {
+      setSaveToast({ message, sub, variant });
+      if (saveToastTimerRef.current) clearTimeout(saveToastTimerRef.current);
+      saveToastTimerRef.current = setTimeout(
+        () => setSaveToast(null),
+        variant === 'warning' ? 5500 : 3500
+      );
+    },
+    []
+  );
 
   // Object URL lifecycle management to prevent memory leaks and dangling media streams
   const activeBlobUrlCam1Ref = useRef<string | null>(null);
@@ -540,6 +597,14 @@ export const App: React.FC = () => {
           // ignore
         }
       }
+      if (aviLoaderRef.current) {
+        aviLoaderRef.current.dispose();
+        aviLoaderRef.current = null;
+      }
+      if (aviLoaderCam2Ref.current) {
+        aviLoaderCam2Ref.current.dispose();
+        aviLoaderCam2Ref.current = null;
+      }
     };
   }, []);
 
@@ -592,17 +657,14 @@ export const App: React.FC = () => {
   // Handle Experiment Selection
   const handleSelectExperiment = (exp: SampleExperiment) => {
     mediaDiagnostics.setSession(exp.id);
-    if (aviLoader) {
-      aviLoader.dispose();
-      setAviLoader(null);
-    }
-    if (aviLoaderCam2) {
-      aviLoaderCam2.dispose();
-      setAviLoaderCam2(null);
-    }
+    replaceFrameLoader('cam1', null);
+    replaceFrameLoader('cam2', null);
+    setCodecDiagnosticCam1(null);
+    setCodecDiagnosticCam2(null);
     registerBlobUrl('', 'cam1');
     registerBlobUrl('', 'cam2');
-    setPendingRelinkVideoName(null);
+    setPendingRelinkCam1Name(null);
+    setPendingRelinkCam2Name(null);
     setCurrentExp(exp);
     setVideoUrl(exp.videoUrl);
     setVideoUrlCam2(exp.videoUrlCam2 || '');
@@ -688,54 +750,49 @@ export const App: React.FC = () => {
     return rawFile;
   };
 
-  // Handle Custom Video Upload with 3-Tier Universal Video Demuxer & Codec Engine (.MP4, .AVI, .WMV, .FLV, .MOV)
-  // Also transparently routes .trk, .json, and project .zip bundles via Universal Magic-Byte Router!
-  const handleUploadVideo = async (rawFile: File, preserveExistingTracks = false) => {
-    if (!preserveExistingTracks) {
-      const routed = await ingestWorkstationFile(rawFile);
-      if (routed.kind === 'project') {
-        if (routed.valid && routed.data) {
-          await applyRestoredProjectData(
-            routed.data,
-            routed.videoFileCam1,
-            routed.videoFileCam2,
-            rawFile.name
-          );
-        } else {
-          showToast(
-            'Invalid Project File',
-            routed.error ||
-              routed.errors?.join('; ') ||
-              'Could not parse .trk / .zip project file'
-          );
+  // Handle Custom Media Upload with Unified Multi-Format Engine
+  // (.MP4, .MOV, .OGG, .WEBM, .MKV, .AVI, .WMV, .FLV, .GIF, PNG/JPG/BMP/WebP images & numbered sequences, .ZIP, .TRZ, .TRK)
+  const commitUnifiedResultToPrimary = (
+    result: UniversalVideoLoadResult,
+    displayName: string,
+    preserveExistingTracks: boolean,
+    preserveClipTrims = false
+  ) => {
+    if (result.requiresDesktopFfmpegBridge && result.diagnostic) {
+      replaceFrameLoader('cam1', null);
+      registerBlobUrl('', 'cam1');
+      setVideoUrl('');
+      setIsSynthetic(false);
+      setFormatWarningProbe(null);
+      setCodecDiagnosticCam1(result.diagnostic);
+      showToast(
+        `${result.container} (${result.diagnostic.codecFourCC}) Requires FFmpeg`,
+        'Browser cannot decode this codec — use the inline FFmpeg command or TrackEye Desktop.',
+        'warning'
+      );
+      return;
+    }
+
+    const fpsVal = Math.max(1, Math.round(result.fps || 30));
+    const totalFramesVal = Math.max(1, result.totalFrames || 1);
+    const maxIdx = Math.max(0, totalFramesVal - 1);
+    const keepTrims = preserveClipTrims || (preserveExistingTracks && clip.userTrimmed === true);
+    const universalClip: ClipSettings = keepTrims
+      ? {
+          ...clip,
+          startFrame: Math.max(0, Math.min(clip.startFrame, maxIdx)),
+          endFrame: Math.max(
+            Math.max(0, Math.min(clip.startFrame, maxIdx)),
+            Math.min(clip.endFrame, maxIdx)
+          ),
+          totalFrames: totalFramesVal,
+          userTrimmed: clip.userTrimmed ?? true,
         }
-        return;
-      }
-    }
-
-    const file = await resolveUploadedFile(rawFile);
-    activeVideoFileCam1Ref.current = file;
-    void saveWorkspaceMediaToIndexedDB('cam1', file, file.name);
-    setPendingRelinkVideoName(null);
-
-    if (aviLoader) {
-      aviLoader.dispose();
-      setAviLoader(null);
-    }
-
-    const isGif = file.name.toLowerCase().endsWith('.gif') || file.type === 'image/gif';
-    if (!isGif) {
-      try {
-        const result = await loadUniversalVideoFile(file, (percent, statusText) => {
-          setTranscodeProgress({ percent, text: statusText });
-        });
-        setTranscodeProgress(null);
-
-        const fpsVal = Math.max(1, Math.round(result.fps || 30));
-        const totalFramesVal = Math.max(1, result.totalFrames || 60);
-        const universalClip: ClipSettings = {
+      : {
           startFrame: preserveExistingTracks ? clip.startFrame : 0,
-          endFrame: preserveExistingTracks ? Math.max(clip.endFrame, totalFramesVal - 1) : totalFramesVal - 1,
+          endFrame: preserveExistingTracks
+            ? Math.max(clip.endFrame, maxIdx)
+            : maxIdx,
           stepSize: preserveExistingTracks ? clip.stepSize : 1,
           fps: preserveExistingTracks ? clip.fps : fpsVal,
           startTime: preserveExistingTracks ? clip.startTime : 0.0,
@@ -744,81 +801,218 @@ export const App: React.FC = () => {
           totalFrames: preserveExistingTracks ? Math.max(clip.totalFrames, totalFramesVal) : totalFramesVal,
         };
 
-        setAviLoader(result.frameLoader);
-        setFormatWarningProbe(null);
-        registerBlobUrl(result.videoUrl, 'cam1');
-        setVideoUrl(result.videoUrl);
-        setIsSynthetic(false);
-        if (!preserveExistingTracks) {
-          setCurrentFrame(0);
-        }
-        setClip(universalClip);
+    setPendingRelinkCam1Name(null);
+    setCodecDiagnosticCam1(null);
+    replaceFrameLoader('cam1', result.frameLoader);
+    setFormatWarningProbe(null);
+    registerBlobUrl(result.videoUrl, 'cam1');
+    setVideoUrl(result.videoUrl);
+    setIsSynthetic(false);
+    if (!preserveExistingTracks) {
+      setCurrentFrame(0);
+    } else if (keepTrims) {
+      setCurrentFrame((curr) =>
+        Math.max(universalClip.startFrame, Math.min(universalClip.endFrame, curr))
+      );
+    }
+    setClip(universalClip);
 
-        if (analysisMode !== '3D' && analysisMode !== '6DOF') {
-          setAnalysisMode('2D');
-          if (layout === 'split-3d' || layout === 'trajectory-3d') {
-            setLayout('split');
-          }
-        }
-
-        if (!preserveExistingTracks) {
-          const uploadSessionId = `custom-${result.container.toLowerCase()}-${Date.now()}`;
-          mediaDiagnostics.setSession(uploadSessionId, file.name);
-          setCurrentExp({
-            id: uploadSessionId,
-            title: file.name,
-            description: `${result.tierDescription} • ${result.diagnosticsSummary}`,
-            category: 'custom',
-            videoUrl: result.videoUrl,
-            syntheticType: undefined,
-            is3D: analysisMode === '3D',
-            calibration: { ...calibration },
-            axes: { ...axes },
-            clip: universalClip,
-          });
-        } else {
-          setCurrentExp((prev) => ({
-            ...prev,
-            videoUrl: result.videoUrl,
-            syntheticType: undefined,
-            clip: universalClip,
-          }));
-        }
-
-        setTracks((prev) => {
-          if (prev.some((t) => t.steps && t.steps.length > 0)) {
-            return prev;
-          }
-          return [
-            {
-              id: 'track-1',
-              name: 'Mass A',
-              color: '#3b82f6',
-              mass: 0.1,
-              footprint: 'circle',
-              steps: [],
-              visible: true,
-              showVectors: true,
-              showTrails: true,
-              showLabels: true,
-            },
-          ];
-        });
-
-        showToast(
-          preserveExistingTracks
-            ? `Video Relinked: ${file.name} (${totalFramesVal} frames @ ${fpsVal} fps)`
-            : `${result.container} Loaded (${totalFramesVal} frames @ ${fpsVal} fps)`,
-          `${result.tierDescription} • ${result.width}×${result.height}`
-        );
-        return;
-      } catch (universalErr) {
-        setTranscodeProgress(null);
-        console.warn('Universal video loader fallback to standard probe:', universalErr);
+    if (analysisMode !== '3D' && analysisMode !== '6DOF') {
+      setAnalysisMode('2D');
+      if (layout === 'split-3d' || layout === 'trajectory-3d') {
+        setLayout('split');
       }
     }
 
-    // Client-side video metadata probe to detect unsupported or sub-optimal codec profiles
+    if (!preserveExistingTracks) {
+      const uploadSessionId = `custom-${result.container.toLowerCase()}-${Date.now()}`;
+      mediaDiagnostics.setSession(uploadSessionId, displayName);
+      setCurrentExp({
+        id: uploadSessionId,
+        title: displayName,
+        description: `${result.tierDescription} • ${result.diagnosticsSummary}`,
+        category: 'custom',
+        videoUrl: result.videoUrl,
+        syntheticType: undefined,
+        is3D: analysisMode === '3D',
+        calibration: { ...calibration },
+        axes: { ...axes },
+        clip: universalClip,
+      });
+    } else {
+      setCurrentExp((prev) => ({
+        ...prev,
+        videoUrl: result.videoUrl,
+        syntheticType: undefined,
+        clip: universalClip,
+      }));
+    }
+
+    setTracks((prev) => {
+      if (prev.some((t) => t.steps && t.steps.length > 0)) {
+        return prev;
+      }
+      return [
+        {
+          id: 'track-1',
+          name: 'Mass A',
+          color: '#3b82f6',
+          mass: 0.1,
+          footprint: 'circle',
+          steps: [],
+          visible: true,
+          showVectors: true,
+          showTrails: true,
+          showLabels: true,
+        },
+      ];
+    });
+
+    if (result.container === 'IMAGE_SEQUENCE') {
+      showToast(
+        preserveExistingTracks
+          ? `Sequence Relinked: ${displayName} (${totalFramesVal} frames @ ${universalClip.fps} fps)`
+          : `Image Sequence Loaded (${totalFramesVal} frames @ ${fpsVal} fps)`,
+        `Default 30 fps — customize frame rate in Clip Settings • ${result.width}×${result.height}`
+      );
+    } else if (result.container === 'IMAGE') {
+      showToast(
+        preserveExistingTracks
+          ? `Image Relinked: ${displayName}`
+          : `Static Image Loaded (${result.width}×${result.height})`,
+        'Single-frame calibration & measurement mode (1 frame)'
+      );
+    } else {
+      showToast(
+        preserveExistingTracks
+          ? `Video Relinked: ${displayName} (${totalFramesVal} frames @ ${universalClip.fps} fps)`
+          : `${result.container} Loaded (${totalFramesVal} frames @ ${fpsVal} fps)`,
+        `${result.tierDescription} • ${result.width}×${result.height}`
+      );
+    }
+  };
+
+  const handleUploadVideo = async (
+    rawInput: File | File[],
+    preserveExistingTracks = false,
+    preserveClipTrims = false
+  ) => {
+    const fileList = Array.isArray(rawInput) ? rawInput : [rawInput];
+    if (fileList.length === 0) return;
+
+    // Multi-file selection (e.g. numbered PNG/JPG/BMP/WebP image sequence)
+    if (fileList.length > 1) {
+      replaceFrameLoader('cam1', null);
+      setCodecDiagnosticCam1(null);
+      try {
+        const result = await loadUnifiedMediaFiles(
+          fileList,
+          (percent, statusText) => setTranscodeProgress({ percent, text: statusText }),
+          30
+        );
+        setTranscodeProgress(null);
+        commitUnifiedResultToPrimary(
+          result,
+          `${fileList[0].name} (+${fileList.length - 1} frames)`,
+          preserveExistingTracks,
+          preserveClipTrims
+        );
+      } catch (err: any) {
+        setTranscodeProgress(null);
+        showToast('Media Load Notice', err?.message || 'Could not load selected files.', 'warning');
+      }
+      return;
+    }
+
+    const rawFile = fileList[0];
+
+    // Route .trk / .json / project .zip / zipped image sequences via Universal Magic-Byte Router
+    // Always route project files regardless of preserveExistingTracks so relink pickers never feed .trk JSON into video decoders.
+    const routed = await ingestWorkstationFile(rawFile);
+    if (routed.kind === 'project') {
+      if (routed.valid && routed.data) {
+        await applyRestoredProjectData(
+          routed.data,
+          routed.videoFileCam1,
+          routed.videoFileCam2,
+          rawFile.name
+        );
+      } else {
+        showToast(
+          'Project Load Failed',
+          routed.error ||
+            formatProjectStageError(
+              routed.stage || 'Schema Validation',
+              routed.errors?.join('; ') || 'Could not parse .trk / .zip project file'
+            ),
+          'warning'
+        );
+      }
+      return;
+    }
+
+    if (routed.kind === 'image-sequence' && routed.zipImageEntries && routed.zipImageEntries.length > 0) {
+      replaceFrameLoader('cam1', null);
+      setCodecDiagnosticCam1(null);
+      activeVideoFileCam1Ref.current = rawFile;
+      void saveWorkspaceMediaToIndexedDB('cam1', rawFile, rawFile.name);
+      try {
+        setTranscodeProgress({ percent: 25, text: `Indexing ${routed.zipImageEntries.length} zipped frames...` });
+        const seqLoader = ImageSequenceLoader.fromLazyZipEntries(
+          routed.zipImageEntries,
+          routed.archiveFileName || rawFile.name,
+          preserveClipTrims ? clip.fps || 30 : 30
+        );
+        const meta = await seqLoader.initialize();
+        setTranscodeProgress(null);
+        commitUnifiedResultToPrimary(
+          {
+            tier: 1,
+            tierDescription: `Tier 1 Lazy ZIP Image Sequence (${meta.totalFrames} frames @ ${meta.fps} fps)`,
+            container: 'IMAGE_SEQUENCE',
+            codecFourCC: 'ZIP_IMG',
+            videoUrl: '',
+            frameLoader: seqLoader,
+            usedCodecBridge: false,
+            width: meta.width,
+            height: meta.height,
+            fps: meta.fps,
+            totalFrames: meta.totalFrames,
+            durationSec: meta.durationSec,
+            diagnosticsSummary: `ZIP sequence (${meta.totalFrames} frames, ${meta.width}×${meta.height}, default 30 fps)`,
+          },
+          rawFile.name,
+          preserveExistingTracks,
+          preserveClipTrims
+        );
+      } catch (err: any) {
+        setTranscodeProgress(null);
+        showToast('Image Sequence Error', err?.message || 'Failed to index zipped image sequence.', 'warning');
+      }
+      return;
+    }
+
+    const file = await resolveUploadedFile(rawFile);
+    activeVideoFileCam1Ref.current = file;
+    void saveWorkspaceMediaToIndexedDB('cam1', file, file.name);
+
+    // Synchronously dispose prior frame source & reset any prior diagnostic card immediately
+    replaceFrameLoader('cam1', null);
+    setCodecDiagnosticCam1(null);
+
+    try {
+      const result = await loadUniversalVideoFile(file, (percent, statusText) => {
+        setTranscodeProgress({ percent, text: statusText });
+      });
+      setTranscodeProgress(null);
+      commitUnifiedResultToPrimary(result, file.name, preserveExistingTracks, preserveClipTrims);
+      return;
+    } catch (universalErr) {
+      setTranscodeProgress(null);
+      console.warn('Universal video loader fallback to standard probe:', universalErr);
+    }
+
+    // Fallback native probe only if loadUniversalVideoFile threw unexpectedly
     probeVideoMetadata(file)
       .then((result) => {
         if (result.warningLevel !== 'none') {
@@ -835,8 +1029,10 @@ export const App: React.FC = () => {
     registerBlobUrl(url, 'cam1');
     setVideoUrl(url);
     setIsSynthetic(false);
-    setCurrentFrame(0);
-    // Requirement 6: Protect analysis mode - do not arbitrarily force 2D if in 3D or 6DOF mode
+    setPendingRelinkCam1Name(null);
+    if (!preserveExistingTracks) {
+      setCurrentFrame(0);
+    }
     if (analysisMode !== '3D' && analysisMode !== '6DOF') {
       setAnalysisMode('2D');
       if (layout === 'split-3d' || layout === 'trajectory-3d') {
@@ -844,102 +1040,101 @@ export const App: React.FC = () => {
       }
     }
 
-    // Initial safe generous clip setting while probing metadata
-    const initialClip: ClipSettings = {
-      startFrame: 0,
-      endFrame: 9999,
-      stepSize: 1,
-      fps: 30,
-      startTime: 0.0,
-      frameDt: 1 / 30,
-      dt: 1 / 30,
-      totalFrames: 10000,
-    };
-    setClip(initialClip);
-
-    const uploadSessionId = 'custom-upload-' + Date.now();
-    mediaDiagnostics.setSession(uploadSessionId, file.name);
-
-    setCurrentExp({
-      id: uploadSessionId,
-      title: file.name,
-      description: `Custom video analysis (${file.name})`,
-      category: 'custom',
-      videoUrl: url,
-      syntheticType: undefined,
-      is3D: analysisMode === '3D',
-      calibration: { ...calibration },
-      axes: { ...axes },
-      clip: initialClip,
-    });
-
-    if (isGif) {
-      const img = new Image();
-      img.src = url;
-      img.onload = () => {
-        const calculatedFrames = 60; // Standard 2-second default animation cycle
-        const updatedClip: ClipSettings = {
+    const keepTrims = preserveClipTrims || (preserveExistingTracks && clip.userTrimmed === true);
+    const initialClip: ClipSettings = keepTrims
+      ? { ...clip, userTrimmed: clip.userTrimmed ?? true }
+      : {
           startFrame: 0,
-          endFrame: calculatedFrames - 1,
+          endFrame: 9999,
           stepSize: 1,
           fps: 30,
           startTime: 0.0,
           frameDt: 1 / 30,
           dt: 1 / 30,
-          totalFrames: calculatedFrames,
+          totalFrames: 10000,
         };
+    if (!keepTrims) {
+      setClip(initialClip);
+    }
+
+    const uploadSessionId = 'custom-upload-' + Date.now();
+    mediaDiagnostics.setSession(uploadSessionId, file.name);
+
+    if (!preserveExistingTracks) {
+      setCurrentExp({
+        id: uploadSessionId,
+        title: file.name,
+        description: `Custom video analysis (${file.name})`,
+        category: 'custom',
+        videoUrl: url,
+        syntheticType: undefined,
+        is3D: analysisMode === '3D',
+        calibration: { ...calibration },
+        axes: { ...axes },
+        clip: initialClip,
+      });
+    } else {
+      setCurrentExp((prev) => ({
+        ...prev,
+        videoUrl: url,
+        syntheticType: undefined,
+        clip: initialClip,
+      }));
+    }
+
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.muted = true;
+    probe.src = url;
+    const cleanupProbe = () => {
+      probe.onloadedmetadata = null;
+      probe.ondurationchange = null;
+      probe.onerror = null;
+      try {
+        probe.removeAttribute('src');
+        probe.load();
+      } catch {
+        // ignore
+      }
+    };
+    const onProbeMeta = () => {
+      const dur = probe.duration;
+      if (Number.isFinite(dur) && dur > 0) {
+        const calculatedFrames = Math.max(1, Math.round(dur * 30));
+        const maxIdx = Math.max(0, calculatedFrames - 1);
+        const updatedClip: ClipSettings = keepTrims
+          ? {
+              ...initialClip,
+              startFrame: Math.max(0, Math.min(initialClip.startFrame, maxIdx)),
+              endFrame: Math.max(
+                Math.max(0, Math.min(initialClip.startFrame, maxIdx)),
+                Math.min(initialClip.endFrame, maxIdx)
+              ),
+              totalFrames: calculatedFrames,
+            }
+          : {
+              startFrame: 0,
+              endFrame: maxIdx,
+              stepSize: 1,
+              fps: 30,
+              startTime: 0.0,
+              frameDt: 1 / 30,
+              dt: 1 / 30,
+              totalFrames: calculatedFrames,
+            };
         setClip(updatedClip);
         setCurrentExp((prev) => ({
           ...prev,
           clip: updatedClip,
         }));
-      };
-    } else {
-      // Probe duration from HTML5 video element with proper resource cleanup
-      const probe = document.createElement('video');
-      probe.preload = 'metadata';
-      probe.muted = true;
-      probe.src = url;
-      const cleanupProbe = () => {
-        probe.onloadedmetadata = null;
-        probe.ondurationchange = null;
-        probe.onerror = null;
-        try {
-          probe.removeAttribute('src');
-          probe.load();
-        } catch {
-          // ignore
-        }
-      };
-      const onProbeMeta = () => {
-        const dur = probe.duration;
-        if (Number.isFinite(dur) && dur > 0) {
-          const calculatedFrames = Math.max(10, Math.round(dur * 30));
-          const updatedClip: ClipSettings = {
-            startFrame: 0,
-            endFrame: calculatedFrames - 1,
-            stepSize: 1,
-            fps: 30,
-            startTime: 0.0,
-            frameDt: 1 / 30,
-            dt: 1 / 30,
-            totalFrames: calculatedFrames,
-          };
-          setClip(updatedClip);
-          setCurrentExp((prev) => ({
-            ...prev,
-            clip: updatedClip,
-          }));
-          cleanupProbe();
-        }
-      };
-      probe.onloadedmetadata = onProbeMeta;
-      probe.ondurationchange = onProbeMeta;
-      probe.onerror = cleanupProbe;
-      setTimeout(cleanupProbe, 5000);
-    }
+        cleanupProbe();
+      }
+    };
+    probe.onloadedmetadata = onProbeMeta;
+    probe.ondurationchange = onProbeMeta;
+    probe.onerror = cleanupProbe;
+    setTimeout(cleanupProbe, 5000);
 
-    // Requirement 6: Protect existing points from being wiped on video upload
     setTracks((prev) => {
       if (prev.some((t) => t.steps && t.steps.length > 0)) {
         return prev;
@@ -961,127 +1156,295 @@ export const App: React.FC = () => {
     });
   };
 
-  const handleUploadCam1 = async (rawFile: File) => {
-    const routed = await ingestWorkstationFile(rawFile);
-    if (routed.kind === 'project') {
-      await handleOpenProjectFile(rawFile);
+  const commitUnifiedResultToStereoSlot = (
+    slot: 'cam1' | 'cam2',
+    result: UniversalVideoLoadResult,
+    displayName: string,
+    preserveExistingTracks = false,
+    preserveClipTrims = false
+  ) => {
+    const camLabel = slot === 'cam1' ? 'Camera 1' : 'Camera 2';
+    const setDiag = slot === 'cam1' ? setCodecDiagnosticCam1 : setCodecDiagnosticCam2;
+    const setUrl = slot === 'cam1' ? setVideoUrl : setVideoUrlCam2;
+
+    if (result.requiresDesktopFfmpegBridge && result.diagnostic) {
+      replaceFrameLoader(slot, null);
+      registerBlobUrl('', slot);
+      setUrl('');
+      setIsSynthetic(false);
+      setDiag(result.diagnostic);
+      showToast(
+        `${camLabel}: ${result.container} (${result.diagnostic.codecFourCC}) Requires FFmpeg`,
+        'Browser cannot decode this codec — use the inline FFmpeg command or TrackEye Desktop.',
+        'warning'
+      );
       return;
     }
 
-    const file = await resolveUploadedFile(rawFile);
-    activeVideoFileCam1Ref.current = file;
-    void saveWorkspaceMediaToIndexedDB('cam1', file, file.name);
-    setPendingRelinkVideoName(null);
-
-    if (aviLoader) {
-      aviLoader.dispose();
-      setAviLoader(null);
+    setDiag(null);
+    replaceFrameLoader(slot, result.frameLoader);
+    setFormatWarningProbe(null);
+    registerBlobUrl(result.videoUrl, slot);
+    setUrl(result.videoUrl);
+    setIsSynthetic(false);
+    if (slot === 'cam1') {
+      setPendingRelinkCam1Name(null);
+    } else {
+      setPendingRelinkCam2Name(null);
     }
 
-    try {
-      const result = await loadUniversalVideoFile(file, (percent, statusText) => {
-        setTranscodeProgress({ percent, text: `Camera 1: ${statusText}` });
+    const uploadSessionId = `custom-${slot}-${Date.now()}`;
+    mediaDiagnostics.setSession(uploadSessionId, displayName);
+    const calculatedFrames = Math.max(1, result.totalFrames || 1);
+    const maxIdx = Math.max(0, calculatedFrames - 1);
+    const fpsVal = Math.max(1, Math.round(result.fps || 30));
+    const containerPlaybackFps = result.frameLoader ? fpsVal : Math.min(60, fpsVal);
+
+    if (slot === 'cam1') {
+      const keepTrims = preserveClipTrims || (preserveExistingTracks && clip.userTrimmed === true);
+      setClip((prev) => {
+        if (keepTrims) {
+          const clampedStart = Math.max(0, Math.min(prev.startFrame, maxIdx));
+          const clampedEnd = Math.max(clampedStart, Math.min(prev.endFrame, maxIdx));
+          return {
+            ...prev,
+            startFrame: clampedStart,
+            endFrame: clampedEnd,
+            totalFrames: calculatedFrames,
+            playbackFps: containerPlaybackFps,
+            userTrimmed: prev.userTrimmed ?? true,
+          };
+        }
+        return {
+          ...prev,
+          startFrame: 0,
+          endFrame: maxIdx,
+          totalFrames: calculatedFrames,
+          fps: fpsVal,
+          playbackFps: containerPlaybackFps,
+          frameDt: 1 / fpsVal,
+          dt: 1 / fpsVal,
+        };
       });
-      setTranscodeProgress(null);
+      if (!keepTrims) {
+        setTriangulation((prev) => {
+          const prevSync = normalizeStereoSyncConfig(
+            prev.syncConfig,
+            fpsVal,
+            prev.fpsCam2 || fpsVal
+          );
+          return {
+            ...prev,
+            fpsCam1: fpsVal,
+            syncConfig: {
+              ...prevSync,
+              fpsCam1: fpsVal,
+            },
+          };
+        });
+        setCurrentFrame(0);
+      }
+    } else {
+      // Strictly isolate Cam 2 metadata into triangulation.clipCam2 — never overwrite Cam 1 clip bounds
+      setTriangulation((prev) => {
+        const prevClip2 = prev.clipCam2;
+        const keepTrims =
+          preserveClipTrims || (preserveExistingTracks && prevClip2?.userTrimmed === true);
+        const prevFps1 = prev.fpsCam1 || clip.fps || 30;
+        const effectiveFps2 = keepTrims ? prevClip2?.fps || prev.fpsCam2 || fpsVal : fpsVal;
+        const prevSync = normalizeStereoSyncConfig(prev.syncConfig, prevFps1, effectiveFps2);
+        const clampedStart = keepTrims && prevClip2
+          ? Math.max(0, Math.min(prevClip2.startFrame, maxIdx))
+          : 0;
+        const clampedEnd = keepTrims && prevClip2
+          ? Math.max(clampedStart, Math.min(prevClip2.endFrame, maxIdx))
+          : maxIdx;
+        const nextClipCam2: ClipSettings = {
+          ...(prevClip2 || {}),
+          startFrame: clampedStart,
+          endFrame: clampedEnd,
+          totalFrames: calculatedFrames,
+          stepSize: prevClip2?.stepSize ?? 1,
+          fps: effectiveFps2,
+          startTime: prevClip2?.startTime ?? 0,
+          frameDt: 1 / effectiveFps2,
+          dt: 1 / effectiveFps2,
+          playbackFps: containerPlaybackFps,
+          ...(keepTrims ? { userTrimmed: prevClip2?.userTrimmed ?? true } : {}),
+        };
+        return {
+          ...prev,
+          fpsCam2: effectiveFps2,
+          clipCam2: nextClipCam2,
+          syncConfig: {
+            ...prevSync,
+            fpsCam2: effectiveFps2,
+          },
+        };
+      });
+    }
 
-      setAviLoader(result.frameLoader);
-      setFormatWarningProbe(null);
-      registerBlobUrl(result.videoUrl, 'cam1');
-      setVideoUrl(result.videoUrl);
-      setIsSynthetic(false);
-
-      const uploadSessionId = 'custom-cam1-' + Date.now();
-      mediaDiagnostics.setSession(uploadSessionId, file.name);
-      const calculatedFrames = Math.max(10, result.totalFrames || 60);
-      setClip((prev) => ({
-        ...prev,
-        fps: result.fps || prev.fps,
-        totalFrames: Math.max(prev.totalFrames, calculatedFrames),
-        endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
-      }));
-
+    if (!preserveExistingTracks) {
       setCurrentExp((prev) => ({
         ...prev,
         id: uploadSessionId,
-        title: 'Stereo: ' + file.name,
-        description: `Cam 1 ${result.diagnosticsSummary}`,
+        title: 'Stereo: ' + displayName,
+        description: `${camLabel} ${result.diagnosticsSummary}`,
         category: 'custom',
       }));
-
-      showToast(
-        `Camera 1 ${result.container} Loaded (${calculatedFrames} frames)`,
-        `${result.tierDescription} • ${result.width}×${result.height}`
-      );
-      return;
-    } catch {
-      setTranscodeProgress(null);
     }
 
-    // Fallback probe for Camera 1
-    const url = URL.createObjectURL(file);
-    registerBlobUrl(url, 'cam1');
-    setVideoUrl(url);
-    setIsSynthetic(false);
-    const uploadSessionId = 'custom-cam1-' + Date.now();
-    mediaDiagnostics.setSession(uploadSessionId, file.name);
-
-    setCurrentExp((prev) => ({
-      ...prev,
-      id: uploadSessionId,
-      title: 'Stereo: ' + file.name,
-      description: 'Custom Camera 1 upload',
-      category: 'custom',
-    }));
+    if (result.container === 'IMAGE_SEQUENCE') {
+      showToast(
+        preserveExistingTracks
+          ? `${camLabel} Sequence Relinked: ${displayName} (${calculatedFrames} frames)`
+          : `${camLabel} Image Sequence Loaded (${calculatedFrames} frames @ ${fpsVal} fps)`,
+        `Default 30 fps — adjust in Clip Settings • ${result.width}×${result.height}`
+      );
+    } else if (result.container === 'IMAGE') {
+      showToast(
+        preserveExistingTracks
+          ? `${camLabel} Image Relinked: ${displayName}`
+          : `${camLabel} Image Loaded (${result.width}×${result.height})`,
+        'Single-frame calibration / stereo reference'
+      );
+    } else {
+      showToast(
+        preserveExistingTracks
+          ? `${camLabel} Relinked: ${displayName} (${calculatedFrames} frames)`
+          : `${camLabel} ${result.container} Loaded (${calculatedFrames} frames @ ${fpsVal} fps)`,
+        `${result.tierDescription} • ${result.width}×${result.height}`
+      );
+    }
   };
 
-  const handleUploadCam2 = async (rawFile: File) => {
+  const handleUploadStereoSlot = async (
+    slot: 'cam1' | 'cam2',
+    rawInput: File | File[],
+    preserveExistingTracks = false,
+    preserveClipTrims = false
+  ) => {
+    const fileList = Array.isArray(rawInput) ? rawInput : [rawInput];
+    if (fileList.length === 0) return;
+    const camLabel = slot === 'cam1' ? 'Camera 1' : 'Camera 2';
+    const setDiag = slot === 'cam1' ? setCodecDiagnosticCam1 : setCodecDiagnosticCam2;
+
+    if (fileList.length > 1) {
+      replaceFrameLoader(slot, null);
+      setDiag(null);
+      try {
+        const result = await loadUnifiedMediaFiles(
+          fileList,
+          (percent, statusText) => setTranscodeProgress({ percent, text: `${camLabel}: ${statusText}` }),
+          30
+        );
+        setTranscodeProgress(null);
+        commitUnifiedResultToStereoSlot(
+          slot,
+          result,
+          `${fileList[0].name} (+${fileList.length - 1} frames)`,
+          preserveExistingTracks,
+          preserveClipTrims
+        );
+      } catch (err: any) {
+        setTranscodeProgress(null);
+        showToast(`${camLabel} Load Notice`, err?.message || 'Could not load selected files.', 'warning');
+      }
+      return;
+    }
+
+    const rawFile = fileList[0];
     const routed = await ingestWorkstationFile(rawFile);
     if (routed.kind === 'project') {
-      await handleOpenProjectFile(rawFile);
+      if (routed.valid && routed.data) {
+        await applyRestoredProjectData(
+          routed.data,
+          routed.videoFileCam1,
+          routed.videoFileCam2,
+          rawFile.name
+        );
+      } else {
+        showToast(
+          'Project Load Failed',
+          routed.error ||
+            formatProjectStageError(
+              routed.stage || 'Schema Validation',
+              routed.errors?.join('; ') || 'Could not parse .trk / .zip project file'
+            ),
+          'warning'
+        );
+      }
+      return;
+    }
+
+    if (routed.kind === 'image-sequence' && routed.zipImageEntries && routed.zipImageEntries.length > 0) {
+      replaceFrameLoader(slot, null);
+      setDiag(null);
+      if (slot === 'cam1') {
+        activeVideoFileCam1Ref.current = rawFile;
+      } else {
+        activeVideoFileCam2Ref.current = rawFile;
+      }
+      void saveWorkspaceMediaToIndexedDB(slot, rawFile, rawFile.name);
+      try {
+        setTranscodeProgress({ percent: 25, text: `${camLabel}: Indexing ${routed.zipImageEntries.length} zipped frames...` });
+        const seqLoader = ImageSequenceLoader.fromLazyZipEntries(
+          routed.zipImageEntries,
+          routed.archiveFileName || rawFile.name,
+          30
+        );
+        const meta = await seqLoader.initialize();
+        setTranscodeProgress(null);
+        commitUnifiedResultToStereoSlot(
+          slot,
+          {
+            tier: 1,
+            tierDescription: `Tier 1 Lazy ZIP Image Sequence (${meta.totalFrames} frames @ ${meta.fps} fps)`,
+            container: 'IMAGE_SEQUENCE',
+            codecFourCC: 'ZIP_IMG',
+            videoUrl: '',
+            frameLoader: seqLoader,
+            usedCodecBridge: false,
+            width: meta.width,
+            height: meta.height,
+            fps: meta.fps,
+            totalFrames: meta.totalFrames,
+            durationSec: meta.durationSec,
+            diagnosticsSummary: `ZIP sequence (${meta.totalFrames} frames, ${meta.width}×${meta.height}, default 30 fps)`,
+          },
+          rawFile.name,
+          preserveExistingTracks,
+          preserveClipTrims
+        );
+      } catch (err: any) {
+        setTranscodeProgress(null);
+        showToast(`${camLabel} Sequence Error`, err?.message || 'Failed to index zipped image sequence.', 'warning');
+      }
       return;
     }
 
     const file = await resolveUploadedFile(rawFile);
-    activeVideoFileCam2Ref.current = file;
-    void saveWorkspaceMediaToIndexedDB('cam2', file, file.name);
-
-    if (aviLoaderCam2) {
-      aviLoaderCam2.dispose();
-      setAviLoaderCam2(null);
+    if (slot === 'cam1') {
+      activeVideoFileCam1Ref.current = file;
+    } else {
+      activeVideoFileCam2Ref.current = file;
     }
+    void saveWorkspaceMediaToIndexedDB(slot, file, file.name);
+
+    replaceFrameLoader(slot, null);
+    setDiag(null);
 
     try {
       const result = await loadUniversalVideoFile(file, (percent, statusText) => {
-        setTranscodeProgress({ percent, text: `Camera 2: ${statusText}` });
+        setTranscodeProgress({ percent, text: `${camLabel}: ${statusText}` });
       });
       setTranscodeProgress(null);
-
-      setAviLoaderCam2(result.frameLoader);
-      setFormatWarningProbe(null);
-      registerBlobUrl(result.videoUrl, 'cam2');
-      setVideoUrlCam2(result.videoUrl);
-      setIsSynthetic(false);
-
-      const uploadSessionId = 'custom-cam2-' + Date.now();
-      mediaDiagnostics.setSession(uploadSessionId, file.name);
-      const calculatedFrames = Math.max(10, result.totalFrames || 60);
-      setClip((prev) => ({
-        ...prev,
-        totalFrames: Math.max(prev.totalFrames, calculatedFrames),
-        endFrame: Math.max(prev.endFrame, calculatedFrames - 1),
-      }));
-
-      setCurrentExp((prev) => ({
-        ...prev,
-        id: uploadSessionId,
-        title: 'Stereo: ' + file.name,
-        description: `Cam 2 ${result.diagnosticsSummary}`,
-        category: 'custom',
-      }));
-
-      showToast(
-        `Camera 2 ${result.container} Loaded (${calculatedFrames} frames)`,
-        `${result.tierDescription} • ${result.width}×${result.height}`
+      commitUnifiedResultToStereoSlot(
+        slot,
+        result,
+        file.name,
+        preserveExistingTracks,
+        preserveClipTrims
       );
       return;
     } catch {
@@ -1089,19 +1452,37 @@ export const App: React.FC = () => {
     }
 
     const url = URL.createObjectURL(file);
-    registerBlobUrl(url, 'cam2');
-    setVideoUrlCam2(url);
+    registerBlobUrl(url, slot);
+    if (slot === 'cam1') {
+      setVideoUrl(url);
+      setPendingRelinkCam1Name(null);
+    } else {
+      setVideoUrlCam2(url);
+      setPendingRelinkCam2Name(null);
+    }
     setIsSynthetic(false);
-    const uploadSessionId = 'custom-cam2-' + Date.now();
+    const uploadSessionId = `custom-${slot}-${Date.now()}`;
     mediaDiagnostics.setSession(uploadSessionId, file.name);
 
-    setCurrentExp((prev) => ({
-      ...prev,
-      id: uploadSessionId,
-      title: 'Stereo: ' + file.name,
-      description: 'Custom Camera 2 upload',
-      category: 'custom',
-    }));
+    if (!preserveExistingTracks) {
+      setCurrentExp((prev) => ({
+        ...prev,
+        id: uploadSessionId,
+        title: 'Stereo: ' + file.name,
+        description: `Custom ${camLabel} upload`,
+        category: 'custom',
+      }));
+    }
+  };
+
+  const handleUploadCam1 = async (rawInput: File | File[]) => {
+    setActive3DPasteCam('cam1');
+    await handleUploadStereoSlot('cam1', rawInput);
+  };
+
+  const handleUploadCam2 = async (rawInput: File | File[]) => {
+    setActive3DPasteCam('cam2');
+    await handleUploadStereoSlot('cam2', rawInput);
   };
 
   // ======================== COMPLETE UNDO / REDO HISTORY ENGINE (DEPTH 100) ========================
@@ -1413,6 +1794,7 @@ export const App: React.FC = () => {
       clip,
       tracks,
       graphConfig,
+      sixDofState,
     });
   }, [
     analysisMode,
@@ -1428,11 +1810,27 @@ export const App: React.FC = () => {
     clip,
     tracks,
     graphConfig,
+    sixDofState,
   ]);
 
   // Requirement 7 & 9: Export & Save Project (.trk JSON & LocalStorage + IndexedDB)
   const handleExportJSON = useCallback(() => {
     const projectData = buildCurrentProjectSnapshot();
+
+    // Pre-download self-validation gate: never download a .trk that cannot be reopened cleanly
+    const validated = serializeAndValidateTrk(projectData);
+    if (!validated.valid) {
+      showToast(
+        'Save Aborted — Project Self-Validation Failed',
+        validated.error ||
+          formatProjectStageError(
+            validated.stage || 'Schema Validation',
+            'Generated .trk payload failed pre-download verification.'
+          ),
+        'warning'
+      );
+      return;
+    }
 
     saveSessionToLocalStorage(projectData, true);
     void saveWorkspaceToIndexedDB(projectData, true);
@@ -1440,28 +1838,7 @@ export const App: React.FC = () => {
     const safeTitle = (currentExp.title || currentExp.id || 'tracker_project')
       .replace(/[^a-zA-Z0-9_-]/g, '_');
     const filename = safeTitle.toLowerCase().endsWith('.trk') ? safeTitle : `${safeTitle}.trk`;
-    const trkString = serializeProjectToTrk({
-      analysisMode,
-      experimentTitle: currentExp.title,
-      currentExpId: currentExp.id,
-      activeTrackId,
-      currentFrame,
-      isSynthetic,
-      syntheticType: currentExp.syntheticType,
-      videoUrl,
-      videoUrlCam2,
-      videoNameCam1: activeVideoFileCam1Ref.current?.name || currentExp.title,
-      videoNameCam2: activeVideoFileCam2Ref.current?.name,
-      videoFileCam1: activeVideoFileCam1Ref.current,
-      videoFileCam2: activeVideoFileCam2Ref.current,
-      triangulation,
-      calibration,
-      axes,
-      clip,
-      tracks,
-      graphConfig,
-    });
-    const blob = new Blob([trkString], { type: 'application/json' });
+    const blob = new Blob([validated.trkString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -1471,25 +1848,14 @@ export const App: React.FC = () => {
 
     const totalPts = tracks.reduce((acc, t) => acc + t.steps.length, 0);
     showToast(
-      'Project Saved Successfully (Ctrl+S)',
-      `${totalPts} points recorded • ${filename} saved & preserved in workstation storage`
+      'Project Saved & Verified (Ctrl+S)',
+      `${totalPts} points recorded • ${filename} passed round-trip self-check`
     );
   }, [
-    analysisMode,
-    axes,
     buildCurrentProjectSnapshot,
-    calibration,
-    clip,
     currentExp,
-    currentFrame,
-    graphConfig,
-    isSynthetic,
     showToast,
-    activeTrackId,
     tracks,
-    triangulation,
-    videoUrl,
-    videoUrlCam2,
   ]);
 
   // Requirement 7 & 9: Save Project to Local Folder or Self-Contained ZIP Bundle (including video)
@@ -1515,16 +1881,29 @@ export const App: React.FC = () => {
         clip,
         tracks,
         graphConfig,
+        sixDofState,
       });
 
       const totalPts = tracks.reduce((acc, t) => acc + t.steps.length, 0);
-      showToast(
-        result.savedAsFolder ? 'Project Folder Saved' : 'Project ZIP Bundle Saved',
-        `${result.filesWritten.join(', ')} • ${totalPts} points preserved`
-      );
+      if (result.omittedVideos && result.omittedVideos.length > 0) {
+        showToast(
+          'ZIP Bundle Saved — Large Video(s) Omitted (>150 MB)',
+          `Skipped: ${result.omittedVideos.join(', ')}. Use Folder Export (Chrome/Edge) to stream full-size footage directly to disk.`,
+          'warning'
+        );
+      } else {
+        showToast(
+          result.savedAsFolder ? 'Project Folder Saved (Full Media Streamed)' : 'Project ZIP Bundle Saved',
+          `${result.filesWritten.join(', ')} • ${totalPts} points preserved`
+        );
+      }
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
-      showToast('Save Folder Notice', err?.message || 'Could not complete folder save.');
+      showToast(
+        'Save Folder / Bundle Failed',
+        err?.message || formatProjectStageError('File Read', 'Could not complete folder or ZIP export.'),
+        'warning'
+      );
     }
   }, [
     analysisMode,
@@ -1540,26 +1919,70 @@ export const App: React.FC = () => {
     clip,
     tracks,
     graphConfig,
+    sixDofState,
     showToast,
   ]);
 
   // Restore decoded video File into Camera 1 or Camera 2 without wiping restored project tracks/clip
   const restoreVideoFileToSlot = useCallback(
     async (file: File, slot: 'cam1' | 'cam2', restoredClip?: ClipSettings) => {
+      replaceFrameLoader(slot, null);
+      if (slot === 'cam1') setCodecDiagnosticCam1(null);
+      else setCodecDiagnosticCam2(null);
+
       try {
+        const routed = await ingestWorkstationFile(file);
+        if (routed.kind === 'image-sequence' && routed.zipImageEntries && routed.zipImageEntries.length > 0) {
+          const seqLoader = ImageSequenceLoader.fromLazyZipEntries(
+            routed.zipImageEntries,
+            routed.archiveFileName || file.name,
+            restoredClip?.fps || 30
+          );
+          const meta = await seqLoader.initialize();
+          if (slot === 'cam1') activeVideoFileCam1Ref.current = file;
+          else activeVideoFileCam2Ref.current = file;
+          replaceFrameLoader(slot, seqLoader);
+          registerBlobUrl('', slot);
+          if (slot === 'cam1') setVideoUrl('');
+          else setVideoUrlCam2('');
+          setIsSynthetic(false);
+          if (slot === 'cam1' && !restoredClip) {
+            setClip((prev) => ({
+              ...prev,
+              fps: meta.fps,
+              totalFrames: meta.totalFrames,
+              endFrame: Math.max(0, meta.totalFrames - 1),
+            }));
+          }
+          return;
+        }
+
         const result = await loadUniversalVideoFile(file);
+        if (result.requiresDesktopFfmpegBridge && result.diagnostic) {
+          if (slot === 'cam1') {
+            activeVideoFileCam1Ref.current = file;
+            registerBlobUrl('', 'cam1');
+            setVideoUrl('');
+            setCodecDiagnosticCam1(result.diagnostic);
+          } else {
+            activeVideoFileCam2Ref.current = file;
+            registerBlobUrl('', 'cam2');
+            setVideoUrlCam2('');
+            setCodecDiagnosticCam2(result.diagnostic);
+          }
+          setIsSynthetic(false);
+          return;
+        }
+
         if (slot === 'cam1') {
           activeVideoFileCam1Ref.current = file;
-          setAviLoader((prev) => {
-            if (prev) prev.dispose();
-            return result.frameLoader;
-          });
+          replaceFrameLoader('cam1', result.frameLoader);
           registerBlobUrl(result.videoUrl, 'cam1');
           setVideoUrl(result.videoUrl);
           setIsSynthetic(false);
           if (!restoredClip) {
             const fpsVal = Math.max(1, Math.round(result.fps || 30));
-            const totalFramesVal = Math.max(1, result.totalFrames || 60);
+            const totalFramesVal = Math.max(1, result.totalFrames || 1);
             setClip((prev) => ({
               ...prev,
               fps: fpsVal,
@@ -1569,10 +1992,7 @@ export const App: React.FC = () => {
           }
         } else {
           activeVideoFileCam2Ref.current = file;
-          setAviLoaderCam2((prev) => {
-            if (prev) prev.dispose();
-            return result.frameLoader;
-          });
+          replaceFrameLoader('cam2', result.frameLoader);
           registerBlobUrl(result.videoUrl, 'cam2');
           setVideoUrlCam2(result.videoUrl);
           setIsSynthetic(false);
@@ -1591,7 +2011,7 @@ export const App: React.FC = () => {
         }
       }
     },
-    [registerBlobUrl]
+    [registerBlobUrl, replaceFrameLoader]
   );
 
   // Unified Project State Restoration (used by Open Project .trk/.zip/.json and IndexedDB session recovery)
@@ -1626,10 +2046,12 @@ export const App: React.FC = () => {
         setActiveTrackId(targetTrackId);
       }
 
-      // 3. Restore Calibration, Axes, Triangulation, Clip, and Current Frame
+      // 3. Restore Calibration, Axes, Triangulation, Clip, 6-DOF Survey State, and Current Frame
       if (data.triangulation) setTriangulation(data.triangulation);
       if (data.calibration) setCalibration(data.calibration);
       if (data.axes) setAxes(data.axes);
+      setSixDofState(data.sixDofState);
+      setSixDofHydrationRevision((rev) => rev + 1);
       if (data.clip) {
         setClip(data.clip);
         const targetFrame =
@@ -1653,20 +2075,23 @@ export const App: React.FC = () => {
       // 5. Restore Experiment Metadata & Video Streams (Sample / Bundled / IndexedDB Cache)
       const matchedSample = SAMPLE_EXPERIMENTS.find((s) => s.id === data.currentExpId);
       if (bundledVideoCam1) {
-        setPendingRelinkVideoName(null);
-        void saveWorkspaceMediaToIndexedDB('cam1', bundledVideoCam1, data.currentExpId);
+        setPendingRelinkCam1Name(null);
+        await saveWorkspaceMediaToIndexedDB('cam1', bundledVideoCam1, data.currentExpId);
         await restoreVideoFileToSlot(bundledVideoCam1, 'cam1', data.clip);
       } else if (matchedSample) {
-        setPendingRelinkVideoName(null);
-        if (aviLoader) {
-          aviLoader.dispose();
-          setAviLoader(null);
-        }
+        setPendingRelinkCam1Name(null);
+        setPendingRelinkCam2Name(null);
+        replaceFrameLoader('cam1', null);
+        replaceFrameLoader('cam2', null);
+        setCodecDiagnosticCam1(null);
+        setCodecDiagnosticCam2(null);
         setVideoUrl(matchedSample.videoUrl);
         setVideoUrlCam2(matchedSample.videoUrlCam2 || '');
         setIsSynthetic(Boolean(matchedSample.syntheticType));
       } else if (data.camera1?.videoUrl && !data.camera1.videoUrl.startsWith('blob:')) {
-        setPendingRelinkVideoName(null);
+        setPendingRelinkCam1Name(null);
+        replaceFrameLoader('cam1', null);
+        setCodecDiagnosticCam1(null);
         setVideoUrl(data.camera1.videoUrl);
         setIsSynthetic(Boolean(data.isSynthetic));
       } else {
@@ -1677,7 +2102,7 @@ export const App: React.FC = () => {
           'cam1'
         );
         if (cachedCam1File) {
-          setPendingRelinkVideoName(null);
+          setPendingRelinkCam1Name(null);
           await restoreVideoFileToSlot(cachedCam1File, 'cam1', data.clip);
         } else {
           // Keep synthetic telemetry canvas active so trajectories, vectors & graphs render cleanly
@@ -1686,22 +2111,42 @@ export const App: React.FC = () => {
             data.videoMetadata?.fileName ||
             data.camera1?.videoName ||
             (data.isSynthetic ? null : data.experimentTitle || 'source_video.mp4');
-          setPendingRelinkVideoName(data.isSynthetic ? null : relinkName);
+          setPendingRelinkCam1Name(data.isSynthetic ? null : relinkName);
         }
       }
 
+      const restoredClipCam2 = data.triangulation?.clipCam2 || data.camera2?.clip;
       if (bundledVideoCam2) {
-        void saveWorkspaceMediaToIndexedDB('cam2', bundledVideoCam2, data.currentExpId);
-        await restoreVideoFileToSlot(bundledVideoCam2, 'cam2', data.camera2?.clip);
+        setPendingRelinkCam2Name(null);
+        await saveWorkspaceMediaToIndexedDB('cam2', bundledVideoCam2, data.currentExpId);
+        await restoreVideoFileToSlot(bundledVideoCam2, 'cam2', restoredClipCam2);
       } else if (data.analysisMode === '3D' && !matchedSample) {
-        const cachedCam2File = await findCachedVideoForProject(
-          undefined,
-          data.camera2?.videoName,
-          'cam2'
-        );
-        if (cachedCam2File) {
-          await restoreVideoFileToSlot(cachedCam2File, 'cam2', data.camera2?.clip);
+        if (data.camera2?.videoUrl && !data.camera2.videoUrl.startsWith('blob:')) {
+          setPendingRelinkCam2Name(null);
+          replaceFrameLoader('cam2', null);
+          setCodecDiagnosticCam2(null);
+          setVideoUrlCam2(data.camera2.videoUrl);
+        } else {
+          const cachedCam2File = await findCachedVideoForProject(
+            data.videoMetadataCam2 || data.camera2?.videoMetadata,
+            data.camera2?.videoName,
+            'cam2'
+          );
+          if (cachedCam2File) {
+            setPendingRelinkCam2Name(null);
+            await restoreVideoFileToSlot(cachedCam2File, 'cam2', restoredClipCam2);
+          } else if (!data.isSynthetic) {
+            const relinkCam2Name =
+              data.videoMetadataCam2?.fileName ||
+              data.camera2?.videoName ||
+              'cam2_video.mp4';
+            setPendingRelinkCam2Name(relinkCam2Name);
+          } else {
+            setPendingRelinkCam2Name(null);
+          }
         }
+      } else {
+        setPendingRelinkCam2Name(null);
       }
 
       setCurrentExp((prev) => ({
@@ -1720,9 +2165,9 @@ export const App: React.FC = () => {
         triangulation: data.triangulation || prev.triangulation,
       }));
 
-      // Persist restored project into LocalStorage & IndexedDB
+      // Post-Restore Auto-Save & IndexedDB Commit (immediate F5 refresh resilience)
       saveSessionToLocalStorage(data, true);
-      void saveWorkspaceToIndexedDB(data, true);
+      await saveWorkspaceToIndexedDB(data, true);
 
       const modeDisplay = data.analysisMode === '6DOF' ? '6-DOF' : data.analysisMode || '2D';
       const trackCount = (data.tracks || []).length;
@@ -1736,24 +2181,31 @@ export const App: React.FC = () => {
         `${ptCount} telemetry steps restored • Active Track: ${data.activeTrackId || data.tracks?.[0]?.id || 'track-1'}`
       );
     },
-    [aviLoader, layout, restoreVideoFileToSlot, showToast]
+    [layout, replaceFrameLoader, restoreVideoFileToSlot, showToast]
   );
+
+  // Keep a live ref to handleUploadVideo so handleOpenProjectFile never suffers from stale closures
+  const handleUploadVideoRef = useRef(handleUploadVideo);
+  handleUploadVideoRef.current = handleUploadVideo;
 
   // Requirement 7 & 9: Open & Restore Saved Project (.trk / .json / .zip / .trz) via Magic-Byte Router
   const handleOpenProjectFile = useCallback(
     async (file: File) => {
       try {
         const routed = await ingestWorkstationFile(file);
-        if (routed.kind === 'video') {
-          await handleUploadVideo(file, false);
+        if (routed.kind === 'video' || routed.kind === 'image-sequence') {
+          await handleUploadVideoRef.current(file, false, false);
           return;
         }
         if (!routed.valid || !routed.data) {
           showToast(
-            'Invalid Project File',
+            'Project Load Failed',
             routed.error ||
-              routed.errors?.join('; ') ||
-              'Could not parse .trk / .zip project file'
+              formatProjectStageError(
+                routed.stage || 'Schema Validation',
+                routed.errors?.join('; ') || 'Could not parse .trk / .zip project file'
+              ),
+            'warning'
           );
           return;
         }
@@ -1765,8 +2217,9 @@ export const App: React.FC = () => {
         );
       } catch (err: any) {
         showToast(
-          'Error Reading Project File',
-          err?.message || 'Could not parse project file format.'
+          'Project Load Failed',
+          formatProjectStageError('File Read', err?.message || 'Could not parse project file format.'),
+          'warning'
         );
       }
     },
@@ -1778,7 +2231,10 @@ export const App: React.FC = () => {
     await clearSavedWorkspaceSession();
     activeVideoFileCam1Ref.current = null;
     activeVideoFileCam2Ref.current = null;
-    setPendingRelinkVideoName(null);
+    setPendingRelinkCam1Name(null);
+    setPendingRelinkCam2Name(null);
+    setSixDofState(undefined);
+    setSixDofHydrationRevision((rev) => rev + 1);
     handleSelectExperiment(SAMPLE_EXPERIMENTS[0]);
     showToast(
       'Workspace Reset to Default',
@@ -1820,11 +2276,11 @@ export const App: React.FC = () => {
               'cam1'
             );
             if (cachedCam1File) {
-              setPendingRelinkVideoName(null);
+              setPendingRelinkCam1Name(null);
               await restoreVideoFileToSlot(cachedCam1File, 'cam1', activeSession.clip);
             } else if (!activeSession.isSynthetic) {
               setIsSynthetic(true);
-              setPendingRelinkVideoName(
+              setPendingRelinkCam1Name(
                 activeSession.videoMetadata?.fileName ||
                   activeSession.camera1?.videoName ||
                   activeSession.experimentTitle ||
@@ -1833,15 +2289,22 @@ export const App: React.FC = () => {
             }
             if (activeSession.analysisMode === '3D') {
               const cachedCam2File = await findCachedVideoForProject(
-                undefined,
+                activeSession.videoMetadataCam2 || activeSession.camera2?.videoMetadata,
                 activeSession.camera2?.videoName,
                 'cam2'
               );
               if (cachedCam2File) {
+                setPendingRelinkCam2Name(null);
                 await restoreVideoFileToSlot(
                   cachedCam2File,
                   'cam2',
-                  activeSession.camera2?.clip
+                  activeSession.triangulation?.clipCam2 || activeSession.camera2?.clip
+                );
+              } else if (!activeSession.isSynthetic) {
+                setPendingRelinkCam2Name(
+                  activeSession.videoMetadataCam2?.fileName ||
+                    activeSession.camera2?.videoName ||
+                    'cam2_video.mp4'
                 );
               }
             }
@@ -2050,6 +2513,74 @@ export const App: React.FC = () => {
     handleNudgeCurrentPoint,
   ]);
 
+  // Global Ctrl+V Clipboard Image Paste into Active Viewport (2D/6-DOF or Last Focused 3D Stereo Camera)
+  const pasteDispatchRef = useRef<{
+    analysisMode: '2D' | '3D' | '6DOF';
+    active3DPasteCam: 'cam1' | 'cam2';
+    uploadPrimary: (f: File | File[]) => Promise<void>;
+    uploadCam1: (f: File | File[]) => Promise<void>;
+    uploadCam2: (f: File | File[]) => Promise<void>;
+  }>({
+    analysisMode,
+    active3DPasteCam,
+    uploadPrimary: handleUploadVideo,
+    uploadCam1: handleUploadCam1,
+    uploadCam2: handleUploadCam2,
+  });
+  pasteDispatchRef.current = {
+    analysisMode,
+    active3DPasteCam,
+    uploadPrimary: handleUploadVideo,
+    uploadCam1: handleUploadCam1,
+    uploadCam2: handleUploadCam2,
+  };
+
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (!items || items.length === 0) return;
+
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type && item.type.startsWith('image/')) {
+          const blob = item.getAsFile();
+          if (!blob) continue;
+          e.preventDefault();
+          const subtype = (item.type.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '').toLowerCase();
+          const ext = subtype === 'jpeg' ? 'jpg' : subtype || 'png';
+          const pastedFile = new File(
+            [blob],
+            blob.name && blob.name !== 'image.png' ? blob.name : `clipboard_frame_${Date.now()}.${ext}`,
+            { type: item.type || 'image/png' }
+          );
+
+          const ctx = pasteDispatchRef.current;
+          if (ctx.analysisMode === '3D') {
+            if (ctx.active3DPasteCam === 'cam2') {
+              void ctx.uploadCam2(pastedFile);
+            } else {
+              void ctx.uploadCam1(pastedFile);
+            }
+          } else {
+            void ctx.uploadPrimary(pastedFile);
+          }
+          return;
+        }
+      }
+    };
+
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, []);
+
   const handleClearTrackPoints = () => {
     const activeTrack = historyStateRef.current.tracks.find((t) => t.id === activeTrackId);
     if (!activeTrack || activeTrack.steps.length === 0) return;
@@ -2135,6 +2666,164 @@ export const App: React.FC = () => {
         };
       })
     );
+  };
+
+  // Unified Clip Settings & Stereo Sync Save Propagation (single source of truth)
+  const handleSaveClipAndSyncSettings = (
+    clipUpdates: Partial<ClipSettings>,
+    triUpdates?: Partial<TriangulationConfig>
+  ) => {
+    pushHistorySnapshot('Update Clip & Sync Settings');
+
+    const nextClip: ClipSettings = {
+      ...clip,
+      ...clipUpdates,
+      userTrimmed: true,
+    };
+    const nextFps1 = Math.max(0.001, nextClip.fps || 30);
+    const nextFps2 = Math.max(
+      0.001,
+      triUpdates?.fpsCam2 ?? triUpdates?.clipCam2?.fps ?? triangulation.fpsCam2 ?? nextFps1
+    );
+
+    const nextSync = normalizeStereoSyncConfig(
+      {
+        ...triangulation.syncConfig,
+        ...(triUpdates?.syncConfig || {}),
+        fpsCam1: nextFps1,
+        fpsCam2: nextFps2,
+      },
+      nextFps1,
+      nextFps2
+    );
+
+    const mergedTri: TriangulationConfig = {
+      ...triangulation,
+      ...(triUpdates || {}),
+      fpsCam1: nextFps1,
+      fpsCam2: nextFps2,
+      syncConfig: nextSync,
+    };
+
+    const nextClipCam2 = resolveEffectiveClipCam2(mergedTri, nextClip);
+    if (triUpdates?.clipCam2 || triangulation.clipCam2 || analysisMode === '3D') {
+      mergedTri.clipCam2 = {
+        ...nextClipCam2,
+        fps: nextFps2,
+        userTrimmed: true,
+      };
+    }
+
+    setClip(nextClip);
+    setTriangulation(mergedTri);
+
+    // Keep currentFrame safely inside active Cam 1 clip bounds
+    setCurrentFrame((curr) =>
+      Math.max(nextClip.startFrame, Math.min(nextClip.endFrame, curr))
+    );
+
+    // Recalculate all track timestamps, DLT 3D positions (in 3D mode), and kinematics
+    if (analysisMode === '3D') {
+      const { dltCam1, dltCam2 } = buildDefaultDLT(
+        mergedTri.method,
+        mergedTri.pixelsPerMeterCam1,
+        mergedTri.pixelsPerMeterCam2,
+        mergedTri.originCam1,
+        mergedTri.originCam2,
+        mergedTri.baselineMeters,
+        mergedTri.convergenceAngleDeg
+      );
+      const dlt1 = mergedTri.dltCam1 || dltCam1;
+      const dlt2 = mergedTri.dltCam2 || dltCam2;
+
+      setTracks((prev) =>
+        prev.map((trk) => {
+          const recomputedSteps = trk.steps.map((step) => {
+            const t1 =
+              frameToPhysicalTestTime(step.frame, nextSync.anchorFrameCam1, nextFps1) +
+              (nextClip.startTime || 0);
+            const f2 =
+              step.cam2Frame ??
+              mapCam1ToCam2(
+                step.frame,
+                nextSync.anchorFrameCam1,
+                nextSync.anchorFrameCam2,
+                nextFps1,
+                nextFps2,
+                nextClipCam2.totalFrames,
+                nextClipCam2.startFrame,
+                nextClipCam2.endFrame
+              ).frameCam2;
+            const t2 =
+              frameToPhysicalTestTime(f2, nextSync.anchorFrameCam2, nextFps2) +
+              (nextClipCam2.startTime || 0);
+
+            const c1Px = step.cam1?.px ?? step.cam1Px;
+            const c1Py = step.cam1?.py ?? step.cam1Py;
+            const c2Px = step.cam2?.px ?? step.cam2Px;
+            const c2Py = step.cam2?.py ?? step.cam2Py;
+
+            if (
+              c1Px !== undefined &&
+              c1Py !== undefined &&
+              c2Px !== undefined &&
+              c2Py !== undefined
+            ) {
+              const tri = triangulateDLT(c1Px, c1Py, dlt1, c2Px, c2Py, dlt2);
+              if (tri) {
+                const err3D =
+                  step.referenceX != null && step.referenceY != null && step.referenceZ != null
+                    ? Math.hypot(
+                        tri.x - step.referenceX,
+                        tri.y - step.referenceY,
+                        tri.z - step.referenceZ
+                      )
+                    : null;
+                return {
+                  ...step,
+                  time: t1,
+                  cam1Time: t1,
+                  cam2Time: t2,
+                  cam2Frame: f2,
+                  x: tri.x,
+                  y: tri.y,
+                  z: tri.z,
+                  residual: tri.residual,
+                  triangulationResidual: tri.residual,
+                  reconstructionError3D: err3D,
+                };
+              }
+            }
+
+            return {
+              ...step,
+              time: t1,
+              cam1Time: t1,
+              cam2Time: t2,
+              cam2Frame: f2,
+            };
+          });
+
+          return {
+            ...trk,
+            steps: computeKinematics3D(recomputedSteps, trk.mass),
+          };
+        })
+      );
+    } else {
+      setTracks((prev) =>
+        prev.map((trk) => {
+          const recomputedSteps = trk.steps.map((step) => ({
+            ...step,
+            time: (step.frame - nextClip.startFrame) / nextFps1 + (nextClip.startTime || 0),
+          }));
+          return {
+            ...trk,
+            steps: computeKinematics(recomputedSteps, trk.mass),
+          };
+        })
+      );
+    }
   };
 
   // Track management
@@ -2285,39 +2974,96 @@ export const App: React.FC = () => {
   // Render Video Feed Content (Single Camera 2D/6DOF or Dual Camera 3D Stereo)
   const renderVideoFeedContent = () => (
     <div className="flex flex-col h-full w-full overflow-hidden">
-      {pendingRelinkVideoName && (
-        <div className="flex items-center justify-between gap-2 px-2.5 py-1 bg-[#1E293B] text-[#F8FAFC] border-b border-[#334155] text-[11px] font-mono shrink-0">
+      {(pendingRelinkCam1Name || (analysisMode === '3D' && pendingRelinkCam2Name)) && (
+        <div className="flex items-center justify-between gap-2 px-2.5 py-1 bg-[#181B20] text-[#F8FAFC] border-b border-[#F59E0B]/60 text-[11px] font-mono shrink-0">
           <div className="flex items-center gap-2 truncate">
-            <span className="inline-block w-2 h-2 rounded-full bg-[#F59E0B] shrink-0" />
+            <span className="inline-block w-2 h-2 bg-[#F59E0B] shrink-0" />
             <span className="truncate">
-              Project telemetry restored ({pendingRelinkVideoName}).
+              {analysisMode === '3D'
+                ? `3D telemetry restored — media offline:${
+                    pendingRelinkCam1Name ? ` Cam 1 (${pendingRelinkCam1Name})` : ''
+                  }${
+                    pendingRelinkCam1Name && pendingRelinkCam2Name ? ' ·' : ''
+                  }${
+                    pendingRelinkCam2Name ? ` Cam 2 (${pendingRelinkCam2Name})` : ''
+                  }`
+                : `Project telemetry restored (${pendingRelinkCam1Name}).`}
             </span>
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
             <input
-              ref={relinkInputRef}
+              ref={relinkCam1InputRef}
               type="file"
-              accept=".mp4,.avi,.wmv,.flv,.mov,.mkv,.webm,.mpg,.mpeg,.m4v,video/mp4,video/x-msvideo,video/x-ms-wmv,video/x-flv,video/quicktime,video/*"
+              multiple
+              accept={ACCEPTED_VIDEO_ACCEPT_STRING}
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  void handleUploadVideo(file, true);
+                const files = e.target.files ? Array.from(e.target.files) : [];
+                if (files.length > 0) {
+                  const payload = files.length === 1 ? files[0] : files;
+                  if (analysisMode === '3D') {
+                    void handleUploadStereoSlot('cam1', payload, true, true);
+                  } else {
+                    void handleUploadVideo(payload, true, true);
+                  }
                   e.target.value = '';
                 }
               }}
               className="hidden"
             />
+            {analysisMode === '3D' && (
+              <input
+                ref={relinkCam2InputRef}
+                type="file"
+                multiple
+                accept={ACCEPTED_VIDEO_ACCEPT_STRING}
+                onChange={(e) => {
+                  const files = e.target.files ? Array.from(e.target.files) : [];
+                  if (files.length > 0) {
+                    const payload = files.length === 1 ? files[0] : files;
+                    void handleUploadStereoSlot('cam2', payload, true, true);
+                    e.target.value = '';
+                  }
+                }}
+                className="hidden"
+              />
+            )}
+            {analysisMode === '3D' ? (
+              <>
+                {pendingRelinkCam1Name && (
+                  <button
+                    type="button"
+                    onClick={() => relinkCam1InputRef.current?.click()}
+                    className="px-2 py-0.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold rounded-[2px] border border-[#1E40AF] text-[10px] cursor-pointer"
+                  >
+                    [Relink Cam 1]
+                  </button>
+                )}
+                {pendingRelinkCam2Name && (
+                  <button
+                    type="button"
+                    onClick={() => relinkCam2InputRef.current?.click()}
+                    className="px-2 py-0.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold rounded-[2px] border border-[#1E40AF] text-[10px] cursor-pointer"
+                  >
+                    [Relink Cam 2]
+                  </button>
+                )}
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => relinkCam1InputRef.current?.click()}
+                className="px-2 py-0.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold rounded-[2px] border border-[#1E40AF] text-[10px] cursor-pointer"
+              >
+                [Relink Media / Video]
+              </button>
+            )}
             <button
               type="button"
-              onClick={() => relinkInputRef.current?.click()}
-              className="px-2 py-0.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold rounded-[2px] border border-[#1E40AF] text-[10px] cursor-pointer"
-            >
-              [Relink Video File]
-            </button>
-            <button
-              type="button"
-              onClick={() => setPendingRelinkVideoName(null)}
-              className="px-1.5 py-0.5 bg-[#334155] hover:bg-[#475569] text-slate-200 rounded-[2px] text-[10px] cursor-pointer"
+              onClick={() => {
+                setPendingRelinkCam1Name(null);
+                setPendingRelinkCam2Name(null);
+              }}
+              className="px-1.5 py-0.5 bg-[#2A2E37] hover:bg-[#3A404C] text-slate-200 rounded-[2px] text-[10px] cursor-pointer"
               title="Dismiss relink banner and continue on synthetic telemetry canvas"
             >
               ✕
@@ -2342,6 +3088,12 @@ export const App: React.FC = () => {
             videoUrlCam2={videoUrlCam2}
             aviLoaderCam1={aviLoader}
             aviLoaderCam2={aviLoaderCam2}
+            codecDiagnosticCam1={codecDiagnosticCam1}
+            codecDiagnosticCam2={codecDiagnosticCam2}
+            onClearCodecDiagnosticCam1={() => setCodecDiagnosticCam1(null)}
+            onClearCodecDiagnosticCam2={() => setCodecDiagnosticCam2(null)}
+            activePasteTargetCam={active3DPasteCam}
+            onActiveCameraChange={setActive3DPasteCam}
             onUploadCam1={handleUploadCam1}
             onUploadCam2={handleUploadCam2}
             showTrails={showTrails}
@@ -2365,6 +3117,8 @@ export const App: React.FC = () => {
           <VideoPlayerView
             videoUrl={videoUrl}
             aviLoader={aviLoader}
+            codecDiagnostic={codecDiagnosticCam1}
+            onClearCodecDiagnostic={() => setCodecDiagnosticCam1(null)}
             isSynthetic={isSynthetic}
             syntheticType={currentExp.syntheticType || currentExp.id}
             fileName={currentExp.title}
@@ -2477,11 +3231,29 @@ export const App: React.FC = () => {
 
       {/* Save / Project Notification Floating Toast */}
       {saveToast && (
-        <div className="fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-[#181B20] text-[#E2E8F0] px-4 py-2 rounded-[3px] border border-[#2A2E37] shadow-2xl flex items-center gap-2.5 text-xs font-mono pointer-events-none">
-          <CheckCircle2 className="w-4 h-4 text-[#2563EB] shrink-0" />
+        <div
+          className={`fixed top-12 left-1/2 -translate-x-1/2 z-50 bg-[#181B20] text-[#E2E8F0] px-4 py-2 rounded-[3px] border shadow-2xl flex items-center gap-2.5 text-xs font-mono pointer-events-none max-w-[92vw] ${
+            saveToast.variant === 'warning'
+              ? 'border-[#F59E0B]'
+              : 'border-[#2A2E37]'
+          }`}
+        >
+          {saveToast.variant === 'warning' ? (
+            <AlertTriangle className="w-4 h-4 text-[#F59E0B] shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-[#2563EB] shrink-0" />
+          )}
           <div>
             <div className="font-bold text-white text-xs">{saveToast.message}</div>
-            {saveToast.sub && <div className="text-[10px] text-slate-300">{saveToast.sub}</div>}
+            {saveToast.sub && (
+              <div
+                className={`text-[10px] ${
+                  saveToast.variant === 'warning' ? 'text-amber-200' : 'text-slate-300'
+                }`}
+              >
+                {saveToast.sub}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2965,10 +3737,9 @@ export const App: React.FC = () => {
         isOpen={isClipModalOpen}
         onClose={() => setIsClipModalOpen(false)}
         clip={clip}
-        onSave={(updates) => setClip((prev) => ({ ...prev, ...updates }))}
+        onSave={handleSaveClipAndSyncSettings}
         is3D={analysisMode === '3D'}
         triangulation={triangulation}
-        onUpdateTriangulation={(tri) => setTriangulation((prev) => ({ ...prev, ...tri }))}
       />
 
       <TrackManagerModal
@@ -3038,6 +3809,11 @@ export const App: React.FC = () => {
         onClose={() => setIsMonocular6DoFOpen(false)}
         tracks={tracks}
         fps={clip.fps}
+        savedSixDofState={sixDofState}
+        hydrationRevision={sixDofHydrationRevision}
+        onSixDofStateChange={(updates) =>
+          setSixDofState((prev) => ({ ...(prev || {}), ...updates }))
+        }
         onApplySolvedTracks={(solvedTracks, newActiveId, graphConfigUpdates) => {
           pushHistorySnapshot('Solve Monocular 6-DOF Store Separation');
           setTracks(solvedTracks);

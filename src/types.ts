@@ -155,7 +155,12 @@ export interface Calibration {
   pointB: { x: number; y: number };
   p1?: { x: number; y: number };
   p2?: { x: number; y: number };
+  x1?: number; // partial stick alias for pointA.x
+  y1?: number; // partial stick alias for pointA.y
+  x2?: number; // partial stick alias for pointB.x
+  y2?: number; // partial stick alias for pointB.y
   realLength: number; // known length in user's unit
+  worldLength?: number; // partial stick alias for realLength
   length?: number;
   unit: 'm' | 'cm' | 'mm' | 'ft';
   scale: number; // pixels per meter
@@ -185,6 +190,7 @@ export interface ClipSettings {
   cameraModel?: string; // e.g. "Photron FASTCAM SA-Z", "Phantom v2512"
   timeUnit?: 'auto' | 's' | 'ms' | 'us' | 'ns'; // Unit for display
   shutterSpeed?: string; // e.g. "1/100,000 s" or "5 µs"
+  userTrimmed?: boolean; // Set when restored from project or explicitly trimmed by user so loadedmetadata preserves bounds
 }
 
 export type SixDofChannel = 'x' | 'y' | 'z' | 'roll' | 'pitch' | 'yaw';
@@ -444,6 +450,32 @@ export interface SavedProjectData {
     activeModelId?: string;
     mWrtLConfig?: any;
     virtualPoints?: any[];
+    intrinsics?: {
+      fx: number;
+      fy: number;
+      cx: number;
+      cy: number;
+      width: number;
+      height: number;
+      k1?: number;
+      k2?: number;
+      p1?: number;
+      p2?: number;
+      k3?: number;
+    };
+    markers?: Array<{
+      id: string;
+      group: 'A' | 'L' | 'M';
+      x: number;
+      y: number;
+      z: number;
+      label?: string;
+    }>;
+    csvText?: string;
+    missileCgBody?: [number, number, number];
+    launcherRefBody?: [number, number, number];
+    aircraftRefBody?: [number, number, number];
+    huberDeltaPx?: number;
     [key: string]: any;
   };
   camera1: {
@@ -627,6 +659,7 @@ export interface TriangulationConfig {
   timeOffsetCam2Sec?: number; // Time sync offset between Cam 2 and Cam 1 in seconds (t_cam2 = t_cam1 - offset)
   temporalInterpolation?: TemporalInterpMethod; // Method for sub-frame spatial interpolation
   allowAsymmetricFrameRates?: boolean;
+  clipCam2?: ClipSettings; // Independent Camera 2 clip trim, frame count, and playback rate
   syncConfig?: StereoSyncConfig; // Explicit (n, m) anchor synchronization model
   calibrationCam1?: Calibration; // Independent Camera 1 calibration stick
   calibrationCam2?: Calibration; // Independent Camera 2 calibration stick

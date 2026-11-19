@@ -41,14 +41,21 @@ import {
 } from '../utils/triangulation';
 import {
   mapCam1ToCam2,
-  mapCam2ToCam1,
   evaluateStereoSync,
   formatStereoTime,
+  normalizeStereoSyncConfig,
+  resolveEffectiveClipCam2,
+  frameToPhysicalTestTime,
+  computeStereoTimeWindow,
+  evaluateCameraAtTestTime,
+  computeAdaptiveClockStepSec,
+  SeekController,
 } from '../utils/stereoSync';
 import { ACCEPTED_VIDEO_ACCEPT_STRING, normalizeVideoUrl } from '../utils/videoFormats';
 import { formatHighSpeedTime } from '../utils/highSpeedCameras';
 import { mediaDiagnostics } from '../utils/mediaDiagnostics';
-import { AviHighSpeedLoader } from '../video/aviHighSpeedLoader';
+import { CodecDiagnosticNotice, UnifiedFrameSource } from '../video/unifiedFrameSource';
+import { CodecDiagnosticCard } from './CodecDiagnosticCard';
 
 import { FormatsModalTab } from './SupportedFormatsModal';
 
@@ -65,10 +72,16 @@ interface DualVideoPlayerViewProps {
   onFrameChange: (frame: number) => void;
   videoUrlCam1?: string;
   videoUrlCam2?: string;
-  aviLoaderCam1?: AviHighSpeedLoader | null;
-  aviLoaderCam2?: AviHighSpeedLoader | null;
-  onUploadCam1?: (file: File) => void;
-  onUploadCam2?: (file: File) => void;
+  aviLoaderCam1?: UnifiedFrameSource | null;
+  aviLoaderCam2?: UnifiedFrameSource | null;
+  codecDiagnosticCam1?: CodecDiagnosticNotice | null;
+  codecDiagnosticCam2?: CodecDiagnosticNotice | null;
+  onClearCodecDiagnosticCam1?: () => void;
+  onClearCodecDiagnosticCam2?: () => void;
+  activePasteTargetCam?: 'cam1' | 'cam2';
+  onActiveCameraChange?: (cam: 'cam1' | 'cam2') => void;
+  onUploadCam1?: (files: File | File[]) => void;
+  onUploadCam2?: (files: File | File[]) => void;
   showTrails?: boolean;
   showVectors?: boolean;
   showLoupe?: boolean;
@@ -105,6 +118,12 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   videoUrlCam2,
   aviLoaderCam1 = null,
   aviLoaderCam2 = null,
+  codecDiagnosticCam1 = null,
+  codecDiagnosticCam2 = null,
+  onClearCodecDiagnosticCam1,
+  onClearCodecDiagnosticCam2,
+  activePasteTargetCam = 'cam1',
+  onActiveCameraChange,
   onUploadCam1,
   onUploadCam2,
   showTrails = true,
@@ -142,17 +161,23 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   const isChunkedCam1 = Boolean(aviLoaderCam1 && aviLoaderCam1.metadata);
   const isChunkedCam2 = Boolean(aviLoaderCam2 && aviLoaderCam2.metadata);
 
+  // Per-camera cancelable HTML5 <video> seek queues (latest-request-wins + 500ms watchdog)
+  const seekControllerCam1Ref = useRef<SeekController>(new SeekController(500));
+  const seekControllerCam2Ref = useRef<SeekController>(new SeekController(500));
+
   // Layout & Controls State
   const [dualLayout, setDualLayout] = useState<DualLayout>('side-by-side');
-  // Requirement 1: Three distinct playback modes
+  // Three distinct playback modes driven by a single lockstep Master Physical Clock RAF loop
   const [isPlayingBoth, setIsPlayingBoth] = useState<boolean>(false);
   const [isPlayingCam1, setIsPlayingCam1] = useState<boolean>(false);
   const [isPlayingCam2, setIsPlayingCam2] = useState<boolean>(false);
-  const isAnyPlaying = isPlayingBoth || isPlayingCam1 || isPlayingCam2;
 
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [isLooping, setIsLooping] = useState<boolean>(true);
   const lastReportedFrameRef = useRef<number>(currentFrame);
+  const lastInternalCam1FrameRef = useRef<number>(currentFrame);
+  const currentFrameRef = useRef<number>(currentFrame);
+  currentFrameRef.current = currentFrame;
   const [activeCameraHover, setActiveCameraHover] = useState<'cam1' | 'cam2' | null>(null);
   const [mouseCoord, setMouseCoord] = useState<{ x: number; y: number } | null>(null);
   const [canvasSizeCam1, setCanvasSizeCam1] = useState<{ width: number; height: number }>({ width: 640, height: 480 });
@@ -165,51 +190,205 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
   const [cam2Error, setCam2Error] = useState<string | null>(null);
   const [showSyncPopover, setShowSyncPopover] = useState<boolean>(false);
 
-  // Multi-Rate Camera Timing & Anchor-based Synchronization (Requirements 2 & 3)
-  const fpsCam1 = triangulation.fpsCam1 || clip.fps || 30;
-  const fpsCam2 = triangulation.fpsCam2 || triangulation.fpsCam1 || clip.fps || 30;
-  const anchorCam1 = triangulation.syncConfig?.anchorFrameCam1 ?? (triangulation.syncConfig as any)?.anchorCam1Frame ?? 0;
-  const anchorCam2 = triangulation.syncConfig?.anchorFrameCam2 ?? (triangulation.syncConfig as any)?.anchorCam2Frame ?? 0;
-  const syncToleranceSec = triangulation.syncConfig?.toleranceSec ?? (triangulation.syncConfig as any)?.syncToleranceSeconds ?? 0.005;
+  // Canonical Multi-Rate Timing, Typed Cam 2 Clip & Anchor-Based Master Physical Clock
+  const canonicalSync = normalizeStereoSyncConfig(
+    triangulation.syncConfig,
+    triangulation.fpsCam1 || clip.fps || 30,
+    triangulation.fpsCam2 || triangulation.fpsCam1 || clip.fps || 30
+  );
+  const fpsCam1 = canonicalSync.fpsCam1;
+  const fpsCam2 = canonicalSync.fpsCam2;
+  const anchorCam1 = canonicalSync.anchorFrameCam1;
+  const anchorCam2 = canonicalSync.anchorFrameCam2;
+  const syncToleranceSec = canonicalSync.toleranceSec;
 
-  const endFrameCam2 = (triangulation as any).clipCam2?.endFrame || Math.max(100, Math.round(clip.endFrame * (fpsCam2 / fpsCam1)));
+  const clipCam2 = resolveEffectiveClipCam2(triangulation, clip);
+  const startFrameCam2 = clipCam2.startFrame;
+  const endFrameCam2 = clipCam2.endFrame;
+  const totalFramesCam2 = clipCam2.totalFrames;
 
-  const warningTimerRef = useRef<any>(null);
+  const stereoWindow = computeStereoTimeWindow(clip, clipCam2, canonicalSync);
+  const isSingleFrameMaster = stereoWindow.unionDurationSec <= 1e-9;
+
+  const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMultiRate = Math.abs(fpsCam1 - fpsCam2) > 0.01;
   const ratioInfo = calculateMultiRateFrameRatio(fpsCam1, fpsCam2);
 
-  // Independent Cam 2 current frame state
-  const idealFrameCam2 = mapCam1ToCam2(currentFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-  const [currentFrameCam2, setCurrentFrameCam2] = useState<number>(idealFrameCam2);
+  // Authoritative Master Physical Test Clock (t_test in seconds relative to anchor pair)
+  const [masterTestTimeSec, setMasterTestTimeSec] = useState<number>(() =>
+    frameToPhysicalTestTime(currentFrame, anchorCam1, fpsCam1)
+  );
+  const masterTestTimeRef = useRef<number>(masterTestTimeSec);
+  masterTestTimeRef.current = masterTestTimeSec;
 
-  // Synchronize Cam 2 frame to Cam 1 when playing both or scrubbing Cam 1
+  // Independent Cam 2 current frame state (initialized from Master Clock evaluation)
+  const initialCam2Eval = evaluateCameraAtTestTime(
+    frameToPhysicalTestTime(currentFrame, anchorCam1, fpsCam1),
+    anchorCam2,
+    fpsCam2,
+    startFrameCam2,
+    endFrameCam2,
+    totalFramesCam2
+  );
+  const [currentFrameCam2, setCurrentFrameCam2] = useState<number>(initialCam2Eval.clampedFrame);
+  const currentFrameCam2Ref = useRef<number>(currentFrameCam2);
+  currentFrameCam2Ref.current = currentFrameCam2;
+
+  // Sync Master Physical Clock when external Cam 1 frame changes (keyboard arrows, F: input, undo, point click)
+  useEffect(() => {
+    if (currentFrame !== lastInternalCam1FrameRef.current) {
+      lastInternalCam1FrameRef.current = currentFrame;
+      lastReportedFrameRef.current = currentFrame;
+      const tFromCam1 = frameToPhysicalTestTime(currentFrame, anchorCam1, fpsCam1);
+      masterTestTimeRef.current = tFromCam1;
+      setMasterTestTimeSec(tFromCam1);
+      if (!isPlayingCam2) {
+        const nextCam2 = evaluateCameraAtTestTime(
+          tFromCam1,
+          anchorCam2,
+          fpsCam2,
+          startFrameCam2,
+          endFrameCam2,
+          totalFramesCam2
+        ).clampedFrame;
+        currentFrameCam2Ref.current = nextCam2;
+        setCurrentFrameCam2(nextCam2);
+      }
+    }
+  }, [
+    currentFrame,
+    anchorCam1,
+    anchorCam2,
+    fpsCam1,
+    fpsCam2,
+    startFrameCam2,
+    endFrameCam2,
+    totalFramesCam2,
+    isPlayingCam2,
+  ]);
+
+  // Re-evaluate Cam 2 frame whenever anchor/fps/clip bounds change while not in Solo Cam 2 playback
   useEffect(() => {
     if (!isPlayingCam2) {
-      setCurrentFrameCam2(mapCam1ToCam2(currentFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2);
+      const clampedT = Math.max(
+        stereoWindow.unionStartSec,
+        Math.min(stereoWindow.unionEndSec, masterTestTimeRef.current)
+      );
+      if (Math.abs(clampedT - masterTestTimeRef.current) > 1e-9) {
+        masterTestTimeRef.current = clampedT;
+        setMasterTestTimeSec(clampedT);
+      }
+      const nextCam2 = evaluateCameraAtTestTime(
+        clampedT,
+        anchorCam2,
+        fpsCam2,
+        startFrameCam2,
+        endFrameCam2,
+        totalFramesCam2
+      ).clampedFrame;
+      currentFrameCam2Ref.current = nextCam2;
+      setCurrentFrameCam2(nextCam2);
     }
-  }, [currentFrame, fpsCam1, fpsCam2, anchorCam1, anchorCam2, endFrameCam2, isPlayingCam2]);
+  }, [
+    anchorCam1,
+    anchorCam2,
+    fpsCam1,
+    fpsCam2,
+    startFrameCam2,
+    endFrameCam2,
+    totalFramesCam2,
+    stereoWindow.unionStartSec,
+    stereoWindow.unionEndSec,
+    isPlayingCam2,
+  ]);
 
-  // Evaluate stereo sync status
-  const syncStatus = evaluateStereoSync(
-    currentFrame,
-    currentFrameCam2,
-    {
-      anchorFrameCam1: anchorCam1,
-      anchorFrameCam2: anchorCam2,
+  // Derive per-camera window membership at current Master Physical Clock
+  const cam1Eval = evaluateCameraAtTestTime(
+    masterTestTimeSec,
+    anchorCam1,
+    fpsCam1,
+    clip.startFrame,
+    clip.endFrame,
+    clip.totalFrames
+  );
+  const cam2Eval = evaluateCameraAtTestTime(
+    masterTestTimeSec,
+    anchorCam2,
+    fpsCam2,
+    startFrameCam2,
+    endFrameCam2,
+    totalFramesCam2
+  );
+  const cam1InWindow = isPlayingCam1 ? true : cam1Eval.inClipWindow;
+  const cam2InWindow = isPlayingCam2 ? true : cam2Eval.inClipWindow;
+
+  // Authoritative helper to drive Master Physical Clock to an exact test time `tSec`
+  const setMasterClockToTime = useCallback(
+    (tSec: number) => {
+      const clampedT = Math.max(
+        stereoWindow.unionStartSec,
+        Math.min(stereoWindow.unionEndSec, tSec)
+      );
+      masterTestTimeRef.current = clampedT;
+      setMasterTestTimeSec(clampedT);
+
+      const eval1 = evaluateCameraAtTestTime(
+        clampedT,
+        anchorCam1,
+        fpsCam1,
+        clip.startFrame,
+        clip.endFrame,
+        clip.totalFrames
+      );
+      const eval2 = evaluateCameraAtTestTime(
+        clampedT,
+        anchorCam2,
+        fpsCam2,
+        startFrameCam2,
+        endFrameCam2,
+        totalFramesCam2
+      );
+
+      lastInternalCam1FrameRef.current = eval1.clampedFrame;
+      lastReportedFrameRef.current = eval1.clampedFrame;
+      if (eval1.clampedFrame !== currentFrameRef.current) {
+        onFrameChange(eval1.clampedFrame);
+      }
+      if (eval2.clampedFrame !== currentFrameCam2Ref.current) {
+        currentFrameCam2Ref.current = eval2.clampedFrame;
+        setCurrentFrameCam2(eval2.clampedFrame);
+      }
+    },
+    [
+      stereoWindow.unionStartSec,
+      stereoWindow.unionEndSec,
+      anchorCam1,
+      anchorCam2,
       fpsCam1,
       fpsCam2,
-      toleranceSec: syncToleranceSec,
-      playbackMaster: triangulation.syncConfig?.playbackMaster || 'both',
-    }
+      clip.startFrame,
+      clip.endFrame,
+      clip.totalFrames,
+      startFrameCam2,
+      endFrameCam2,
+      totalFramesCam2,
+      onFrameChange,
+    ]
   );
 
-  const timeCam1 = currentFrame / fpsCam1;
-  const timeCam2 = currentFrameCam2 / fpsCam2;
-  const masterTime = currentFrame / fpsCam1;
+  // Evaluate stereo sync status
+  const syncStatus = evaluateStereoSync(currentFrame, currentFrameCam2, canonicalSync);
+
+  const timeCam1 = frameToPhysicalTestTime(currentFrame, anchorCam1, fpsCam1);
+  const timeCam2 = frameToPhysicalTestTime(currentFrameCam2, anchorCam2, fpsCam2);
 
   // Decoupled container playback rate (e.g. 30fps container for high-speed sensor)
   const containerFps1 = clip.playbackFps || (fpsCam1 > 240 ? 30 : fpsCam1);
-  const containerFps2 = (triangulation as any).clipCam2?.playbackFps || clip.playbackFps || (fpsCam2 > 240 ? 30 : fpsCam2);
+  const containerFps2 = clipCam2.playbackFps || (fpsCam2 > 240 ? 30 : fpsCam2);
+  const containerFps1Ref = useRef<number>(containerFps1);
+  containerFps1Ref.current = containerFps1;
+  const containerFps2Ref = useRef<number>(containerFps2);
+  containerFps2Ref.current = containerFps2;
 
   // Interactive 3D Calibration Sticks (Requirement 4: separate endpoints, length, scale)
   const [calStickCam1, setCalStickCam1] = useState<{
@@ -473,10 +652,10 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     onRegisterSnapshotGetter?.(captureSnapshot);
   }, [captureSnapshot, onRegisterSnapshotGetter]);
 
-  // Video Loaded Metadata Handlers
+  // Video Loaded Metadata Handlers (preserve user clip trims & use container FPS, never sensor FPS)
   const handleLoadedMetadataCam1 = useCallback(() => {
     const v = videoRefCam1.current;
-    if (!v) return;
+    if (!v || isChunkedCam1) return;
     setCam1Error(null);
     v.muted = true;
     v.defaultMuted = true;
@@ -488,17 +667,40 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
     const dur = v.duration;
     if (Number.isFinite(dur) && dur > 0) {
-      const calculatedFrames = Math.max(10, Math.round(dur * clip.fps));
-      onUpdateClip({
-        totalFrames: calculatedFrames,
-        endFrame: calculatedFrames - 1,
-      });
+      const cFps = containerFps1Ref.current;
+      const containerTotalFrames = Math.max(1, Math.round(dur * cFps));
+      const maxFrameIdx = containerTotalFrames - 1;
+      const isUninitializedDefault =
+        !clip.userTrimmed && clip.totalFrames === 10000 && clip.endFrame === 9999;
+
+      if (isUninitializedDefault) {
+        onUpdateClip({
+          totalFrames: containerTotalFrames,
+          startFrame: 0,
+          endFrame: maxFrameIdx,
+          playbackFps: cFps,
+        });
+      } else {
+        const clampedStart = Math.max(0, Math.min(maxFrameIdx, clip.startFrame));
+        const clampedEnd = Math.max(clampedStart, Math.min(maxFrameIdx, clip.endFrame));
+        if (
+          containerTotalFrames !== clip.totalFrames ||
+          clampedStart !== clip.startFrame ||
+          clampedEnd !== clip.endFrame
+        ) {
+          onUpdateClip({
+            totalFrames: containerTotalFrames,
+            startFrame: clampedStart,
+            endFrame: clampedEnd,
+          });
+        }
+      }
     }
-  }, [clip.fps, onUpdateClip]);
+  }, [isChunkedCam1, clip.totalFrames, clip.startFrame, clip.endFrame, clip.userTrimmed, onUpdateClip]);
 
   const handleLoadedMetadataCam2 = useCallback(() => {
     const v = videoRefCam2.current;
-    if (!v) return;
+    if (!v || isChunkedCam2) return;
     setCam2Error(null);
     v.muted = true;
     v.defaultMuted = true;
@@ -507,329 +709,239 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     const width = v.videoWidth || 640;
     const height = v.videoHeight || 480;
     setCanvasSizeCam2({ width, height });
-  }, []);
 
-  // Requirement 1: Authoritative Play/Pause Toggles for Play Both, Play Cam 1, Play Cam 2
+    const dur = v.duration;
+    if (Number.isFinite(dur) && dur > 0) {
+      const cFps2 = containerFps2Ref.current;
+      const containerTotalFrames2 = Math.max(1, Math.round(dur * cFps2));
+      const maxFrameIdx2 = containerTotalFrames2 - 1;
+      const existing = triangulation.clipCam2;
+      const isUninitialized =
+        !existing || (!existing.userTrimmed && existing.totalFrames === 10000 && existing.endFrame === 9999);
+
+      const nextStart = isUninitialized ? 0 : Math.max(0, Math.min(maxFrameIdx2, existing.startFrame));
+      const nextEnd = isUninitialized
+        ? maxFrameIdx2
+        : Math.max(nextStart, Math.min(maxFrameIdx2, existing.endFrame));
+
+      if (
+        !existing ||
+        existing.totalFrames !== containerTotalFrames2 ||
+        existing.startFrame !== nextStart ||
+        existing.endFrame !== nextEnd
+      ) {
+        onUpdateTriangulation({
+          clipCam2: {
+            ...clipCam2,
+            startFrame: nextStart,
+            endFrame: nextEnd,
+            totalFrames: containerTotalFrames2,
+            playbackFps: cFps2,
+            ...(existing?.userTrimmed ? { userTrimmed: true } : {}),
+          },
+        });
+      }
+    }
+  }, [isChunkedCam2, triangulation.clipCam2, clipCam2, onUpdateTriangulation]);
+
+  // Attach SeekControllers whenever native <video> elements mount or media switches
+  useEffect(() => {
+    seekControllerCam1Ref.current.attach(!isChunkedCam1 && videoUrlCam1 ? videoRefCam1.current : null);
+  }, [videoUrlCam1, isChunkedCam1]);
+
+  useEffect(() => {
+    seekControllerCam2Ref.current.attach(!isChunkedCam2 && videoUrlCam2 ? videoRefCam2.current : null);
+  }, [videoUrlCam2, isChunkedCam2]);
+
+  // Authoritative Play/Pause Toggles (no HTML5 v1.play()/v2.playbackRate — driven strictly by Master Clock RAF)
   const handleTogglePlayBoth = useCallback(() => {
-    const v1 = videoRefCam1.current;
-    const v2 = videoRefCam2.current;
-
     if (isPlayingBoth) {
-      if (v1) v1.pause();
-      if (v2) v2.pause();
       setIsPlayingBoth(false);
       mediaDiagnostics.stopInvariantTracking('cam1');
       mediaDiagnostics.stopInvariantTracking('cam2');
-    } else {
-      setIsPlayingCam1(false);
-      setIsPlayingCam2(false);
-
-      if (v1 && videoUrlCam1) {
-        v1.playbackRate = playbackSpeed;
-        if (currentFrame >= clip.endFrame || v1.ended) {
-          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
-        }
-        v1.play().catch(() => {});
-        mediaDiagnostics.startInvariantTracking('cam1', v1.currentTime, playbackSpeed);
-      }
-
-      if (v2 && videoUrlCam2) {
-        const targetFrame2 = mapCam1ToCam2(currentFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-        v2.playbackRate = playbackSpeed * (fpsCam2 / fpsCam1);
-        try {
-          v2.currentTime = Math.max(0.001, targetFrame2 / containerFps2);
-        } catch {
-          // ignore
-        }
-        v2.play().catch(() => {});
-        mediaDiagnostics.startInvariantTracking('cam2', v2.currentTime, playbackSpeed * (fpsCam2 / fpsCam1));
-      }
-
-      setIsPlayingBoth(true);
+      return;
     }
-  }, [
-    isPlayingBoth,
-    videoUrlCam1,
-    videoUrlCam2,
-    playbackSpeed,
-    currentFrame,
-    clip.endFrame,
-    clip.startFrame,
-    containerFps1,
-    containerFps2,
-    fpsCam1,
-    fpsCam2,
-    anchorCam1,
-    anchorCam2,
-  ]);
+    if (stereoWindow.unionDurationSec <= 1e-9) return;
+    if (videoRefCam1.current) videoRefCam1.current.pause();
+    if (videoRefCam2.current) videoRefCam2.current.pause();
+    setIsPlayingCam1(false);
+    setIsPlayingCam2(false);
+
+    if (masterTestTimeRef.current >= stereoWindow.unionEndSec - 1e-6) {
+      setMasterClockToTime(stereoWindow.unionStartSec);
+    }
+    setIsPlayingBoth(true);
+  }, [isPlayingBoth, stereoWindow.unionDurationSec, stereoWindow.unionEndSec, stereoWindow.unionStartSec, setMasterClockToTime]);
 
   const handleTogglePlayCam1 = useCallback(() => {
-    const v1 = videoRefCam1.current;
-    const v2 = videoRefCam2.current;
-
     if (isPlayingCam1) {
-      if (v1) v1.pause();
       setIsPlayingCam1(false);
       mediaDiagnostics.stopInvariantTracking('cam1');
-    } else {
-      if (v2) v2.pause();
-      setIsPlayingBoth(false);
-      setIsPlayingCam2(false);
-
-      if (v1 && videoUrlCam1) {
-        v1.playbackRate = playbackSpeed;
-        if (currentFrame >= clip.endFrame || v1.ended) {
-          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
-        }
-        v1.play().catch(() => {});
-        mediaDiagnostics.startInvariantTracking('cam1', v1.currentTime, playbackSpeed);
-      }
-      setIsPlayingCam1(true);
+      return;
     }
-  }, [isPlayingCam1, videoUrlCam1, playbackSpeed, currentFrame, clip.endFrame, clip.startFrame, containerFps1]);
+    if (clip.endFrame <= clip.startFrame) return;
+    if (videoRefCam1.current) videoRefCam1.current.pause();
+    if (videoRefCam2.current) videoRefCam2.current.pause();
+    setIsPlayingBoth(false);
+    setIsPlayingCam2(false);
+
+    if (currentFrameRef.current >= clip.endFrame) {
+      onFrameChange(clip.startFrame);
+    }
+    setIsPlayingCam1(true);
+  }, [isPlayingCam1, clip.startFrame, clip.endFrame, onFrameChange]);
 
   const handleTogglePlayCam2 = useCallback(() => {
-    const v1 = videoRefCam1.current;
-    const v2 = videoRefCam2.current;
-
     if (isPlayingCam2) {
-      if (v2) v2.pause();
       setIsPlayingCam2(false);
       mediaDiagnostics.stopInvariantTracking('cam2');
-    } else {
-      if (v1) v1.pause();
-      setIsPlayingBoth(false);
-      setIsPlayingCam1(false);
-
-      if (v2 && videoUrlCam2) {
-        v2.playbackRate = playbackSpeed;
-        if (currentFrameCam2 >= endFrameCam2 || v2.ended) {
-          v2.currentTime = Math.max(0.001, 0);
-        }
-        v2.play().catch(() => {});
-        mediaDiagnostics.startInvariantTracking('cam2', v2.currentTime, playbackSpeed);
-      }
-      setIsPlayingCam2(true);
+      return;
     }
-  }, [isPlayingCam2, videoUrlCam2, playbackSpeed, currentFrameCam2, endFrameCam2]);
+    if (endFrameCam2 <= startFrameCam2) return;
+    if (videoRefCam1.current) videoRefCam1.current.pause();
+    if (videoRefCam2.current) videoRefCam2.current.pause();
+    setIsPlayingBoth(false);
+    setIsPlayingCam1(false);
 
-  const handlePlaybackSpeedChange = useCallback(
-    (newSpeed: number) => {
-      setPlaybackSpeed(newSpeed);
-      const v1 = videoRefCam1.current;
-      const v2 = videoRefCam2.current;
-      if (v1) {
-        v1.playbackRate = newSpeed;
-      }
-      if (v2) {
-        v2.playbackRate = isPlayingBoth ? newSpeed * (fpsCam2 / fpsCam1) : newSpeed;
-      }
-    },
-    [isPlayingBoth, fpsCam1, fpsCam2]
-  );
+    if (currentFrameCam2Ref.current >= endFrameCam2 || currentFrameCam2Ref.current < startFrameCam2) {
+      currentFrameCam2Ref.current = startFrameCam2;
+      setCurrentFrameCam2(startFrameCam2);
+    }
+    setIsPlayingCam2(true);
+  }, [isPlayingCam2, startFrameCam2, endFrameCam2]);
 
-  // Synchronized Play Both RAF Loop
+  const handlePlaybackSpeedChange = useCallback((newSpeed: number) => {
+    setPlaybackSpeed(newSpeed);
+  }, []);
+
+  // Unified Lockstep Master Physical Clock RAF Ticker (Play Both, Solo Cam 1, Solo Cam 2)
+  // Works identically across HTML5 <video>, UnifiedFrameSource (.avi/.mov/.gif/image sequence), and mixed pairs.
   useEffect(() => {
-    if (!isPlayingBoth || !videoUrlCam1) return;
+    if (!isPlayingBoth && !isPlayingCam1 && !isPlayingCam2) return;
 
-    let rafId: number;
-    const monitorLoop = () => {
-      const v1 = videoRefCam1.current;
-      const v2 = videoRefCam2.current;
-      if (!v1) return;
+    let rafId = 0;
+    let lastTs: number | null = null;
+    let soloCam1Float = Math.max(clip.startFrame, Math.min(clip.endFrame, currentFrameRef.current));
+    let soloCam2Float = Math.max(startFrameCam2, Math.min(endFrameCam2, currentFrameCam2Ref.current));
 
-      if (v1.paused && !v1.seeking && isPlayingBoth) {
-        if (v1.ended || v1.currentTime >= (v1.duration || 1) - 0.05) {
+    const tick = (now: number) => {
+      if (lastTs === null) {
+        lastTs = now;
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+      const realDtSec = Math.min(0.1, Math.max(0, (now - lastTs) / 1000));
+      lastTs = now;
+
+      if (isPlayingBoth) {
+        const primaryFps = Math.max(fpsCam1, fpsCam2);
+        const dtTest = computeAdaptiveClockStepSec(realDtSec, primaryFps, playbackSpeed);
+        let nextT = masterTestTimeRef.current + dtTest;
+
+        if (nextT >= stereoWindow.unionEndSec) {
           if (isLooping) {
-            v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
-            v1.play().catch(() => {});
-            if (v2) {
-              const resetF2 = mapCam1ToCam2(clip.startFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-              v2.currentTime = Math.max(0.001, resetF2 / containerFps2);
-              v2.play().catch(() => {});
-            }
+            nextT = stereoWindow.unionStartSec;
           } else {
-            v1.pause();
-            if (v2) v2.pause();
+            setMasterClockToTime(stereoWindow.unionEndSec);
             setIsPlayingBoth(false);
             return;
           }
         }
-      }
-
-      const mediaTime = v1.currentTime;
-      const derivedFrame = Math.min(
-        clip.endFrame,
-        Math.max(clip.startFrame, Math.floor(mediaTime * containerFps1))
-      );
-
-      if (derivedFrame !== lastReportedFrameRef.current) {
-        lastReportedFrameRef.current = derivedFrame;
-        onFrameChange(derivedFrame);
-        const mappedCam2 = mapCam1ToCam2(derivedFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-        setCurrentFrameCam2(mappedCam2);
-      }
-
-      // Phase lock Cam 2 to synchronized anchor position
-      if (v2 && videoUrlCam2 && !v2.seeking && !v1.seeking) {
-        const mappedCam2 = mapCam1ToCam2(derivedFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-        const targetCam2Time = Math.max(0.001, mappedCam2 / containerFps2);
-        if (Math.abs(v2.currentTime - targetCam2Time) > 0.06) {
-          try {
-            v2.currentTime = targetCam2Time;
-          } catch {
-            // ignore
+        setMasterClockToTime(nextT);
+      } else if (isPlayingCam1) {
+        const dtTest1 = computeAdaptiveClockStepSec(realDtSec, fpsCam1, playbackSpeed);
+        soloCam1Float += dtTest1 * fpsCam1;
+        if (soloCam1Float >= clip.endFrame) {
+          if (isLooping) {
+            soloCam1Float = clip.startFrame;
+          } else {
+            soloCam1Float = clip.endFrame;
+            const finalF1 = clip.endFrame;
+            if (finalF1 !== currentFrameRef.current) {
+              lastReportedFrameRef.current = finalF1;
+              onFrameChange(finalF1);
+            }
+            setIsPlayingCam1(false);
+            return;
           }
+        }
+        const nextF1 = Math.max(clip.startFrame, Math.min(clip.endFrame, Math.floor(soloCam1Float)));
+        if (nextF1 !== currentFrameRef.current) {
+          lastReportedFrameRef.current = nextF1;
+          onFrameChange(nextF1);
+        }
+      } else if (isPlayingCam2) {
+        const dtTest2 = computeAdaptiveClockStepSec(realDtSec, fpsCam2, playbackSpeed);
+        soloCam2Float += dtTest2 * fpsCam2;
+        if (soloCam2Float >= endFrameCam2) {
+          if (isLooping) {
+            soloCam2Float = startFrameCam2;
+          } else {
+            soloCam2Float = endFrameCam2;
+            currentFrameCam2Ref.current = endFrameCam2;
+            setCurrentFrameCam2(endFrameCam2);
+            setIsPlayingCam2(false);
+            return;
+          }
+        }
+        const nextF2 = Math.max(startFrameCam2, Math.min(endFrameCam2, Math.floor(soloCam2Float)));
+        if (nextF2 !== currentFrameCam2Ref.current) {
+          currentFrameCam2Ref.current = nextF2;
+          setCurrentFrameCam2(nextF2);
         }
       }
 
-      if (derivedFrame >= clip.endFrame) {
-        if (isLooping) {
-          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
-          v1.play().catch(() => {});
-          if (v2) {
-            const resetF2 = mapCam1ToCam2(clip.startFrame, anchorCam1, anchorCam2, fpsCam1, fpsCam2, endFrameCam2 + 1).frameCam2;
-            v2.currentTime = Math.max(0.001, resetF2 / containerFps2);
-            v2.play().catch(() => {});
-          }
-        } else {
-          v1.pause();
-          if (v2) v2.pause();
-          setIsPlayingBoth(false);
-          return;
-        }
-      }
-
-      rafId = requestAnimationFrame(monitorLoop);
+      rafId = requestAnimationFrame(tick);
     };
 
-    rafId = requestAnimationFrame(monitorLoop);
-    return () => cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+    };
   }, [
     isPlayingBoth,
-    videoUrlCam1,
-    videoUrlCam2,
-    containerFps1,
-    containerFps2,
-    clip.startFrame,
-    clip.endFrame,
-    isLooping,
-    playbackSpeed,
+    isPlayingCam1,
+    isPlayingCam2,
     fpsCam1,
     fpsCam2,
-    anchorCam1,
-    anchorCam2,
+    playbackSpeed,
+    isLooping,
+    clip.startFrame,
+    clip.endFrame,
+    startFrameCam2,
+    endFrameCam2,
+    stereoWindow.unionStartSec,
+    stereoWindow.unionEndSec,
+    setMasterClockToTime,
     onFrameChange,
   ]);
 
-  // Solo Play Camera 1 Loop
+  // Route ALL HTML5 <video> seeks (both lockstep playback and scrubbing) through per-camera SeekController
   useEffect(() => {
-    if (!isPlayingCam1 || !videoUrlCam1) return;
-
-    let rafId: number;
-    const monitorLoopCam1 = () => {
-      const v1 = videoRefCam1.current;
-      if (!v1) return;
-
-      const mediaTime = v1.currentTime;
-      const derivedFrame = Math.min(
-        clip.endFrame,
-        Math.max(clip.startFrame, Math.floor(mediaTime * containerFps1))
-      );
-
-      if (derivedFrame !== lastReportedFrameRef.current) {
-        lastReportedFrameRef.current = derivedFrame;
-        onFrameChange(derivedFrame);
-      }
-
-      if (v1.ended || derivedFrame >= clip.endFrame) {
-        if (isLooping) {
-          v1.currentTime = Math.max(0.001, clip.startFrame / containerFps1);
-          v1.play().catch(() => {});
-        } else {
-          v1.pause();
-          setIsPlayingCam1(false);
-          return;
-        }
-      }
-
-      rafId = requestAnimationFrame(monitorLoopCam1);
-    };
-
-    rafId = requestAnimationFrame(monitorLoopCam1);
-    return () => cancelAnimationFrame(rafId);
-  }, [isPlayingCam1, videoUrlCam1, containerFps1, clip.startFrame, clip.endFrame, isLooping, onFrameChange]);
-
-  // Solo Play Camera 2 Loop
-  useEffect(() => {
-    if (!isPlayingCam2 || !videoUrlCam2) return;
-
-    let rafId: number;
-    const monitorLoopCam2 = () => {
-      const v2 = videoRefCam2.current;
-      if (!v2) return;
-
-      const mediaTime = v2.currentTime;
-      const derivedFrame = Math.min(
-        endFrameCam2,
-        Math.max(0, Math.floor(mediaTime * containerFps2))
-      );
-
-      setCurrentFrameCam2(derivedFrame);
-
-      if (v2.ended || derivedFrame >= endFrameCam2) {
-        if (isLooping) {
-          v2.currentTime = 0.001;
-          v2.play().catch(() => {});
-        } else {
-          v2.pause();
-          setIsPlayingCam2(false);
-          return;
-        }
-      }
-
-      rafId = requestAnimationFrame(monitorLoopCam2);
-    };
-
-    rafId = requestAnimationFrame(monitorLoopCam2);
-    return () => cancelAnimationFrame(rafId);
-  }, [isPlayingCam2, videoUrlCam2, containerFps2, endFrameCam2, isLooping]);
-
-  // Synchronize HTML5 video elements to current physical frame ONLY when paused
-  useEffect(() => {
-    if (isAnyPlaying) return;
-    const seekTime1 = Math.max(0.001, currentFrame / containerFps1);
-    const seekTime2 = Math.max(0.001, currentFrameCam2 / containerFps2);
-
-    if (videoRefCam1.current && videoUrlCam1) {
-      if (videoRefCam1.current.readyState >= 1) {
-        if (Math.abs(videoRefCam1.current.currentTime - seekTime1) > 0.002 || videoRefCam1.current.currentTime === 0) {
-          try {
-            videoRefCam1.current.currentTime = seekTime1;
-          } catch {
-            // ignore
-          }
-        }
-      }
+    if (!isChunkedCam1 && videoUrlCam1 && videoRefCam1.current) {
+      const seekTime1 = Math.max(0.0005, currentFrame / containerFps1);
+      void seekControllerCam1Ref.current.seek(seekTime1);
     }
-    if (videoRefCam2.current && videoUrlCam2) {
-      if (videoRefCam2.current.readyState >= 1) {
-        if (Math.abs(videoRefCam2.current.currentTime - seekTime2) > 0.002 || videoRefCam2.current.currentTime === 0) {
-          try {
-            videoRefCam2.current.currentTime = seekTime2;
-          } catch {
-            // ignore
-          }
-        }
-      }
+    if (!isChunkedCam2 && videoUrlCam2 && videoRefCam2.current) {
+      const seekTime2 = Math.max(0.0005, currentFrameCam2 / containerFps2);
+      void seekControllerCam2Ref.current.seek(seekTime2);
     }
     lastReportedFrameRef.current = currentFrame;
-  }, [currentFrame, currentFrameCam2, containerFps1, containerFps2, videoUrlCam1, videoUrlCam2, isAnyPlaying]);
+  }, [
+    currentFrame,
+    currentFrameCam2,
+    containerFps1,
+    containerFps2,
+    videoUrlCam1,
+    videoUrlCam2,
+    isChunkedCam1,
+    isChunkedCam2,
+  ]);
 
-  // Safe video reload and session reset when videoUrlCam1 changes
+  // Safe video reload ONLY when videoUrlCam1 changes (never re-runs on frame or FPS changes)
   useEffect(() => {
     const v1 = videoRefCam1.current;
-    if (v1 && videoUrlCam1) {
+    if (v1 && videoUrlCam1 && !isChunkedCam1) {
       v1.pause();
       setIsPlayingBoth(false);
       setIsPlayingCam1(false);
@@ -837,15 +949,12 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       setCam1Error(null);
       v1.muted = true;
       v1.defaultMuted = true;
+      seekControllerCam1Ref.current.attach(v1);
 
       const handleReady = () => {
         mediaDiagnostics.logEvent('cam1', 'loadeddata', v1);
-        const targetTime = Math.max(0.001, currentFrame / containerFps1);
-        try {
-          v1.currentTime = targetTime;
-        } catch {
-          // ignore
-        }
+        const targetTime = Math.max(0.0005, currentFrameRef.current / containerFps1Ref.current);
+        void seekControllerCam1Ref.current.seek(targetTime);
       };
 
       v1.addEventListener('loadeddata', handleReady, { once: true });
@@ -859,12 +968,12 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         v1.removeEventListener('loadeddata', handleReady);
       };
     }
-  }, [videoUrlCam1, containerFps1]);
+  }, [videoUrlCam1]);
 
-  // Safe video reload and session reset when videoUrlCam2 changes
+  // Safe video reload ONLY when videoUrlCam2 changes (fixes Audit 2 Cam 2 freeze bug)
   useEffect(() => {
     const v2 = videoRefCam2.current;
-    if (v2 && videoUrlCam2) {
+    if (v2 && videoUrlCam2 && !isChunkedCam2) {
       v2.pause();
       setIsPlayingBoth(false);
       setIsPlayingCam2(false);
@@ -872,15 +981,12 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       setCam2Error(null);
       v2.muted = true;
       v2.defaultMuted = true;
+      seekControllerCam2Ref.current.attach(v2);
 
       const handleReady = () => {
         mediaDiagnostics.logEvent('cam2', 'loadeddata', v2);
-        const targetTime = Math.max(0.001, currentFrameCam2 / containerFps2);
-        try {
-          v2.currentTime = targetTime;
-        } catch {
-          // ignore
-        }
+        const targetTime = Math.max(0.0005, currentFrameCam2Ref.current / containerFps2Ref.current);
+        void seekControllerCam2Ref.current.seek(targetTime);
       };
 
       v2.addEventListener('loadeddata', handleReady, { once: true });
@@ -894,11 +1000,15 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         v2.removeEventListener('loadeddata', handleReady);
       };
     }
-  }, [videoUrlCam2, containerFps2, currentFrameCam2]);
+  }, [videoUrlCam2]);
 
   // Cleanup on unmount
   useEffect(() => {
+    const ctrl1 = seekControllerCam1Ref.current;
+    const ctrl2 = seekControllerCam2Ref.current;
     return () => {
+      ctrl1.dispose();
+      ctrl2.dispose();
       const v1 = videoRefCam1.current;
       if (v1) {
         v1.pause();
@@ -1192,7 +1302,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     renderOverlay(canvasRefCam2.current, 'cam2');
   }, [renderOverlay, currentFrame, steps, canvasSizeCam1, canvasSizeCam2, calStickCam1, calStickCam2]);
 
-  // Decode frame on demand for Camera 1 when aviLoaderCam1 is active
+  // Decode frame on demand for Camera 1 when aviLoaderCam1 (UnifiedFrameSource) is active
   useEffect(() => {
     if (!isChunkedCam1 || !aviLoaderCam1?.metadata) {
       aviBitmapCam1Ref.current = null;
@@ -1206,12 +1316,14 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     });
     let cancelled = false;
     aviLoaderCam1
-      .getFrameBitmap(currentFrame)
+      .getFrame(currentFrame)
       .then(async (bmp) => {
         if (cancelled) return;
         if (bmp) {
           aviBitmapCam1Ref.current = bmp;
+          aviImageDataCam1Ref.current = null;
         } else {
+          aviBitmapCam1Ref.current = null;
           aviImageDataCam1Ref.current = await aviLoaderCam1.getFrameImageData(currentFrame);
         }
         renderOverlay(canvasRefCam1.current, 'cam1');
@@ -1222,7 +1334,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     };
   }, [isChunkedCam1, aviLoaderCam1, currentFrame, renderOverlay]);
 
-  // Decode frame on demand for Camera 2 when aviLoaderCam2 is active
+  // Decode frame on demand for Camera 2 when aviLoaderCam2 (UnifiedFrameSource) is active
   useEffect(() => {
     if (!isChunkedCam2 || !aviLoaderCam2?.metadata) {
       aviBitmapCam2Ref.current = null;
@@ -1236,12 +1348,14 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     });
     let cancelled = false;
     aviLoaderCam2
-      .getFrameBitmap(currentFrameCam2)
+      .getFrame(currentFrameCam2)
       .then(async (bmp) => {
         if (cancelled) return;
         if (bmp) {
           aviBitmapCam2Ref.current = bmp;
+          aviImageDataCam2Ref.current = null;
         } else {
+          aviBitmapCam2Ref.current = null;
           aviImageDataCam2Ref.current = await aviLoaderCam2.getFrameImageData(currentFrameCam2);
         }
         renderOverlay(canvasRefCam2.current, 'cam2');
@@ -1304,7 +1418,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     return { px, py };
   };
 
-  // Place or update a 3D Stereo point on Cam 1 or Cam 2 with sub-pixel coordinates & DLT triangulation
+  // Place or update a 3D Stereo point on Cam 1 or Cam 2 with anchor-aligned multi-rate physical timestamps & DLT triangulation
   const commitStereoPointAtFrame = (
     camId: 'cam1' | 'cam2',
     px: number,
@@ -1312,7 +1426,8 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     targetFrame: number,
     allowAutoAdvance: boolean
   ) => {
-    const time = targetFrame / fpsCam1;
+    const t1 = frameToPhysicalTestTime(targetFrame, anchorCam1, fpsCam1) + (clip.startTime || 0);
+    const t2 = frameToPhysicalTestTime(currentFrameCam2, anchorCam2, fpsCam2) + (clipCam2.startTime || 0);
     const existing = steps.find((s) => s.frame === targetFrame);
 
     let newCam1 = existing?.cam1 || null;
@@ -1330,17 +1445,35 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     if (newCam1 && !newCam2) {
       const cam2Samples = steps
         .filter((s) => s.cam2)
-        .map((s) => ({
-          time: s.time,
-          px: s.cam2!.px,
-          py: s.cam2!.py,
-          frame: s.cam2Frame ?? Math.round(s.time * fpsCam2),
-        }));
+        .map((s) => {
+          const f2 =
+            s.cam2Frame ??
+            mapCam1ToCam2(
+              s.frame,
+              anchorCam1,
+              anchorCam2,
+              fpsCam1,
+              fpsCam2,
+              totalFramesCam2,
+              startFrameCam2,
+              endFrameCam2
+            ).frameCam2;
+          const sampleT2 =
+            s.cam2Time !== undefined && Number.isFinite(s.cam2Time)
+              ? s.cam2Time
+              : frameToPhysicalTestTime(f2, anchorCam2, fpsCam2) + (clipCam2.startTime || 0);
+          return {
+            time: sampleT2,
+            px: s.cam2!.px,
+            py: s.cam2!.py,
+            frame: f2,
+          };
+        });
 
       if (cam2Samples.length > 0) {
         const interpResult = interpolateCameraCoordinates(
           cam2Samples,
-          time,
+          t1,
           triangulation.temporalInterpolation || 'cubic-spline'
         );
         if (interpResult) {
@@ -1355,17 +1488,23 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     } else if (newCam2 && !newCam1) {
       const cam1Samples = steps
         .filter((s) => s.cam1)
-        .map((s) => ({
-          time: s.time,
-          px: s.cam1!.px,
-          py: s.cam1!.py,
-          frame: s.frame,
-        }));
+        .map((s) => {
+          const sampleT1 =
+            s.cam1Time !== undefined && Number.isFinite(s.cam1Time)
+              ? s.cam1Time
+              : frameToPhysicalTestTime(s.frame, anchorCam1, fpsCam1) + (clip.startTime || 0);
+          return {
+            time: sampleT1,
+            px: s.cam1!.px,
+            py: s.cam1!.py,
+            frame: s.frame,
+          };
+        });
 
       if (cam1Samples.length > 0) {
         const interpResult = interpolateCameraCoordinates(
           cam1Samples,
-          time,
+          t2,
           triangulation.temporalInterpolation || 'cubic-spline'
         );
         if (interpResult) {
@@ -1420,7 +1559,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
     const newPointStep: PointStep = {
       frame: targetFrame,
-      time,
+      time: t1,
       px: newCam1 ? newCam1.px : px,
       py: newCam1 ? newCam1.py : py,
       cam1: newCam1,
@@ -1429,8 +1568,8 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
       cam1Py: newCam1?.py,
       cam2Px: newCam2?.px,
       cam2Py: newCam2?.py,
-      cam1Time: time,
-      cam2Time: timeCam2,
+      cam1Time: t1,
+      cam2Time: t2,
       cam2Frame: currentFrameCam2,
       isInterpolatedCam1,
       isInterpolatedCam2,
@@ -1690,10 +1829,34 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
     lCtx.fillStyle = '#0F172A';
     lCtx.fillRect(0, 0, lWidth, lHeight);
 
+    const activeBitmap =
+      activeCameraHover === 'cam1'
+        ? isChunkedCam1
+          ? aviBitmapCam1Ref.current
+          : null
+        : isChunkedCam2
+        ? aviBitmapCam2Ref.current
+        : null;
     const sourceVideo =
       activeCameraHover === 'cam1' ? videoRefCam1.current : videoRefCam2.current;
 
-    if (sourceVideo && sourceVideo.readyState >= 2) {
+    if (activeBitmap) {
+      try {
+        lCtx.drawImage(
+          activeBitmap,
+          sourceX,
+          sourceY,
+          sourceW,
+          sourceH,
+          0,
+          0,
+          lWidth,
+          lHeight
+        );
+      } catch {
+        // ignore
+      }
+    } else if (sourceVideo && sourceVideo.readyState >= 2) {
       try {
         lCtx.drawImage(
           sourceVideo,
@@ -1852,25 +2015,37 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         </div>
       </div>
 
-      {/* Hidden File Inputs for Local Uploads */}
+      {/* Hidden File Inputs for Local Uploads (supports single videos, images, and multi-file image sequences) */}
       <input
         ref={fileInputCam1Ref}
         type="file"
+        multiple
         accept={ACCEPTED_VIDEO_ACCEPT_STRING}
         className="hidden"
         onChange={(e) => {
           setCam1Error(null);
-          e.target.files?.[0] && onUploadCam1?.(e.target.files[0]);
+          onClearCodecDiagnosticCam1?.();
+          const files = e.target.files ? Array.from(e.target.files) : [];
+          if (files.length > 0) {
+            onUploadCam1?.(files.length === 1 ? files[0] : files);
+            e.target.value = '';
+          }
         }}
       />
       <input
         ref={fileInputCam2Ref}
         type="file"
+        multiple
         accept={ACCEPTED_VIDEO_ACCEPT_STRING}
         className="hidden"
         onChange={(e) => {
           setCam2Error(null);
-          e.target.files?.[0] && onUploadCam2?.(e.target.files[0]);
+          onClearCodecDiagnosticCam2?.();
+          const files = e.target.files ? Array.from(e.target.files) : [];
+          if (files.length > 0) {
+            onUploadCam2?.(files.length === 1 ? files[0] : files);
+            e.target.value = '';
+          }
         }}
       />
 
@@ -1889,7 +2064,11 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         {/* Camera 1 Viewport */}
         {(dualLayout === 'side-by-side' || dualLayout === 'cam1-focus') && (
           <div
-            className="flex-1 flex flex-col h-full bg-white border border-[#CBD5E1] rounded-[3px] overflow-hidden relative"
+            onMouseEnter={() => onActiveCameraChange?.('cam1')}
+            onMouseDown={() => onActiveCameraChange?.('cam1')}
+            className={`flex-1 flex flex-col h-full bg-white border rounded-[3px] overflow-hidden relative transition-colors ${
+              activePasteTargetCam === 'cam1' ? 'border-[#2563EB]' : 'border-[#CBD5E1]'
+            }`}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDraggingCam1(true);
@@ -1899,15 +2078,19 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               e.preventDefault();
               setIsDraggingCam1(false);
               setCam1Error(null);
-              const file = e.dataTransfer.files?.[0];
-              if (file) onUploadCam1?.(file);
+              onClearCodecDiagnosticCam1?.();
+              onActiveCameraChange?.('cam1');
+              const dropped = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+              if (dropped.length > 0) {
+                onUploadCam1?.(dropped.length === 1 ? dropped[0] : dropped);
+              }
             }}
           >
             {isDraggingCam1 && (
               <div className="absolute inset-0 z-30 bg-[#181B20]/90 border-2 border-dashed border-[#2563EB] text-white flex flex-col items-center justify-center pointer-events-none">
                 <Upload className="w-8 h-8 mb-2 text-[#2563EB]" />
-                <span className="font-bold text-xs">Drop Video to Load into Camera 1</span>
-                <span className="text-[10px] text-slate-300">.MP4, .AVI, .WMV, .FLV, .MOV, .MKV, .WEBM</span>
+                <span className="font-bold text-xs">Drop Video or Image Sequence into Camera 1</span>
+                <span className="text-[10px] text-slate-300">.MP4, .AVI, .MOV, .WMV, .FLV, .OGG, .WEBM, .GIF, .PNG/.JPG, .ZIP</span>
               </div>
             )}
             <div className="h-[24px] bg-[#F1F3F5] border-b border-[#CBD5E1] px-2 flex items-center justify-between text-[10.5px] shrink-0 gap-1 overflow-x-auto">
@@ -2065,119 +2248,146 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               }}
               className="flex-1 relative bg-[#0F172A] min-h-0 overflow-hidden select-none"
             >
-              {videoUrlCam1 ? (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    width: canvasSizeCam1.width,
-                    height: canvasSizeCam1.height,
-                    transform: `translate3d(${panCam1.x}px, ${panCam1.y}px, 0) scale(${zoomCam1})`,
-                    transformOrigin: '0 0',
-                    transition: isPanningCam1 ? 'none' : 'transform 0.04s ease-out',
-                    imageRendering: zoomCam1 >= 3.0 ? 'pixelated' : 'auto',
-                  }}
-                  className="rounded-[2px] overflow-hidden border border-[#334155] shadow-xl bg-black"
-                >
-                  <video
-                    ref={videoRefCam1}
-                    src={normalizeVideoUrl(videoUrlCam1)}
-                    playsInline
-                    muted
-                    preload="auto"
-                    onLoadedMetadata={() => {
-                      handleLoadedMetadataCam1();
-                      renderOverlay(canvasRefCam1.current, 'cam1');
-                    }}
-                    onDurationChange={() => {
-                      handleLoadedMetadataCam1();
-                      renderOverlay(canvasRefCam1.current, 'cam1');
-                    }}
-                    onSeeked={() => {
-                      mediaDiagnostics.logEvent('cam1', 'seeked', videoRefCam1.current);
-                      renderOverlay(canvasRefCam1.current, 'cam1');
-                    }}
-                    onCanPlay={() => {
-                      mediaDiagnostics.logEvent('cam1', 'canplay', videoRefCam1.current);
-                      renderOverlay(canvasRefCam1.current, 'cam1');
-                    }}
-                    onTimeUpdate={() => renderOverlay(canvasRefCam1.current, 'cam1')}
-                    onPlay={() => mediaDiagnostics.logEvent('cam1', 'play', videoRefCam1.current)}
-                    onPause={() => mediaDiagnostics.logEvent('cam1', 'pause', videoRefCam1.current)}
-                    onRateChange={() => mediaDiagnostics.logEvent('cam1', 'ratechange', videoRefCam1.current)}
-                    onWaiting={() => mediaDiagnostics.logEvent('cam1', 'waiting', videoRefCam1.current)}
-                    onStalled={() => mediaDiagnostics.logEvent('cam1', 'stalled', videoRefCam1.current)}
-                    onError={() => {
-                      if (isChunkedCam1) {
-                        setCam1Error(null);
-                        return;
-                      }
-                      mediaDiagnostics.logEvent('cam1', 'error', videoRefCam1.current);
-                      setCam1Error('Video codec in Camera 1 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
-                    }}
-                    className="block"
+              {codecDiagnosticCam1 && (
+                <CodecDiagnosticCard
+                  diagnostic={codecDiagnosticCam1}
+                  slotLabel="CAM 1"
+                  compact
+                  onSelectAnotherFile={() => fileInputCam1Ref.current?.click()}
+                  onOpenFormatsModal={onOpenFormatsModal}
+                  onDismiss={onClearCodecDiagnosticCam1}
+                />
+              )}
+              {videoUrlCam1 || isChunkedCam1 ? (
+                <>
+                  <div
                     style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'fill',
-                      display: 'block',
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      width: canvasSizeCam1.width,
+                      height: canvasSizeCam1.height,
+                      transform: `translate3d(${panCam1.x}px, ${panCam1.y}px, 0) scale(${zoomCam1})`,
+                      transformOrigin: '0 0',
+                      transition: isPanningCam1 ? 'none' : 'transform 0.04s ease-out',
                       imageRendering: zoomCam1 >= 3.0 ? 'pixelated' : 'auto',
+                      opacity: cam1InWindow ? 1 : 0.35,
                     }}
-                  />
-                  <canvas
-                    ref={canvasRefCam1}
-                    width={canvasSizeCam1.width}
-                    height={canvasSizeCam1.height}
-                    onMouseDown={(e) => handleMouseDown(e, 'cam1')}
-                    onMouseUp={(e) => handleMouseUp(e, 'cam1')}
-                    onMouseEnter={() => setActiveCameraHover('cam1')}
-                    onMouseLeave={() => {
-                      setActiveCameraHover(null);
-                      setIsPanningCam1(false);
-                      if (pointerGestureRef.current?.camId === 'cam1') pointerGestureRef.current = null;
-                    }}
-                    onMouseMove={(e) => handleMouseMove(e, 'cam1')}
-                    className="absolute inset-0 w-full h-full"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      display: 'block',
-                      cursor:
-                        isPanningCam1 || dragStickTarget?.camId === 'cam1'
-                          ? 'grabbing'
-                          : isShiftPressed || !requireShiftToMark
-                          ? 'crosshair'
-                          : 'grab',
-                      imageRendering: zoomCam1 >= 3.0 ? 'pixelated' : 'auto',
-                    }}
-                  />
-                  {cam1Error && (
-                    <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
-                      <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5" />
-                      <span className="font-bold text-xs mb-1">Camera 1 Codec Notice</span>
-                      <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam1Error}</span>
-                      <div className="flex flex-wrap items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => fileInputCam1Ref.current?.click()}
-                          className="px-2.5 py-1 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
-                        >
-                          Select Other File
-                        </button>
-                        {onOpenFormatsModal && (
+                    className="rounded-[2px] overflow-hidden border border-[#334155] shadow-xl bg-black"
+                  >
+                    {!isChunkedCam1 && Boolean(videoUrlCam1) && (
+                      <video
+                        ref={videoRefCam1}
+                        src={normalizeVideoUrl(videoUrlCam1)}
+                        playsInline
+                        muted
+                        preload="auto"
+                        onLoadedMetadata={() => {
+                          handleLoadedMetadataCam1();
+                          renderOverlay(canvasRefCam1.current, 'cam1');
+                        }}
+                        onDurationChange={() => {
+                          handleLoadedMetadataCam1();
+                          renderOverlay(canvasRefCam1.current, 'cam1');
+                        }}
+                        onSeeked={() => {
+                          mediaDiagnostics.logEvent('cam1', 'seeked', videoRefCam1.current);
+                          renderOverlay(canvasRefCam1.current, 'cam1');
+                        }}
+                        onCanPlay={() => {
+                          mediaDiagnostics.logEvent('cam1', 'canplay', videoRefCam1.current);
+                          renderOverlay(canvasRefCam1.current, 'cam1');
+                        }}
+                        onTimeUpdate={() => renderOverlay(canvasRefCam1.current, 'cam1')}
+                        onPlay={() => mediaDiagnostics.logEvent('cam1', 'play', videoRefCam1.current)}
+                        onPause={() => mediaDiagnostics.logEvent('cam1', 'pause', videoRefCam1.current)}
+                        onRateChange={() => mediaDiagnostics.logEvent('cam1', 'ratechange', videoRefCam1.current)}
+                        onWaiting={() => mediaDiagnostics.logEvent('cam1', 'waiting', videoRefCam1.current)}
+                        onStalled={() => mediaDiagnostics.logEvent('cam1', 'stalled', videoRefCam1.current)}
+                        onError={() => {
+                          if (isChunkedCam1) {
+                            setCam1Error(null);
+                            return;
+                          }
+                          mediaDiagnostics.logEvent('cam1', 'error', videoRefCam1.current);
+                          setCam1Error('Video codec in Camera 1 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
+                        }}
+                        className="block"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'fill',
+                          display: 'block',
+                          imageRendering: zoomCam1 >= 3.0 ? 'pixelated' : 'auto',
+                        }}
+                      />
+                    )}
+                    <canvas
+                      ref={canvasRefCam1}
+                      width={canvasSizeCam1.width}
+                      height={canvasSizeCam1.height}
+                      onMouseDown={(e) => handleMouseDown(e, 'cam1')}
+                      onMouseUp={(e) => handleMouseUp(e, 'cam1')}
+                      onMouseEnter={() => setActiveCameraHover('cam1')}
+                      onMouseLeave={() => {
+                        setActiveCameraHover(null);
+                        setIsPanningCam1(false);
+                        if (pointerGestureRef.current?.camId === 'cam1') pointerGestureRef.current = null;
+                      }}
+                      onMouseMove={(e) => handleMouseMove(e, 'cam1')}
+                      className="absolute inset-0 w-full h-full"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        display: 'block',
+                        cursor:
+                          isPanningCam1 || dragStickTarget?.camId === 'cam1'
+                            ? 'grabbing'
+                            : isShiftPressed || !requireShiftToMark
+                            ? 'crosshair'
+                            : 'grab',
+                        imageRendering: zoomCam1 >= 3.0 ? 'pixelated' : 'auto',
+                      }}
+                    />
+                    {cam1Error && !codecDiagnosticCam1 && !isChunkedCam1 && (
+                      <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
+                        <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5" />
+                        <span className="font-bold text-xs mb-1">Camera 1 Codec Notice</span>
+                        <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam1Error}</span>
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => onOpenFormatsModal('video-prep')}
-                            className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
+                            onClick={() => fileInputCam1Ref.current?.click()}
+                            className="px-2.5 py-1 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
                           >
-                            Video Prep Tips
+                            Select Other File
                           </button>
-                        )}
+                          {onOpenFormatsModal && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFormatsModal('video-prep')}
+                              className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
+                            >
+                              Video Prep Tips
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {!cam1InWindow && (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                      <div className="bg-[#181B20]/95 border border-[#F59E0B] rounded-[2px] px-3 py-1.5 shadow-lg flex flex-col items-center gap-0.5 font-mono">
+                        <span className="text-[10.5px] font-bold tracking-wider text-[#F59E0B] uppercase tabular-nums">
+                          OUT OF CLIP WINDOW (t = {masterTestTimeSec.toFixed(4)} s)
+                        </span>
+                        <span className="text-[9.5px] text-[#CBD5E1] tabular-nums">
+                          CAM 1 Active: F#{clip.startFrame}..F#{clip.endFrame} ({stereoWindow.tStartCam1.toFixed(4)}s to {stereoWindow.tEndCam1.toFixed(4)}s)
+                        </span>
                       </div>
                     </div>
                   )}
-                </div>
+                </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-center p-4 select-none">
                   <div className="relative w-14 h-14 mb-2 border border-[#2563EB]/40 rounded-full flex items-center justify-center">
@@ -2210,7 +2420,11 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
         {/* Camera 2 Viewport */}
         {(dualLayout === 'side-by-side' || dualLayout === 'cam2-focus') && (
           <div
-            className="flex-1 flex flex-col h-full bg-white border border-[#CBD5E1] rounded-[3px] overflow-hidden relative"
+            onMouseEnter={() => onActiveCameraChange?.('cam2')}
+            onMouseDown={() => onActiveCameraChange?.('cam2')}
+            className={`flex-1 flex flex-col h-full bg-white border rounded-[3px] overflow-hidden relative transition-colors ${
+              activePasteTargetCam === 'cam2' ? 'border-[#2563EB]' : 'border-[#CBD5E1]'
+            }`}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDraggingCam2(true);
@@ -2220,15 +2434,19 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               e.preventDefault();
               setIsDraggingCam2(false);
               setCam2Error(null);
-              const file = e.dataTransfer.files?.[0];
-              if (file) onUploadCam2?.(file);
+              onClearCodecDiagnosticCam2?.();
+              onActiveCameraChange?.('cam2');
+              const dropped = e.dataTransfer.files ? Array.from(e.dataTransfer.files) : [];
+              if (dropped.length > 0) {
+                onUploadCam2?.(dropped.length === 1 ? dropped[0] : dropped);
+              }
             }}
           >
             {isDraggingCam2 && (
               <div className="absolute inset-0 z-30 bg-[#181B20]/90 border-2 border-dashed border-[#2563EB] text-white flex flex-col items-center justify-center pointer-events-none">
                 <Upload className="w-8 h-8 mb-2 text-[#2563EB]" />
-                <span className="font-bold text-xs">Drop Video to Load into Camera 2</span>
-                <span className="text-[10px] text-slate-300">.MP4, .AVI, .WMV, .FLV, .MOV, .MKV, .WEBM</span>
+                <span className="font-bold text-xs">Drop Video or Image Sequence into Camera 2</span>
+                <span className="text-[10px] text-slate-300">.MP4, .AVI, .MOV, .WMV, .FLV, .OGG, .WEBM, .GIF, .PNG/.JPG, .ZIP</span>
               </div>
             )}
             <div className="h-[24px] bg-[#F1F3F5] border-b border-[#CBD5E1] px-2 flex items-center justify-between text-[10.5px] shrink-0 gap-1 overflow-x-auto">
@@ -2391,119 +2609,146 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               }}
               className="flex-1 relative bg-[#0F172A] min-h-0 overflow-hidden select-none"
             >
-              {videoUrlCam2 ? (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    width: canvasSizeCam2.width,
-                    height: canvasSizeCam2.height,
-                    transform: `translate3d(${panCam2.x}px, ${panCam2.y}px, 0) scale(${zoomCam2})`,
-                    transformOrigin: '0 0',
-                    transition: isPanningCam2 ? 'none' : 'transform 0.04s ease-out',
-                    imageRendering: zoomCam2 >= 3.0 ? 'pixelated' : 'auto',
-                  }}
-                  className="rounded-[2px] overflow-hidden border border-[#334155] shadow-xl bg-black"
-                >
-                  <video
-                    ref={videoRefCam2}
-                    src={normalizeVideoUrl(videoUrlCam2)}
-                    playsInline
-                    muted
-                    preload="auto"
-                    onLoadedMetadata={() => {
-                      handleLoadedMetadataCam2();
-                      renderOverlay(canvasRefCam2.current, 'cam2');
-                    }}
-                    onDurationChange={() => {
-                      handleLoadedMetadataCam2();
-                      renderOverlay(canvasRefCam2.current, 'cam2');
-                    }}
-                    onSeeked={() => {
-                      mediaDiagnostics.logEvent('cam2', 'seeked', videoRefCam2.current);
-                      renderOverlay(canvasRefCam2.current, 'cam2');
-                    }}
-                    onCanPlay={() => {
-                      mediaDiagnostics.logEvent('cam2', 'canplay', videoRefCam2.current);
-                      renderOverlay(canvasRefCam2.current, 'cam2');
-                    }}
-                    onTimeUpdate={() => renderOverlay(canvasRefCam2.current, 'cam2')}
-                    onPlay={() => mediaDiagnostics.logEvent('cam2', 'play', videoRefCam2.current)}
-                    onPause={() => mediaDiagnostics.logEvent('cam2', 'pause', videoRefCam2.current)}
-                    onRateChange={() => mediaDiagnostics.logEvent('cam2', 'ratechange', videoRefCam2.current)}
-                    onWaiting={() => mediaDiagnostics.logEvent('cam2', 'waiting', videoRefCam2.current)}
-                    onStalled={() => mediaDiagnostics.logEvent('cam2', 'stalled', videoRefCam2.current)}
-                    onError={() => {
-                      if (isChunkedCam2) {
-                        setCam2Error(null);
-                        return;
-                      }
-                      mediaDiagnostics.logEvent('cam2', 'error', videoRefCam2.current);
-                      setCam2Error('Video codec in Camera 2 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
-                    }}
-                    className="block"
+              {codecDiagnosticCam2 && (
+                <CodecDiagnosticCard
+                  diagnostic={codecDiagnosticCam2}
+                  slotLabel="CAM 2"
+                  compact
+                  onSelectAnotherFile={() => fileInputCam2Ref.current?.click()}
+                  onOpenFormatsModal={onOpenFormatsModal}
+                  onDismiss={onClearCodecDiagnosticCam2}
+                />
+              )}
+              {videoUrlCam2 || isChunkedCam2 ? (
+                <>
+                  <div
                     style={{
-                      width: '100%',
-                      height: '100%',
-                      objectFit: 'fill',
-                      display: 'block',
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      width: canvasSizeCam2.width,
+                      height: canvasSizeCam2.height,
+                      transform: `translate3d(${panCam2.x}px, ${panCam2.y}px, 0) scale(${zoomCam2})`,
+                      transformOrigin: '0 0',
+                      transition: isPanningCam2 ? 'none' : 'transform 0.04s ease-out',
                       imageRendering: zoomCam2 >= 3.0 ? 'pixelated' : 'auto',
+                      opacity: cam2InWindow ? 1 : 0.35,
                     }}
-                  />
-                  <canvas
-                    ref={canvasRefCam2}
-                    width={canvasSizeCam2.width}
-                    height={canvasSizeCam2.height}
-                    onMouseDown={(e) => handleMouseDown(e, 'cam2')}
-                    onMouseUp={(e) => handleMouseUp(e, 'cam2')}
-                    onMouseEnter={() => setActiveCameraHover('cam2')}
-                    onMouseLeave={() => {
-                      setActiveCameraHover(null);
-                      setIsPanningCam2(false);
-                      if (pointerGestureRef.current?.camId === 'cam2') pointerGestureRef.current = null;
-                    }}
-                    onMouseMove={(e) => handleMouseMove(e, 'cam2')}
-                    className="absolute inset-0 w-full h-full"
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      display: 'block',
-                      cursor:
-                        isPanningCam2 || dragStickTarget?.camId === 'cam2'
-                          ? 'grabbing'
-                          : isShiftPressed || !requireShiftToMark
-                          ? 'crosshair'
-                          : 'grab',
-                      imageRendering: zoomCam2 >= 3.0 ? 'pixelated' : 'auto',
-                    }}
-                  />
-                  {cam2Error && (
-                    <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
-                      <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5" />
-                      <span className="font-bold text-xs mb-1">Camera 2 Codec Notice</span>
-                      <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam2Error}</span>
-                      <div className="flex flex-wrap items-center justify-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => fileInputCam2Ref.current?.click()}
-                          className="px-2.5 py-1 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
-                        >
-                          Select Other File
-                        </button>
-                        {onOpenFormatsModal && (
+                    className="rounded-[2px] overflow-hidden border border-[#334155] shadow-xl bg-black"
+                  >
+                    {!isChunkedCam2 && Boolean(videoUrlCam2) && (
+                      <video
+                        ref={videoRefCam2}
+                        src={normalizeVideoUrl(videoUrlCam2)}
+                        playsInline
+                        muted
+                        preload="auto"
+                        onLoadedMetadata={() => {
+                          handleLoadedMetadataCam2();
+                          renderOverlay(canvasRefCam2.current, 'cam2');
+                        }}
+                        onDurationChange={() => {
+                          handleLoadedMetadataCam2();
+                          renderOverlay(canvasRefCam2.current, 'cam2');
+                        }}
+                        onSeeked={() => {
+                          mediaDiagnostics.logEvent('cam2', 'seeked', videoRefCam2.current);
+                          renderOverlay(canvasRefCam2.current, 'cam2');
+                        }}
+                        onCanPlay={() => {
+                          mediaDiagnostics.logEvent('cam2', 'canplay', videoRefCam2.current);
+                          renderOverlay(canvasRefCam2.current, 'cam2');
+                        }}
+                        onTimeUpdate={() => renderOverlay(canvasRefCam2.current, 'cam2')}
+                        onPlay={() => mediaDiagnostics.logEvent('cam2', 'play', videoRefCam2.current)}
+                        onPause={() => mediaDiagnostics.logEvent('cam2', 'pause', videoRefCam2.current)}
+                        onRateChange={() => mediaDiagnostics.logEvent('cam2', 'ratechange', videoRefCam2.current)}
+                        onWaiting={() => mediaDiagnostics.logEvent('cam2', 'waiting', videoRefCam2.current)}
+                        onStalled={() => mediaDiagnostics.logEvent('cam2', 'stalled', videoRefCam2.current)}
+                        onError={() => {
+                          if (isChunkedCam2) {
+                            setCam2Error(null);
+                            return;
+                          }
+                          mediaDiagnostics.logEvent('cam2', 'error', videoRefCam2.current);
+                          setCam2Error('Video codec in Camera 2 is not supported natively by this browser. A standard H.264 MP4 conversion is recommended.');
+                        }}
+                        className="block"
+                        style={{
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'fill',
+                          display: 'block',
+                          imageRendering: zoomCam2 >= 3.0 ? 'pixelated' : 'auto',
+                        }}
+                      />
+                    )}
+                    <canvas
+                      ref={canvasRefCam2}
+                      width={canvasSizeCam2.width}
+                      height={canvasSizeCam2.height}
+                      onMouseDown={(e) => handleMouseDown(e, 'cam2')}
+                      onMouseUp={(e) => handleMouseUp(e, 'cam2')}
+                      onMouseEnter={() => setActiveCameraHover('cam2')}
+                      onMouseLeave={() => {
+                        setActiveCameraHover(null);
+                        setIsPanningCam2(false);
+                        if (pointerGestureRef.current?.camId === 'cam2') pointerGestureRef.current = null;
+                      }}
+                      onMouseMove={(e) => handleMouseMove(e, 'cam2')}
+                      className="absolute inset-0 w-full h-full"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        display: 'block',
+                        cursor:
+                          isPanningCam2 || dragStickTarget?.camId === 'cam2'
+                            ? 'grabbing'
+                            : isShiftPressed || !requireShiftToMark
+                            ? 'crosshair'
+                            : 'grab',
+                        imageRendering: zoomCam2 >= 3.0 ? 'pixelated' : 'auto',
+                      }}
+                    />
+                    {cam2Error && !codecDiagnosticCam2 && !isChunkedCam2 && (
+                      <div className="absolute inset-0 z-20 bg-slate-900/95 text-white flex flex-col items-center justify-center p-4 text-center select-text">
+                        <AlertCircle className="w-7 h-7 text-amber-400 mb-1.5" />
+                        <span className="font-bold text-xs mb-1">Camera 2 Codec Notice</span>
+                        <span className="text-[11px] text-slate-300 max-w-sm mb-3">{cam2Error}</span>
+                        <div className="flex flex-wrap items-center justify-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => onOpenFormatsModal('video-prep')}
-                            className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
+                            onClick={() => fileInputCam2Ref.current?.click()}
+                            className="px-2.5 py-1 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
                           >
-                            Video Prep Tips
+                            Select Other File
                           </button>
-                        )}
+                          {onOpenFormatsModal && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenFormatsModal('video-prep')}
+                              className="px-2.5 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[11px] font-semibold rounded-[3px] cursor-pointer"
+                            >
+                              Video Prep Tips
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  {!cam2InWindow && (
+                    <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+                      <div className="bg-[#181B20]/95 border border-[#F59E0B] rounded-[2px] px-3 py-1.5 shadow-lg flex flex-col items-center gap-0.5 font-mono">
+                        <span className="text-[10.5px] font-bold tracking-wider text-[#F59E0B] uppercase tabular-nums">
+                          OUT OF CLIP WINDOW (t = {masterTestTimeSec.toFixed(4)} s)
+                        </span>
+                        <span className="text-[9.5px] text-[#CBD5E1] tabular-nums">
+                          CAM 2 Active: F#{startFrameCam2}..F#{endFrameCam2} ({stereoWindow.tStartCam2.toFixed(4)}s to {stereoWindow.tEndCam2.toFixed(4)}s)
+                        </span>
                       </div>
                     </div>
                   )}
-                </div>
+                </>
               ) : (
                 <div className="w-full h-full flex flex-col items-center justify-center text-center p-4 select-none">
                   <div className="relative w-14 h-14 mb-2 border border-[#0284C7]/40 rounded-full flex items-center justify-center">
@@ -2712,7 +2957,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setCurrentFrameCam2((prev) => Math.max(0, prev - 1))}
+                  onClick={() => setCurrentFrameCam2((prev) => Math.max(startFrameCam2, prev - 1))}
                   className="px-1.5 py-0.5 rounded-[2px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] font-mono text-[10px] cursor-pointer"
                 >
                   -1
@@ -2742,9 +2987,9 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
           </div>
         </div>
 
-        {/* Scrubber Slider & Frame Readouts Row */}
+        {/* Scrubber Slider (Full Union Physical Time Span) & Synchronized Telemetry Readout Row */}
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-[#1E293B]">
+          <div className="flex items-center gap-1 text-[11px] font-mono font-semibold text-[#1E293B] shrink-0">
             <span className="text-[#64748B]">F:</span>
             <input
               type="number"
@@ -2757,7 +3002,7 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
                   onFrameChange(val);
                 }
               }}
-              className="w-13 px-1 py-0.5 rounded-[2px] border border-[#CBD5E1] bg-white text-[#1E293B] font-bold text-center outline-none"
+              className="w-13 px-1 py-0.5 rounded-[2px] border border-[#CBD5E1] bg-white text-[#1E293B] font-bold text-center outline-none tabular-nums"
               title="Master Camera 1 Frame index"
             />
           </div>
@@ -2765,22 +3010,44 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
           <input
             id="dual-master-scrubber"
             type="range"
-            min={clip.startFrame}
-            max={clip.endFrame}
-            step={clip.stepSize}
-            value={currentFrame}
-            onChange={(e) => onFrameChange(parseInt(e.target.value, 10))}
-            className="flex-1 h-1.5 bg-[#CBD5E1] rounded-[2px] appearance-none cursor-pointer"
-            title="Master synchronized scrubber (advances Cam 1 and phase-locks Cam 2)"
+            min={stereoWindow.unionStartSec}
+            max={isSingleFrameMaster ? stereoWindow.unionStartSec + 1 : stereoWindow.unionEndSec}
+            step={Math.max(1e-5, 1 / Math.max(fpsCam1, fpsCam2))}
+            value={Math.min(
+              isSingleFrameMaster ? stereoWindow.unionStartSec : stereoWindow.unionEndSec,
+              Math.max(stereoWindow.unionStartSec, masterTestTimeSec)
+            )}
+            disabled={isSingleFrameMaster}
+            onChange={(e) => {
+              const tVal = parseFloat(e.target.value);
+              if (Number.isFinite(tVal)) {
+                setMasterClockToTime(tVal);
+              }
+            }}
+            className="flex-1 h-1.5 bg-[#CBD5E1] rounded-[2px] appearance-none cursor-pointer disabled:opacity-45 disabled:cursor-default"
+            title={`Master Physical Clock Scrubber (${stereoWindow.unionStartSec.toFixed(4)}s to ${stereoWindow.unionEndSec.toFixed(4)}s)`}
           />
 
-          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[10.5px]">
-            <span className="text-[#1E293B] font-bold">
-              {formatStereoTime(timeCam1, fpsCam1)}
+          <div className="flex items-center gap-1.5 shrink-0 font-mono text-[10px] tabular-nums">
+            <span className="bg-white px-1.5 py-0.5 rounded-[2px] border border-[#CBD5E1] text-[#1E293B] font-semibold">
+              Cam 1: Fr {currentFrame} / {fpsCam1} fps
+              {!cam1InWindow && <span className="text-[#D97706] ml-1">[OUT]</span>}
             </span>
-            <span className="text-[#334155] font-semibold bg-white px-1.5 py-0.5 rounded-[2px] border border-[#CBD5E1]">
-              Cam2: F#{currentFrameCam2}
+            <span className="bg-white px-1.5 py-0.5 rounded-[2px] border border-[#CBD5E1] text-[#1E293B] font-semibold">
+              Cam 2: Fr {currentFrameCam2} / {fpsCam2} fps
+              {!cam2InWindow && <span className="text-[#D97706] ml-1">[OUT]</span>}
             </span>
+            <span className="bg-[#181B20] text-[#E2E8F0] px-1.5 py-0.5 rounded-[2px] border border-[#334155] font-bold">
+              Master t = {masterTestTimeSec.toFixed(4)} s
+            </span>
+            {!stereoWindow.hasOverlap && (
+              <span
+                className="bg-[#181B20] text-[#F59E0B] px-1.5 py-0.5 rounded-[2px] border border-[#F59E0B] font-bold"
+                title="Cam 1 and Cam 2 active clip windows do not overlap in physical test time"
+              >
+                NO OVERLAP
+              </span>
+            )}
           </div>
         </div>
 
@@ -2789,16 +3056,18 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => onFrameChange(clip.startFrame)}
+              onClick={() => setMasterClockToTime(stereoWindow.unionStartSec)}
               className="p-1 rounded-[3px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] cursor-pointer"
-              title="First Frame"
+              title="Jump to Start of Union Clip Window"
             >
               <SkipBack className="w-3.5 h-3.5" />
             </button>
 
             <button
               type="button"
-              onClick={() => onFrameChange(Math.max(clip.startFrame, currentFrame - clip.stepSize))}
+              onClick={() =>
+                setMasterClockToTime(masterTestTimeRef.current - clip.stepSize / Math.max(1, fpsCam1))
+              }
               className="px-2 py-0.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] font-mono text-[11px] cursor-pointer"
               title="Step Back"
             >
@@ -2809,8 +3078,9 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
               id="btn-play-both"
               type="button"
               onClick={handleTogglePlayBoth}
-              className="flex items-center gap-1 px-3 py-0.5 rounded-[3px] bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold border border-[#1D4ED8] shadow-xs cursor-pointer text-[11px]"
-              title="Play both cameras in frame-rate-synchronized lockstep"
+              disabled={isSingleFrameMaster}
+              className="flex items-center gap-1 px-3 py-0.5 rounded-[3px] bg-[#2563EB] hover:bg-[#1D4ED8] disabled:opacity-45 text-white font-semibold border border-[#1D4ED8] shadow-xs cursor-pointer text-[11px]"
+              title="Play both cameras in Master Physical Clock lockstep"
             >
               {isPlayingBoth ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
               <span>{isPlayingBoth ? 'Pause Both' : 'Play Both (Sync)'}</span>
@@ -2818,7 +3088,9 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
             <button
               type="button"
-              onClick={() => onFrameChange(Math.min(clip.endFrame, currentFrame + clip.stepSize))}
+              onClick={() =>
+                setMasterClockToTime(masterTestTimeRef.current + clip.stepSize / Math.max(1, fpsCam1))
+              }
               className="px-2 py-0.5 rounded-[3px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] font-mono text-[11px] cursor-pointer"
               title="Step Forward"
             >
@@ -2827,9 +3099,9 @@ export const DualVideoPlayerView: React.FC<DualVideoPlayerViewProps> = ({
 
             <button
               type="button"
-              onClick={() => onFrameChange(clip.endFrame)}
+              onClick={() => setMasterClockToTime(stereoWindow.unionEndSec)}
               className="p-1 rounded-[3px] bg-white hover:bg-[#E2E8F0] border border-[#CBD5E1] text-[#1E293B] cursor-pointer"
-              title="Last Frame"
+              title="Jump to End of Union Clip Window"
             >
               <SkipForward className="w-3.5 h-3.5" />
             </button>
